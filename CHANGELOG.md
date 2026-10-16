@@ -4,6 +4,8 @@
 
 ### Added
 
+- Corrected the macOS CI `lipo` invocation to verify the packaged arm64 executable.
+
 - Baseline project documentation and CodeAdvisor conventions for the planned Rust application on macOS and Windows.
 
 - Shared Rust policy core and versioned C ABI, with automated settings, protection ownership, battery, low-light, and lifecycle checks.

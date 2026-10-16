@@ -53,7 +53,7 @@ jobs:
       - name: Verify app architecture and signature
         run: |
           APP="build/macos/TelaViva OLED.app"
-          lipo -verify_arch arm64 "$APP/Contents/MacOS/TelaViva"
+          lipo "$APP/Contents/MacOS/TelaViva" -verify_arch arm64
           codesign --verify --deep --strict "$APP"
       - name: Archive app bundle
         run: ditto -c -k --sequesterRsrc --keepParent "build/macos/TelaViva OLED.app" "build/macos/TelaViva-OLED-macos-arm64.zip"
