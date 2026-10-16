@@ -37,6 +37,16 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+      - name: Test manual monitor controls
+        run: tools/tests/test-manual-monitor-controls.sh
+      - name: Test DDC transactions
+        run: tools/tests/test-ddc-transaction.sh
+      - name: Test hardware-key routing
+        run: tools/tests/test-hardware-key-router.sh
+      - name: Test default audio output monitor
+        run: tools/tests/test-default-audio-output.sh
+      - name: Test media key probe policy
+        run: tools/tests/test-media-key-probe.sh
       - name: Test camera lifecycle policy
         run: tools/tests/test-camera-lifecycle.sh
       - name: Install Rust tools and arm64 target
@@ -45,6 +55,8 @@ jobs:
           rustup target add aarch64-apple-darwin --toolchain stable
       - name: Build Rust libraries for Apple Silicon
         run: cargo +stable build --workspace --release --target aarch64-apple-darwin --locked
+      - name: Test asynchronous Rust bridge
+        run: tools/tests/test-core-bridge.sh
       - name: Fetch pinned Apple Silicon ONNX Runtime
         run: tools/inference/fetch-macos-runtime.sh
       - name: Package native macOS app
@@ -52,6 +64,10 @@ jobs:
           TELAVIVA_CORE_LIB="$GITHUB_WORKSPACE/target/aarch64-apple-darwin/release/libtelaviva_core.a" \
           TELAVIVA_INFERENCE_LIB="$GITHUB_WORKSPACE/target/aarch64-apple-darwin/release/libtelaviva_inference.a" \
             packaging/macos/build-app.sh
+      - name: Smoke-test packaged app
+        run: |
+          APP="build/macos/TelaViva OLED.app"
+          "$APP/Contents/MacOS/TelaViva" --smoke-test
       - name: Verify app architecture and signature
         run: |
           APP="build/macos/TelaViva OLED.app"

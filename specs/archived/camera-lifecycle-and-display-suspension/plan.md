@@ -37,7 +37,7 @@ In always-on mode, retain a healthy camera session and continue the configured i
 - `native/macos/TelaViva/CameraLifecycle.swift`: small scheduling policy used by the real camera adapter and deterministic tests.
 - `native/macos/Tests/CameraLifecycleTests.swift`: fake-clock/session tests without webcam access.
 - `native/macos/Tests/CameraLocalizationTests.swift`: exact Portuguese and English inline status assertions.
-- `specs/camera-lifecycle-and-display-suspension/validation/macos-acceptance.md`: physical acceptance checklist with unverified results explicitly identified.
+- `specs/archived/camera-lifecycle-and-display-suspension/validation/macos-acceptance.md`: physical acceptance checklist with unverified results explicitly identified.
 - `tools/tests/test-camera-lifecycle.sh`: compile and run those native tests with the macOS SDK.
 
 Keep display-state observation alongside the existing macOS display integration.

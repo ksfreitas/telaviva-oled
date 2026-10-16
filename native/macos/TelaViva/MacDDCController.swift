@@ -22,11 +22,14 @@ final class MacDDCController {
     private var lastReportedDisplayStates: [String: ReportedDisplayState] = [:]
     private var incompleteBrightnessAtDiscovery = Set<String>()
     private var latestPendingActionIDs = Set<UInt64>()
+    private var keyboardPendingMonitors = Set<String>()
     private var latestSnapshotRevision: UInt64?
+    private var latestMonitors: [String: CoreMonitor] = [:]
     private var asleepActionIDs = Set<UInt64>()
     private var stopped = false
     private var probeReport: [String: Any] = [:]
     private var lastAVSearchStage = "not_attempted"
+    var onHardwareKeyDisplays: (([HardwareKeyDisplay]) -> Void)?
 
     private struct ReportedDisplayState: Equatable {
         let generation: UInt64
@@ -95,10 +98,13 @@ final class MacDDCController {
             guard let self, !self.stopped else { return }
             if let latest = self.latestSnapshotRevision, revision < latest { return }
             self.latestSnapshotRevision = revision
+            self.latestMonitors = Dictionary(uniqueKeysWithValues: (snapshot.monitors ?? []).map { ($0.id, $0) })
             self.connectionGenerations = Dictionary(uniqueKeysWithValues: (snapshot.monitors ?? []).compactMap { monitor in
                 monitor.generation.map { (monitor.id, $0) }
             })
             self.latestPendingActionIDs = Set(actions.map(\.id))
+            self.keyboardPendingMonitors = Set(actions.map(\.monitor_id))
+            self.publishHardwareKeyDisplays()
             self.asleepActionIDs.formIntersection(self.latestPendingActionIDs)
             for (monitorID, state) in self.displayStates {
                 if let generation = self.connectionGenerations[monitorID],
@@ -124,6 +130,67 @@ final class MacDDCController {
                 self.perform(action)
             }
         }
+    }
+
+    /// Called by the router's bounded worker, never from the system event callback.
+    /// Validation and Rust submission share the DDC controller's serial queue with
+    /// discovery and display-state updates.
+    func submitHardwareKey(_ command: HardwareKeyCommand, completion: @escaping (Bool) -> Void) {
+        queue.async { [weak self] in
+            guard let self, !self.stopped,
+                  let transport = self.displays[command.monitorID],
+                  transport.identityIsStable,
+                  self.connectionGenerations[command.monitorID] == command.generation,
+                  let monitor = self.latestMonitors[command.monitorID],
+                  monitor.generation == command.generation,
+                  monitor.identity_status == "stable",
+                  self.displayStates[command.monitorID] != "asleep",
+                  CGDisplayIsAsleep(transport.displayID) == 0 else {
+                completion(false)
+                return
+            }
+            let feature = command.feature == .brightness ? monitor.brightness : monitor.volume
+            guard feature?.supported == true else { completion(false); return }
+            // The final validity check and submission share the main executor with UI controls.
+            // A slider accepted after this command was queued invalidates its authorization epoch.
+            DispatchQueue.main.async { [weak core = self.core] in
+                completion(core?.submitHardwareKey(command) ?? false)
+            }
+        }
+    }
+
+    private func publishHardwareKeyDisplays() {
+        var count: UInt32 = 0
+        guard CGGetOnlineDisplayList(0, nil, &count) == .success, count > 0 else {
+            DispatchQueue.main.async { [weak self] in self?.onHardwareKeyDisplays?([]) }
+            return
+        }
+        var displayIDs = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        guard CGGetOnlineDisplayList(count, &displayIDs, &count) == .success else { return }
+        let descriptors: [HardwareKeyDisplay] = displayIDs.prefix(Int(count)).map { displayID in
+            let transportEntry = displays.first { $0.value.displayID == displayID }
+            let transport = transportEntry?.value
+            let monitor = transportEntry.flatMap { latestMonitors[$0.key] }
+            let isBuiltin = CGDisplayIsBuiltin(displayID) != 0
+            let monitorID = transport?.identityIsStable == true ? transportEntry?.key : nil
+            let generation = monitorID.flatMap { latestMonitors[$0]?.generation }
+            let awake = !isBuiltin && transport != nil &&
+                (transportEntry.flatMap { displayStates[$0.key] } != "asleep") && CGDisplayIsAsleep(displayID) == 0
+            func feature(_ value: VcpValue?) -> HardwareKeyFeatureState {
+                let width = (value?.max ?? 100) - (value?.min ?? 0)
+                let pending = monitorID.map { keyboardPendingMonitors.contains($0) } ?? false
+                let tolerance = width > 0 ? 50.0 / width + 0.0001 : 0.51
+                let status = value?.status ?? "ready"
+                let failed = !["ready", "pending", "verifying_ownership", "read_required"].contains(status)
+                return HardwareKeyFeatureState(value: value?.value, supported: value?.supported == true,
+                                               awake: awake, pending: pending, tolerance: tolerance, failed: failed)
+            }
+            return HardwareKeyDisplay(displayID: displayID, bounds: CGDisplayBounds(displayID), isBuiltin: isBuiltin,
+                                      monitorID: monitorID, generation: generation,
+                                      audioDeviceUID: monitorID != nil && !isBuiltin ? transport?.edidUUID : nil,
+                                      brightness: feature(monitor?.brightness), volume: feature(monitor?.volume))
+        }
+        DispatchQueue.main.async { [weak self] in self?.onHardwareKeyDisplays?(descriptors) }
     }
 
     private func enumerate() {
@@ -252,6 +319,7 @@ final class MacDDCController {
         }
         refreshDisplayStatesOnQueue(recoverInitialBrightness: recoverInitialBrightness)
         publishDisconnectedDisplays(Set(displays.keys))
+        publishHardwareKeyDisplays()
     }
 
     private func setAllDisplaysAsleep() {
@@ -300,6 +368,7 @@ final class MacDDCController {
         displayStates[monitorID] = state
         pendingDisplayStates[monitorID] = state
         flushPendingDisplayStates()
+        publishHardwareKeyDisplays()
     }
 
     private func flushPendingDisplayStates() {
@@ -463,6 +532,16 @@ final class MacDDCController {
                 submitResult(action, ok: false, error: "io"); return
             }
             Thread.sleep(forTimeInterval: 0.06)
+            guard let observed = readVCP(transport: transport, code: feature) else {
+                submitResult(action, ok: false, error: "io"); return
+            }
+            // IOAV submission success does not acknowledge a Set VCP command.
+            // An unchanged or clamped value must not be reported as applied.
+            guard observed.current == raw else {
+                submitResult(action, ok: false, error: "io"); return
+            }
+            submitResult(action, ok: true, value: Double(observed.current))
+            return
         }
         guard let observed = readVCP(transport: transport, code: feature) else {
             submitResult(action, ok: false, error: "unsupported"); return
@@ -471,53 +550,26 @@ final class MacDDCController {
     }
 
     private func submitResult(_ action: PendingAction, ok: Bool, value: Double? = nil, error: String? = nil) {
-        var result: [String: Any] = ["type": "hardware_result", "action_id": action.id,
-                                     "generation": action.generation, "ok": ok]
-        if let value { result["value"] = value }
-        if let error { result["error"] = error }
-        core?.submit(result)
+        guard let core else { return }
+        _ = core.submitHardwareResult(action, connectionGeneration: connectionGenerations[action.monitor_id] ?? 0,
+                                      success: ok, value: value, error: error)
     }
 
-    private struct Reading { let current: UInt16; let maximum: UInt16 }
+    private typealias Reading = DDCTransaction.Reading
 
     private func readVCP(transport: DisplayTransport, code: UInt8) -> Reading? {
-        retryIO { readVCPOnce(transport: transport, code: code) }
-    }
-
-    private func readVCPOnce(transport: DisplayTransport, code: UInt8) -> Reading? {
-        // The DDC/CI spec includes the virtual host address in the packet XOR.
-        // m1ddc 1.2.0's helper omits 0x51 on reads, so try that legacy checksum
-        // only if the standards-form request receives no valid reply.
-        for seed in [UInt8(0x6e ^ 0x51), UInt8(0x6e)] {
-            var request: [UInt8] = [0x82, 0x01, code]
-            request.append(checksum(request, seed: seed))
-            guard writeI2C(transport, bytes: request) else { continue }
-            Thread.sleep(forTimeInterval: transport.chipAddress == 0xB7 ? 0.06 : 0.04)
-            var reply = [UInt8](repeating: 0, count: 12)
-            guard readI2C(transport, bytes: &reply), reply[0] == 0x6e, reply[1] == 0x88,
-                  reply[2] == 0x02, reply[3] == 0x00, reply[4] == code,
-                  checksum(Array(reply.prefix(11)), seed: 0x50) == 0 else { continue }
-            return Reading(current: (UInt16(reply[8]) << 8) | UInt16(reply[9]),
-                           maximum: (UInt16(reply[6]) << 8) | UInt16(reply[7]))
-        }
-        return nil
+        transaction(transport).readVCP(code: code)
     }
 
     private func writeVCP(transport: DisplayTransport, code: UInt8, value: UInt16) -> Bool {
-        retryIO {
-            var bytes: [UInt8] = [0x84, 0x03, code, UInt8(value >> 8), UInt8(value & 0xff)]
-            bytes.append(checksum(bytes, seed: 0x6e ^ 0x51))
-            return writeI2C(transport, bytes: bytes) ? true : nil
-        } ?? false
+        transaction(transport).writeVCP(code: code, value: value)
     }
 
-    private func retryIO<T>(_ operation: () -> T?) -> T? {
-        for attempt in 0..<3 {
-            if let result = operation() { return result }
-            if attempt == 0 { Thread.sleep(forTimeInterval: 0.2) }
-            else if attempt == 1 { Thread.sleep(forTimeInterval: 1.0) }
-        }
-        return nil
+    private func transaction(_ transport: DisplayTransport) -> DDCTransaction {
+        DDCTransaction(write: { self.writeI2C(transport, bytes: $0) }, read: { count in
+            var reply = [UInt8](repeating: 0, count: count)
+            return self.readI2C(transport, bytes: &reply) ? reply : nil
+        })
     }
 
     private func featureJSON(_ reading: Reading?) -> [String: Any] {
@@ -531,8 +583,6 @@ final class MacDDCController {
         return ["supported": true, "current": reading.current, "maximum": reading.maximum,
                 "normalized": Double(reading.current) / Double(reading.maximum) * 100]
     }
-
-    private func checksum(_ bytes: [UInt8], seed: UInt8) -> UInt8 { bytes.reduce(seed) { $0 ^ $1 } }
 
     private func createAVService(entry: io_service_t) -> UnsafeMutableRawPointer? {
         guard let address = symbols.ioAVCreate else { return nil }
@@ -553,7 +603,7 @@ final class MacDDCController {
         guard let address = symbols.ioAVRead, let service = transport.service else { return false }
         typealias Read = @convention(c) (UnsafeMutableRawPointer, UInt32, UInt32, UnsafeMutableRawPointer, UInt32) -> Int32
         return bytes.withUnsafeMutableBufferPointer { buffer in
-            unsafeBitCast(address, to: Read.self)(service, transport.chipAddress, 0x51,
+            unsafeBitCast(address, to: Read.self)(service, transport.chipAddress, 0,
                                                    buffer.baseAddress!, UInt32(buffer.count)) == 0
         }
     }

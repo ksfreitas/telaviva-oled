@@ -1,15 +1,20 @@
 import SwiftUI
 import ServiceManagement
 import AVFoundation
+import AppKit
 
 struct SettingsView: View {
     @ObservedObject var core: CoreBridge
+    var requestHardwareKeyPermission: () -> Void = {
+        (NSApp.delegate as? MenuBarController)?.requestHardwareKeyPermission()
+    }
     @State private var locale = "auto"
     @State private var presence = false
     @State private var alwaysOnCamera = false
     @State private var screensaver = false
     @State private var battery = true
     @State private var login = false
+    @State private var hardwareKeys = false
     @State private var presentInterval = 10.0
     @State private var returnInterval = 1.0
     @State private var selectedCameraID: String?
@@ -54,6 +59,34 @@ struct SettingsView: View {
                     HStack { Slider(value: $returnInterval, in: 0.25...5, step: 0.25); Text(String(format: "%.2g s", returnInterval)).monospacedDigit() }
                 }
             }
+            Section(AppText.string("hardwareKeys.title", locale: locale)) {
+                Toggle(AppText.string("hardwareKeys.toggle", locale: locale), isOn: Binding(
+                    get: { hardwareKeys },
+                    set: { enabled in
+                        hardwareKeys = enabled
+                        if enabled && didLoad { requestHardwareKeyPermission() }
+                    }
+                ))
+                    .help(AppText.string("hardwareKeys.help", locale: locale))
+                Text(AppText.string(core.hardwareKeyStatusKey, locale: locale))
+                    .font(.caption).foregroundStyle(.secondary)
+                if hardwareKeys {
+                    permissionRow(
+                        title: AppText.string("hardwareKeys.accessibility", locale: locale),
+                        granted: core.hardwareKeyPermissions.accessibility,
+                        requestKey: "hardwareKeys.requestPermission",
+                        request: { (NSApp.delegate as? MenuBarController)?.requestAccessibilityPermission() },
+                        openKey: "hardwareKeys.openAccessibility",
+                        openURL: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+                    permissionRow(
+                        title: AppText.string("hardwareKeys.inputMonitoring", locale: locale),
+                        granted: core.hardwareKeyPermissions.inputMonitoring,
+                        requestKey: "hardwareKeys.requestInputMonitoring",
+                        request: { (NSApp.delegate as? MenuBarController)?.requestInputMonitoringPermission() },
+                        openKey: "hardwareKeys.openInputMonitoring",
+                        openURL: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")
+                }
+            }
             Section(AppText.string("availability", locale: locale)) {
                 Picker(AppText.string("camera", locale: locale), selection: $selectedCameraID) {
                     Text(AppText.string("cameraPicker", locale: locale)).tag(String?.none)
@@ -73,6 +106,7 @@ struct SettingsView: View {
         .onChange(of: core.snapshot.revision) { _, _ in if !didLoad { load() } }
         .onChange(of: locale) { _, _ in save() }
         .onChange(of: presence) { _, _ in save() }
+        .onChange(of: hardwareKeys) { _, _ in save() }
         .onChange(of: alwaysOnCamera) { _, _ in save() }
         .onChange(of: screensaver) { _, _ in save() }
         .onChange(of: battery) { _, _ in save() }
@@ -85,6 +119,28 @@ struct SettingsView: View {
         }
     }
 
+    /// One permission row: the state on top, and request and open-settings buttons disabled once granted.
+    private func permissionRow(title: String, granted: Bool, requestKey: String, request: @escaping () -> Void,
+                               openKey: String, openURL: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Label(title, systemImage: granted ? "checkmark.circle.fill" : "xmark.circle")
+                    .foregroundStyle(granted ? Color.green : Color.secondary)
+                Text(AppText.string(granted ? "hardwareKeys.granted" : "hardwareKeys.notGranted", locale: locale))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            HStack {
+                Button(AppText.string(requestKey, locale: locale), action: request)
+                    .disabled(granted)
+                Button(AppText.string(openKey, locale: locale)) {
+                    if let url = URL(string: openURL) { NSWorkspace.shared.open(url) }
+                }
+                .disabled(granted)
+            }
+            .controlSize(.small)
+        }
+    }
+
     private func load() {
         guard let value = core.snapshot.settings else { return }
         didLoad = true
@@ -92,6 +148,7 @@ struct SettingsView: View {
         alwaysOnCamera = value.always_on_camera ?? false
         screensaver = value.screensaver_protection_enabled; battery = value.suspend_presence_on_battery
         login = value.launch_at_login; presentInterval = Double(value.presence_sampling_interval_s)
+        hardwareKeys = value.hardware_keys_enabled ?? false
         returnInterval = Double(value.return_sampling_interval_s)
         selectedCameraID = value.selected_camera_id
     }
@@ -104,6 +161,7 @@ struct SettingsView: View {
         settings.screensaver_protection_enabled = screensaver; settings.suspend_presence_on_battery = battery
         settings.launch_at_login = login; settings.presence_sampling_interval_s = presentInterval
         settings.return_sampling_interval_s = returnInterval; settings.selected_camera_id = selectedCameraID
+        settings.hardware_keys_enabled = hardwareKeys
         core.updateSettings(settings)
     }
 }

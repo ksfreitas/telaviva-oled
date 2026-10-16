@@ -6,7 +6,7 @@ Presence protection detects any face locally. It does not identify people, enrol
 
 ## Status
 
-The project is under active development. Rust tests, native macOS builds, and an ABI smoke test have passed. A read-only DDC check has read brightness and volume on one Dell S3225QC connected to an M4 Pro. This does not establish support across monitors, ports, adapters, docks, or Apple Silicon generations. Broader camera, physical write/restoration, multi-monitor and release-distribution acceptance remains in progress. See the [implementation plan](specs/archived/external-monitor-control-and-oled-presence-protection/plan.md) and [validation reports](specs/archived/external-monitor-control-and-oled-presence-protection/validation/release-readiness.md) for evidence and outstanding work.
+The project is under active development. Rust tests, native macOS builds, and an ABI smoke test have passed. A read-only DDC check has read brightness and volume on one Dell S3225QC connected to an M4 Pro. A connected LG ULTRAFINE has also passed a one-point brightness change and restoration through the application's Rust/native command path, with fresh physical readback; see the [DDC fix and hardware evidence](specs/archived/external-monitor-hardware-keys-and-fluid-controls/lg-ultrafine-ddc-brightness-writes.md). This does not establish support across monitors, ports, adapters, docks, or Apple Silicon generations. Broader camera, physical write/restoration, multi-monitor and release-distribution acceptance remains in progress. See the [implementation plan](specs/archived/external-monitor-control-and-oled-presence-protection/plan.md) and [validation reports](specs/archived/external-monitor-control-and-oled-presence-protection/validation/release-readiness.md) for evidence and outstanding work.
 
 The macOS app targets Apple Silicon and macOS 14 or later. Development builds have been exercised on macOS 27; this is not a tested compatibility matrix. Intel Macs are deferred. DDC support depends on the monitor and connection.
 
@@ -34,6 +34,8 @@ open 'build/macos/TelaViva OLED.app'
 4. Enable presence protection to request camera access. Two valid no-face samples trigger dimming; a returning face clears the presence reason. Low light suspends detection instead of triggering absence.
 5. Optionally enable screensaver protection, then choose **Protection brightness** for each monitor in the popup. The slider cannot exceed that monitor's current brightness.
 
+Keyboard routing is optional and starts disabled. Enable it in Settings and grant macOS Accessibility and Input Monitoring access when requested. Brightness up/down keys then adjust the supported external monitor under the cursor; an unsupported control or a cursor over the built-in display keeps normal macOS behavior. Brightness keys that arrive as plain key codes 144 and 145 are recognized too; the event tap acts only on those two key codes and never reads typed characters. Volume up/down keys ignore the cursor: they adjust an external monitor's speakers only while that monitor is the Mac's current sound output (matched through its display EDID identifier, verified so far only on one LG ULTRAFINE over DisplayPort); with headphones, built-in speakers, or any other output, or when no single monitor matches, macOS keeps control of the volume. Holding a key retains the initially selected monitor until release. Normal steps are 6.25 percentage points; Shift+Option uses 1.5625 points. The mute key follows the volume rule: while an external monitor is the Mac's sound output, mute sets that monitor's volume to zero and the next press restores the previous level (emulated with volume zero, not the monitor's own mute function); otherwise macOS keeps control. Only ordinary function keys retain their normal behavior unconditionally. Physical keyboard capture and device compatibility still require hardware acceptance.
+
 Protection reasons are combined, and restoration checks the current brightness before changing it so external adjustments can be preserved. Display sleep follows macOS-reported state; a monitor manually powered off may remain logically awake depending on its connection. When monitors have mixed sleep states, monitoring continues for awake eligible monitors and hardware writes to sleeping targets are withheld. After wake, protection writes use fresh brightness readback and ownership checks. Screensaver startup reconciliation and connection-specific behavior remain validation work. Setting brightness to zero does not guarantee that an OLED panel turns completely off or prevent all burn-in.
 
 ## Development checks
@@ -45,9 +47,17 @@ cargo fmt --all -- --check
 cargo test --workspace --all-targets --locked -- --skip bundled_runtime_executes_pinned_yunet_model_on_cpu
 cargo clippy --workspace --all-targets --locked -- -D warnings
 tools/tests/test-camera-lifecycle.sh
+tools/tests/test-ddc-transaction.sh
+tools/tests/test-manual-monitor-controls.sh
+tools/tests/test-core-bridge.sh
+tools/tests/test-hardware-key-router.sh
+tools/tests/test-default-audio-output.sh
+tools/tests/test-media-key-probe.sh
 ```
 
 After fetching the runtime, run the full test suite with `cargo test --workspace --all-targets --locked`. CI intentionally skips only the runtime integration test and builds/packages the native app separately. The macOS workflow runs on macOS 14; it does not perform camera acceptance or physical monitor writes.
+
+`tools/tests/test-core-bridge.sh` needs the Rust core library (`libtelaviva_core.a`) built first (see the macOS workflow order).
 
 ## Project layout
 

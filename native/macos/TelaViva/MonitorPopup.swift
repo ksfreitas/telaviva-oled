@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MonitorPopup: View {
     @ObservedObject var core: CoreBridge
+    @ObservedObject var controls: ManualMonitorControls
     let openSettings: () -> Void
     let refreshDisplays: () -> Void
 
@@ -17,7 +18,9 @@ struct MonitorPopup: View {
             Divider()
             if let monitors = core.snapshot.monitors, !monitors.isEmpty {
                 ScrollView {
-                    VStack(spacing: 12) { ForEach(monitors) { MonitorControls(monitor: $0, core: core) } }
+                    VStack(spacing: 12) {
+                        ForEach(monitors) { MonitorControls(monitor: $0, core: core, controls: controls) }
+                    }
                 }
             } else {
                 ContentUnavailableView(AppText.string("noDisplays", locale: core.snapshot.settings?.locale, messages: core.snapshot.messages), systemImage: "display", description: Text(AppText.string("ddcUnavailable", locale: core.snapshot.settings?.locale, messages: core.snapshot.messages)))
@@ -46,11 +49,13 @@ struct MonitorPopup: View {
 private struct MonitorControls: View {
     let monitor: CoreMonitor
     let core: CoreBridge
+    @ObservedObject var controls: ManualMonitorControls
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(monitor.name).font(.subheadline.weight(.semibold))
-            control(AppText.string("brightness", locale: core.snapshot.settings?.locale, messages: core.snapshot.messages), value: monitor.brightness, kind: "set_brightness")
-            control(AppText.string("volume", locale: core.snapshot.settings?.locale, messages: core.snapshot.messages), value: monitor.volume, kind: "set_volume")
+            control(AppText.string("brightness", locale: core.snapshot.settings?.locale, messages: core.snapshot.messages), value: monitor.brightness, feature: .brightness)
+            control(AppText.string("volume", locale: core.snapshot.settings?.locale, messages: core.snapshot.messages), value: monitor.volume, feature: .volume)
             if core.snapshot.settings?.screensaver_protection_enabled == true {
                 screensaverTarget
             }
@@ -59,6 +64,7 @@ private struct MonitorControls: View {
         .onChange(of: monitor.brightness?.value) { _, _ in clampScreensaverTarget() }
         .padding(12).background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 10))
     }
+
     private var screensaverTarget: some View {
         let maximum = protectionBrightnessMaximum
         let enabled = maximum.map { $0 > 0 } ?? false
@@ -76,14 +82,28 @@ private struct MonitorControls: View {
             Text("\(Int(target.rounded()))%").monospacedDigit().frame(width: 42, alignment: .trailing).font(.caption)
         }
     }
-    @ViewBuilder private func control(_ title: String, value: VcpValue?, kind: String) -> some View {
-        if let value, value.supported, let current = value.value {
-            HStack(spacing: 8) {
-                rowLabel(title)
-                Slider(value: Binding(get: { current }, set: { newValue in
-                    core.submit(["type": kind, "monitor_id": monitor.id, "value": Int(newValue.rounded())])
-                }), in: 0...100)
-                Text("\(Int(current.rounded()))%").monospacedDigit().frame(width: 42, alignment: .trailing).font(.caption)
+
+    @ViewBuilder private func control(_ title: String, value: VcpValue?, feature: HardwareKeyFeature) -> some View {
+        if let value, value.supported, let confirmed = value.value, monitor.generation != nil {
+            let shown = controls.displayValue(monitor: monitor, feature: feature) ?? confirmed
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) {
+                    rowLabel(title)
+                    Slider(value: Binding(get: {
+                        controls.displayValue(monitor: monitor, feature: feature) ?? confirmed
+                    }, set: { newValue in
+                        controls.setValue(newValue, monitor: monitor, feature: feature)
+                    }), in: 0...100, onEditingChanged: { editing in
+                        controls.setEditing(editing, monitor: monitor, feature: feature)
+                    })
+                    Text("\(Int(shown.rounded()))%").monospacedDigit().frame(width: 42, alignment: .trailing).font(.caption)
+                }
+                let status = controls.status(monitor: monitor, feature: feature)
+                if status != .ready {
+                    Text(AppText.string(status == .failed ? "controlFailed" : "controlPending", locale: core.snapshot.settings?.locale))
+                        .font(.system(size: 9)).foregroundStyle(status == .failed ? Color.red : Color.secondary)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
             }
         } else {
             Label("\(title) \(AppText.string("unavailable", locale: core.snapshot.settings?.locale))", systemImage: "minus.circle")
@@ -94,7 +114,9 @@ private struct MonitorControls: View {
     private var protectionBrightnessMaximum: Double? {
         guard let brightness = monitor.brightness, brightness.supported,
               let value = brightness.value else { return nil }
-        return min(max(value, 0), 100)
+        let confirmed = min(max(value, 0), 100)
+        guard let draft = controls.displayValue(monitor: monitor, feature: .brightness) else { return confirmed }
+        return min(confirmed, max(0, draft))
     }
 
     private func clampScreensaverTarget() {

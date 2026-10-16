@@ -5,64 +5,232 @@ import Combine
 /// launchable without it during early development, but reports that state explicitly.
 final class CoreBridge: ObservableObject {
     @Published private(set) var snapshot: CoreSnapshot = .unavailable
+    @Published var hardwareKeyStatusKey = "hardwareKeys.status.disabled"
+    @Published var hardwareKeyPermissions = HardwareKeyPermissions.current()
+    var hardwareKeyValidator: ((HardwareKeyCommand) -> Bool)?
+    var onHardwareActionCompleted: ((String, UInt64, UInt64, UInt64, HardwareKeyFeature, Bool, Double?) -> Void)?
+    var onHardwareKeyAccepted: ((HardwareKeyCommand, Bool, UInt64?) -> Void)?
+    /// Test seam: invoked on the worker queue at the start of every snapshot refresh run, before the core is read.
+    var refreshRunObserver: (() -> Void)?
     private var core: OpaquePointer?
     private var shutdownStarted = false
+    private let ffiLock = NSRecursiveLock()
+    private let workerQueue = DispatchQueue(label: "com.telaviva.core-bridge", qos: .userInitiated)
+    private let refreshLock = NSLock()
+    private var refreshScheduled = false
+    private var refreshAgain = false
+    private let publishLock = NSLock()
+    private var pendingPublication: CoreSnapshot?
+    private var publicationScheduled = false
+    private let stateLock = NSLock()
 
-    init() {
+    private var isShuttingDown: Bool {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return shutdownStarted
+    }
+
+    init(configPath: URL? = nil) {
         #if TELAVIVA_CORE
-        startCore()
+        startCore(configPath: configPath)
         #endif
     }
 
     func refresh() {
         #if TELAVIVA_CORE
-        guard let core else { return }
-        var buffer = TvBuffer(data: nil, len: 0)
-        guard tv_snapshot(core, &buffer) == 0, let data = buffer.data else { return }
-        defer { tv_buffer_free(&buffer) }
-        let bytes = Data(bytes: data, count: buffer.len)
-        if let value = try? JSONDecoder().decode(CoreSnapshot.self, from: bytes) {
-            if Thread.isMainThread { snapshot = value }
-            else { DispatchQueue.main.async { self.snapshot = value } }
-        }
+        requestSnapshotRefresh()
         #endif
     }
 
-    func submit(_ object: [String: Any]) {
+    #if TELAVIVA_CORE
+    private func requestSnapshotRefresh() {
+        refreshLock.lock()
+        if refreshScheduled {
+            refreshAgain = true
+            refreshLock.unlock()
+            return
+        }
+        refreshScheduled = true
+        refreshLock.unlock()
+        workerQueue.async { [weak self] in self?.refreshOnce() }
+    }
+
+    private func refreshOnce() {
+        refreshRunObserver?()
+        if let core, let value = readSnapshot(core) { publish(value) }
+        refreshLock.lock()
+        if refreshAgain {
+            refreshAgain = false
+            refreshLock.unlock()
+            workerQueue.async { [weak self] in self?.refreshOnce() }
+        } else {
+            refreshScheduled = false
+            refreshLock.unlock()
+        }
+    }
+
+    private func readSnapshot(_ instance: OpaquePointer) -> CoreSnapshot? {
+        ffiLock.lock(); defer { ffiLock.unlock() }
+        var buffer = TvBuffer(data: nil, len: 0)
+        guard tv_snapshot(instance, &buffer) == 0, let data = buffer.data else { return nil }
+        defer { tv_buffer_free(&buffer) }
+        return try? JSONDecoder().decode(CoreSnapshot.self, from: Data(bytes: data, count: buffer.len))
+    }
+
+    private func publish(_ value: CoreSnapshot) {
+        publishLock.lock()
+        if let pendingPublication, let current = pendingPublication.revision, let next = value.revision, next < current {
+            publishLock.unlock()
+            return
+        }
+        pendingPublication = value
+        let schedule = !publicationScheduled
+        publicationScheduled = true
+        publishLock.unlock()
+        if schedule { DispatchQueue.main.async { [weak self] in self?.drainPublications() } }
+    }
+
+    private func drainPublications() {
+        dispatchPrecondition(condition: .onQueue(.main))
+        while true {
+            publishLock.lock()
+            let value = pendingPublication
+            pendingPublication = nil
+            if value == nil { publicationScheduled = false }
+            publishLock.unlock()
+            guard let value else { return }
+            if let previous = snapshot.revision, let next = value.revision, next < previous { continue }
+            snapshot = value
+        }
+    }
+    #endif
+
+    @discardableResult
+    func submit(_ object: [String: Any]) -> Bool {
         #if TELAVIVA_CORE
-        guard let core, let bytes = try? JSONSerialization.data(withJSONObject: object), bytes.count <= 65_536 else { return }
-        _ = bytes.withUnsafeBytes { raw in tv_submit(core, raw.baseAddress!.assumingMemoryBound(to: UInt8.self), raw.count) }
-        refresh()
+        guard let core, let bytes = try? JSONSerialization.data(withJSONObject: object), bytes.count <= 65_536 else { return false }
+        ffiLock.lock()
+        let accepted = bytes.withUnsafeBytes { raw in tv_submit(core, raw.baseAddress!.assumingMemoryBound(to: UInt8.self), raw.count) == TV_OK }
+        ffiLock.unlock()
+        if accepted { refresh() }
+        return accepted
+        #else
+        return false
         #endif
+    }
+
+    @discardableResult
+    func submitHardwareKey(_ command: HardwareKeyCommand) -> Bool {
+        guard Thread.isMainThread, !isShuttingDown, hardwareKeyValidator?(command) == true else { return false }
+        let type = command.feature == .brightness ? "set_brightness" : "set_volume"
+        #if TELAVIVA_CORE
+        guard let core else { return false }
+        ffiLock.lock()
+        let actionGeneration = readSnapshot(core)?.revision.map { $0 &+ 1 }
+        let accepted = submit(["type": type, "monitor_id": command.monitorID, "connection_generation": command.generation,
+                               "value": command.target])
+        ffiLock.unlock()
+        onHardwareKeyAccepted?(command, accepted, accepted ? actionGeneration : nil)
+        return accepted
+        #else
+        return false
+        #endif
+    }
+
+    /// Serializes a manual slider command and its snapshot work off the main thread.
+    /// The action generation is captured from the core revision immediately before submit.
+    func submitManualControl(_ command: ManualControlCommand, completion: @escaping (ManualSubmissionResult) -> Void) {
+        #if TELAVIVA_CORE
+        guard !isShuttingDown else { completion(ManualSubmissionResult(accepted: false, actionGeneration: nil)); return }
+        workerQueue.async { [weak self] in
+            guard let self, let core = self.core, !self.isShuttingDown else {
+                DispatchQueue.main.async { completion(ManualSubmissionResult(accepted: false, actionGeneration: nil)) }
+                return
+            }
+            let type = command.feature == .brightness ? "set_brightness" : "set_volume"
+            let object: [String: Any] = ["type": type, "monitor_id": command.monitorID,
+                                         "connection_generation": command.generation, "value": command.value]
+            guard let bytes = try? JSONSerialization.data(withJSONObject: object), bytes.count <= 65_536 else {
+                DispatchQueue.main.async { completion(ManualSubmissionResult(accepted: false, actionGeneration: nil)) }
+                return
+            }
+            let submission: ManualSubmissionResult
+            self.ffiLock.lock()
+            if command.authorization.claim() {
+                let before = self.readSnapshot(core)
+                let actionGeneration = before?.revision.map { $0 &+ 1 }
+                let accepted = bytes.withUnsafeBytes { raw in
+                    tv_submit(core, raw.baseAddress!.assumingMemoryBound(to: UInt8.self), raw.count) == TV_OK
+                }
+                submission = ManualSubmissionResult(accepted: accepted, actionGeneration: accepted ? actionGeneration : nil)
+            } else {
+                submission = ManualSubmissionResult(accepted: false, actionGeneration: nil)
+            }
+            self.ffiLock.unlock()
+            let after = self.readSnapshot(core)
+            if let after { self.publish(after) }
+            DispatchQueue.main.async {
+                completion(submission)
+            }
+        }
+        #else
+        completion(ManualSubmissionResult(accepted: false, actionGeneration: nil))
+        #endif
+    }
+
+    /// Reports a DDC completion with the originating action identity after Rust accepts it.
+    func submitHardwareResult(_ action: PendingAction, connectionGeneration: UInt64, success: Bool,
+                              value: Double? = nil, error: String? = nil) -> Bool {
+        var result: [String: Any] = ["type": "hardware_result", "action_id": action.id,
+                                     "generation": action.generation, "ok": success]
+        if let value { result["value"] = value }
+        if let error { result["error"] = error }
+        let accepted = submit(result)
+        guard accepted else { return false }
+        let feature: HardwareKeyFeature? = action.kind == "set_brightness" ? .brightness :
+            (action.kind == "set_volume" ? .volume : nil)
+        if let feature {
+            DispatchQueue.main.async { [weak self] in
+                self?.onHardwareActionCompleted?(action.monitor_id, action.id, action.generation,
+                                                 connectionGeneration, feature, success, value)
+            }
+        }
+        return true
     }
 
     func updateSettings(_ settings: CoreSettings) {
         submit(["type": "update_settings", "settings": settings.json])
     }
 
-    func beginShutdown() {
+    func beginShutdown(completion: @escaping () -> Void = {}) {
         #if TELAVIVA_CORE
-        guard let core, !shutdownStarted else { return }
-        shutdownStarted = true
-        _ = tv_shutdown(core)
-        refresh()
+        guard let core, !isShuttingDown else { DispatchQueue.main.async(execute: completion); return }
+        stateLock.lock(); shutdownStarted = true; stateLock.unlock()
+        ffiLock.lock(); _ = tv_shutdown(core); ffiLock.unlock()
+        workerQueue.async { [weak self] in
+            guard let self else { DispatchQueue.main.async(execute: completion); return }
+            if let value = self.readSnapshot(core) { self.publish(value) }
+            DispatchQueue.main.async(execute: completion)
+        }
+        #else
+        DispatchQueue.main.async(execute: completion)
         #endif
     }
 
-    private func startCore() {
+    private func startCore(configPath: URL?) {
         #if TELAVIVA_CORE
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("TelaVivaOLED", isDirectory: true)
-        try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
+        let settingsURL = configPath ?? appSupport.appendingPathComponent("settings.json")
+        try? FileManager.default.createDirectory(at: settingsURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         let options = try? JSONSerialization.data(withJSONObject: [
-            "config_path": appSupport.appendingPathComponent("settings.json").path,
+            "config_path": settingsURL.path,
             "os_locale": Locale.current.identifier
         ])
         var instance: OpaquePointer?
         let callback: TvSnapshotReady = { _, userdata in
             guard let userdata else { return }
             let owner = Unmanaged<CoreBridge>.fromOpaque(userdata).takeUnretainedValue()
-            DispatchQueue.main.async { owner.refresh() }
+            owner.requestSnapshotRefresh()
         }
         let created = options?.withUnsafeBytes { bytes in
             tv_create(TV_CORE_ABI_VERSION, bytes.baseAddress?.assumingMemoryBound(to: UInt8.self), bytes.count,
@@ -81,7 +249,7 @@ final class CoreBridge: ObservableObject {
 
     deinit {
         #if TELAVIVA_CORE
-        if let core { if !shutdownStarted { _ = tv_shutdown(core) }; tv_destroy(core) }
+        if let core { ffiLock.lock(); if !isShuttingDown { _ = tv_shutdown(core) }; tv_destroy(core); ffiLock.unlock() }
         #endif
     }
 }
@@ -117,7 +285,9 @@ struct VcpValue: Decodable {
     var raw: Double?
     var min: Double?
     var max: Double?
-    enum CodingKeys: String, CodingKey { case supported, value = "normalized", raw, min, max }
+    var desired: Double?
+    var status: String?
+    enum CodingKeys: String, CodingKey { case supported, value = "normalized", raw, min, max, desired, status }
 }
 struct PendingAction: Decodable { var id: UInt64; var generation: UInt64; var monitor_id: String; var kind: String; var value: Double?; var target: Double? }
 struct CameraSnapshot: Decodable { var mode: String?; var capture_mode: String?; var status: String?; var display_status: String?; var next_sample_in_ms: UInt64?; var generation: UInt64? }
@@ -133,6 +303,7 @@ struct CoreSettings: Decodable {
     var launch_at_login = false
     var screensaver_targets: [String: Double] = [:]
     var selected_camera_id: String?
+    var hardware_keys_enabled: Bool?
 
     var json: [String: Any] { [
         "locale": locale, "presence_sampling_interval_s": presence_sampling_interval_s,
@@ -142,7 +313,8 @@ struct CoreSettings: Decodable {
         "always_on_camera": always_on_camera ?? false,
         "screensaver_protection_enabled": screensaver_protection_enabled,
         "launch_at_login": launch_at_login, "screensaver_targets": screensaver_targets,
-        "selected_camera_id": selected_camera_id ?? NSNull()
+        "selected_camera_id": selected_camera_id ?? NSNull(),
+        "hardware_keys_enabled": hardware_keys_enabled ?? false
     ] }
 }
 

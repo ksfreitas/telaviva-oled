@@ -125,3 +125,9 @@ Low-light recovery uses the existing 10-second retry delay, then a five-second m
 ## camera-lifecycle-and-display-suspension — 2026-10-16
 
 This macOS extension adds opt-in continuous camera capture, per-display sleep policy, and exposure-settling behavior for low-light recovery, while retaining existing eligibility and brightness-ownership rules. The accepted decision is in [ADR 0003](adr/0003-camera-lifecycle-and-display-suspension.md); the standalone plan and unrun physical acceptance checklist are preserved in the [feature archive](specs/archived/camera-lifecycle-and-display-suspension/). Hardware behavior remains unverified, and Windows remains deferred.
+
+## External monitor hardware keys and fluid controls — 2026-10-16
+
+Opt-in macOS keyboard routing adjusts an external monitor's brightness by pointer (key codes 144 and 145), and its volume and mute only while that monitor is the Mac's default sound output, matched by CoreAudio device UID against the display EDID UUID; other targets pass through to macOS. Menu bar sliders use bounded draft coalescing, and DDC writes are serialized through a transaction that verifies readback. The accepted decision is in [ADR 0004](adr/0004-external-monitor-hardware-keys-and-fluid-controls.md), and the feature records are in the [archive](specs/archived/external-monitor-hardware-keys-and-fluid-controls/).
+
+Behavior is verified only on one LG ULTRAFINE over DisplayPort and one keyboard, and the individual macOS acceptance checklist rows remain not run. Other monitors, docks, HDMI, USB audio and keyboards are unverified, and Windows remains deferred.

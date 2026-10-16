@@ -1,8 +1,49 @@
 # Tasks: External Monitor Control and OLED Presence Protection
 
-**Branch**: `feat/oled-monitor-protection` **Specs**: [spec.md](spec.md) **Architecture**: [architecture.md](architecture.md) **Status**: In Progress ⏰ — macOS implementation; Windows deferred by the user
+**Branch**: `feat/oled-monitor-protection` **Specs**: [spec.md](spec.md) **Architecture**: [architecture.md](architecture.md) **Status**: In Progress ⏰ — macOS implementation; Windows deferred by the user; macOS scope implemented, physical acceptance and measurements pending
 
 Implementation started on 2026-10-16. The user narrowed this execution to macOS; Windows-native tasks and physical Windows validation remain deferred and unchecked. The shared Rust core stays portable. This plan follows the native-shell design: a shared Rust core static library and testable rlib, with SwiftUI/AppKit on macOS and C++/WinRT/WinUI 3 plus the Win32 tray shell on Windows. Rust owns policy, state, timers, and workers; native shells own UI and main-thread integration. The core exposes a bounded typed C ABI through `include/telaviva_core.h`; Rust panics never unwind across it. Locales use Fluent messages formatted into snapshots for native presentation.
+
+## Deviations
+
+On 2026-10-16 the user narrowed execution to macOS, and Windows implementation and validation move to a separate, later stage. The Windows tasks in the phases below stay unchecked because they are not done. They are intentionally deferred, not abandoned, and the plan is complete for the macOS scope.
+
+**Windows-only tasks**:
+
+| Task | What is deferred |
+|---|---|
+| T015 | Windows physical-monitor VCP read-only spike |
+| T017 | Windows shared-camera acquisition and permission spike |
+| T019 | Windows screensaver startup and transition probe |
+| T031 | Windows physical-monitor VCP DDC adapter |
+| T033 | Windows monitor capability and control checks |
+| T048 | WinUI 3 project with `App.xaml` bootstrap |
+| T049 | C++/WinRT core bridge with ABI-safe buffers |
+| T050 | Win32 notification-area icon and popup activation |
+| T051 | WinUI monitor popup with per-monitor controls |
+| T052 | WinUI settings window for preferences |
+| T053 | WinUI project linking and camera declaration |
+| T055 | Popup dismissal, tray activation, settings navigation, quit |
+| T062 | Windows launch-at-login registration and removal |
+| T074 | Windows shared-camera adapter and permission status |
+| T079 | Windows 11 camera-sharing verification with another app |
+| T090 | Windows battery and power observation |
+| T098 | Windows screensaver observation implementation |
+| T106 | Optional OpenVINO integration on supported Intel hardware |
+| T117 | Windows 11 x64 WinUI packaging with camera access |
+| T120 | Windows clean-account install and launch-at-login checks |
+
+**Mixed tasks** (only the Windows half is deferred):
+
+| Task | Deferred Windows half |
+|---|---|
+| T003 | Windows Rust library build script in `native/windows/` |
+| T005 | Windows build check in CI workflows |
+| T013 | Visual Studio project shell in `native/windows/` |
+| T022 | Windows ABI smoke client and lifecycle verification |
+| T060 | WinUI and platform redistribution terms documentation |
+
+**Handoff**: When the Windows stage starts, it should reuse the portable Rust core and its C ABI unchanged, and it must open its own plan or reopen these tasks.
 
 ## Phase 1: Setup ⏰ (~2h)
 
@@ -38,8 +79,8 @@ Implementation started on 2026-10-16. The user narrowed this execution to macOS;
 - [ ] T017 [P] [US-003] Verify shared-camera acquisition and permission behavior on Windows 11 in `native/windows/TelaViva/CameraSpike.cpp`.
 - [ ] T018 [P] [US-004] Probe macOS screensaver start/stop and startup-active behavior without substituting lock or display sleep in `native/macos/TelaViva/ScreensaverSpike.swift`.
 - [ ] T019 [P] [US-004] Probe Windows screensaver startup and transitions in `native/windows/TelaViva/ScreensaverSpike.cpp`.
-- [x] T020 [US-001] [US-003] [US-004] Record spike OS builds, device models, outcomes, and limitations in `specs/oled-monitor-protection/validation/feasibility.md`.
-- [x] T021 [US-001] [US-003] [US-004] Preserve unavailable behavior and document a design revision if a capability spike fails in `specs/oled-monitor-protection/validation/feasibility.md`.
+- [x] T020 [US-001] [US-003] [US-004] Record spike OS builds, device models, outcomes, and limitations in `specs/archived/external-monitor-control-and-oled-presence-protection/validation/feasibility.md`.
+- [x] T021 [US-001] [US-003] [US-004] Preserve unavailable behavior and document a design revision if a capability spike fails in `specs/archived/external-monitor-control-and-oled-presence-protection/validation/feasibility.md`.
 
 - [ ] T022 Add ABI smoke clients to the created native projects and verify `tv_create`/`tv_snapshot`/`tv_destroy` on both targets in `native/macos/TelaViva/` and `native/windows/TelaViva/`.
 
@@ -83,9 +124,9 @@ Implementation started on 2026-10-16. The user narrowed this execution to macOS;
 - [ ] T053 [US-007] Add WinUI project linking and camera access declaration in `native/windows/TelaViva/TelaViva.vcxproj` and `native/windows/TelaViva/Package.appxmanifest`.
 - [x] T054 [US-007] Implement macOS popup dismissal, one-click tray behavior, settings navigation, and quit handling in `native/macos/TelaViva/MenuBarController.swift`.
 - [ ] T055 [US-007] Implement Windows popup dismissal, tray activation, settings navigation, and quit handling in `native/windows/TelaViva/TrayIcon.cpp`.
-- [ ] T056 [US-007] Verify both native shells acknowledge input without waiting on DDC completion and refresh from snapshots. in `specs/oled-monitor-protection/validation/results.md`.
-- [ ] T057 [US-001] [US-007] Verify monitor selection changes only the selected display on two supported physical monitors per OS where available. in `specs/oled-monitor-protection/validation/results.md`.
-- [ ] T058 [US-007] Verify settings survive restart and all visible MVP strings switch between en-US and pt-BR. in `specs/oled-monitor-protection/validation/results.md`.
+- [ ] T056 [US-007] Verify both native shells acknowledge input without waiting on DDC completion and refresh from snapshots. in `specs/archived/external-monitor-control-and-oled-presence-protection/validation/results.md`.
+- [ ] T057 [US-001] [US-007] Verify monitor selection changes only the selected display on two supported physical monitors per OS where available. in `specs/archived/external-monitor-control-and-oled-presence-protection/validation/results.md`.
+- [ ] T058 [US-007] Verify settings survive restart and all visible MVP strings switch between en-US and pt-BR. in `specs/archived/external-monitor-control-and-oled-presence-protection/validation/results.md`.
 - [x] T059 [US-006] Add per-OS dependency/model provenance manifests and license notices in `licenses/DEPENDENCIES.md` and `assets/model/manifest.toml`.
 - [ ] T060 [US-006] Confirm Rust dependencies and redistributed assets are open source; document WinUI/platform redistribution terms before packaging in `licenses/DEPENDENCIES.md`.
 
@@ -113,8 +154,8 @@ Implementation started on 2026-10-16. The user narrowed this execution to macOS;
 - [x] T075 [US-003] Implement low-light policy: suspend face inference, run light-only observations every 10 seconds, and require two usable observations to resume in `crates/telaviva-core/src/presence/quality.rs`.
 - [x] T076 [US-003] Ensure disabling presence or battery suspension stops all camera acquisition, including low-light recovery observations in `crates/telaviva-core/src/core/scheduler.rs`.
 - [x] T077 [US-003] Wire presence enablement and validated interval settings through the shared ABI and native settings controls in `crates/telaviva-core/src/ffi/`.
-- [ ] T078 [US-003] Verify camera sharing with another camera application on a supported macOS configuration and record exact hardware/OS details. `specs/oled-monitor-protection/validation/camera-sharing-macos.md`
-- [ ] T079 [US-003] Verify camera sharing with another camera application on Windows 11 and record exact hardware/OS details. `specs/oled-monitor-protection/validation/camera-sharing-windows.md`
+- [ ] T078 [US-003] Verify camera sharing with another camera application on a supported macOS configuration and record exact hardware/OS details. `specs/archived/external-monitor-control-and-oled-presence-protection/validation/camera-sharing-macos.md`
+- [ ] T079 [US-003] Verify camera sharing with another camera application on Windows 11 and record exact hardware/OS details. `specs/archived/external-monitor-control-and-oled-presence-protection/validation/camera-sharing-windows.md`
 
 **Checkpoint**: ✋ Camera failures and low light suspend inference visibly; no camera frame enters ABI, state snapshots, settings, or logs.
 **Notes**: Pending.
@@ -136,7 +177,7 @@ Implementation started on 2026-10-16. The user narrowed this execution to macOS;
 - [x] T091 [US-005] Implement battery suspension priority, cancellation of capture, presence-reason clearing, and post-AC rescheduling in `crates/telaviva-core/src/core/reducer.rs`.
 - [x] T092 [US-002] Expose protection reason, desired value, observed value, ownership, and status independently in UI snapshots in `crates/telaviva-core/src/ffi/snapshot.rs`.
 - [x] T093 [US-005] Add en-US and pt-BR messages for presence, protection, restoration, battery, and recovery outcomes in `locales/en-US.ftl` and `locales/pt-BR.ftl`.
-- [ ] T094 [US-005] Verify battery transitions stop capture immediately and preserve independent active dimming reasons on each OS. in `specs/oled-monitor-protection/validation/results.md`.
+- [ ] T094 [US-005] Verify battery transitions stop capture immediately and preserve independent active dimming reasons on each OS. in `specs/archived/external-monitor-control-and-oled-presence-protection/validation/results.md`.
 
 **Checkpoint**: ✋ Presence protection restores only values still owned by this app and preserves independent reasons across power transitions.
 **Notes**: Pending.
@@ -151,7 +192,7 @@ Implementation started on 2026-10-16. The user narrowed this execution to macOS;
 - [ ] T099 [US-004] Reconcile already-active screensaver state after registration without substituting lock or display sleep in `crates/telaviva-core/src/core/reducer.rs`.
 - [x] T100 [US-004] Wire screensaver enablement and per-monitor 0–100 target through validated settings and native controls in `crates/telaviva-core/src/config/schema.rs`.
 - [x] T101 [US-004] Add en-US/pt-BR text for unavailable screensaver observation and its current status in `locales/en-US.ftl` and `locales/pt-BR.ftl`.
-- [ ] T102 [US-004] Verify actual screensaver start/stop and startup-active behavior on each supported OS; retain Unavailable if the gate fails. in `specs/oled-monitor-protection/validation/results.md`.
+- [ ] T102 [US-004] Verify actual screensaver start/stop and startup-active behavior on each supported OS; retain Unavailable if the gate fails. in `specs/archived/external-monitor-control-and-oled-presence-protection/validation/results.md`.
 
 **Checkpoint**: ✋ Saver protection remains independent of camera and is enabled only where native behavior is validated.
 **Notes**: Pending.
@@ -165,13 +206,13 @@ Implementation started on 2026-10-16. The user narrowed this execution to macOS;
 - [ ] T106 [US-006] Add optional Windows OpenVINO direct C API integration only for supported Intel hardware and a license-reviewed package. in `crates/telaviva-core/src/presence/provider.rs`.
 - [ ] T107 [US-006] Implement provider initialization failure and energy-profile miss fallback to CPU. in `crates/telaviva-core/src/presence/provider.rs`.
 - [x] T108 [US-006] Add a reproducible release-build benchmark harness for CPU, memory, wakeups, camera duty, latency, and incremental energy. in `crates/telaviva-core/benches/resource_acceptance.rs`.
-- [ ] T109 [US-006] Measure protections-off and battery-suspended states against ≤0.2% mean CPU and ≤100 MiB pre-inference residency. in `specs/oled-monitor-protection/validation/performance.md`.
-- [ ] T110 [US-006] Measure present and absent states against ≤1% and ≤5% mean CPU respectively and ≤250 MiB active memory. in `specs/oled-monitor-protection/validation/performance.md`.
-- [ ] T111 [US-006] Measure idle resource release after 30 seconds and verify steady residency ≤150 MiB. in `specs/oled-monitor-protection/validation/performance.md`.
-- [ ] T112 [US-006] Compare three matched accelerated/CPU runs; enable only if energy falls by ≥10% without accuracy or latency regression. in `specs/oled-monitor-protection/validation/performance.md`.
-- [ ] T113 [US-006] Measure return detection, UI acknowledgement, recall, false presence, and insufficient-light fixtures against architecture targets. in `specs/oled-monitor-protection/validation/performance.md`.
-- [ ] T114 [US-006] Record device, OS, camera, connection, CPU/GPU/driver, model/runtime digests, provider, and raw benchmark results. in `specs/oled-monitor-protection/validation/performance.md`.
-- [ ] T115 [US-006] Optimize any failed budget and repeat only the affected measurements; document any reviewed design change before claiming acceptance. in `specs/oled-monitor-protection/validation/performance.md`.
+- [ ] T109 [US-006] Measure protections-off and battery-suspended states against ≤0.2% mean CPU and ≤100 MiB pre-inference residency. in `specs/archived/external-monitor-control-and-oled-presence-protection/validation/performance.md`.
+- [ ] T110 [US-006] Measure present and absent states against ≤1% and ≤5% mean CPU respectively and ≤250 MiB active memory. in `specs/archived/external-monitor-control-and-oled-presence-protection/validation/performance.md`.
+- [ ] T111 [US-006] Measure idle resource release after 30 seconds and verify steady residency ≤150 MiB. in `specs/archived/external-monitor-control-and-oled-presence-protection/validation/performance.md`.
+- [ ] T112 [US-006] Compare three matched accelerated/CPU runs; enable only if energy falls by ≥10% without accuracy or latency regression. in `specs/archived/external-monitor-control-and-oled-presence-protection/validation/performance.md`.
+- [ ] T113 [US-006] Measure return detection, UI acknowledgement, recall, false presence, and insufficient-light fixtures against architecture targets. in `specs/archived/external-monitor-control-and-oled-presence-protection/validation/performance.md`.
+- [ ] T114 [US-006] Record device, OS, camera, connection, CPU/GPU/driver, model/runtime digests, provider, and raw benchmark results. in `specs/archived/external-monitor-control-and-oled-presence-protection/validation/performance.md`.
+- [ ] T115 [US-006] Optimize any failed budget and repeat only the affected measurements; document any reviewed design change before claiming acceptance. in `specs/archived/external-monitor-control-and-oled-presence-protection/validation/performance.md`.
 
 **Checkpoint**: ✋ Unprofiled configurations use CPU; performance and detection claims are backed by recorded measurements.
 **Notes**: Pending.
@@ -181,13 +222,13 @@ Implementation started on 2026-10-16. The user narrowed this execution to macOS;
 - [ ] T116 Package the signed/notarized arm64 macOS `.app` with camera usage description and required capture configuration. in `packaging/macos/README.md`.
 - [ ] T117 Package the Windows 11 x64 WinUI application/installer with camera access configured for the chosen packaging mode. in `packaging/windows/README.md`.
 - [x] T118 Bundle and verify runtime/model digests, license notices, and provenance; prohibit runtime downloads and working-directory library loading. in `licenses/README.md` and `assets/model/manifest.toml`.
-- [ ] T119 Verify clean-account installation, native library loading, camera permission prompts, and launch-at-login opt-in on macOS. in `specs/oled-monitor-protection/validation/release-macos.md`.
-- [ ] T120 Verify clean-account installation, native library loading, camera permission prompts, and launch-at-login opt-in on Windows. in `specs/oled-monitor-protection/validation/release-windows.md`.
-- [ ] T121 Run the compatibility matrix for supported/unsupported monitor brightness and volume across agreed cables, docks, and M1 paths. in `specs/oled-monitor-protection/validation/monitor-matrix.md`.
-- [ ] T122 Verify two-monitor selection, popup behavior, high-DPI placement, settings persistence, and both locales on each OS. in `specs/oled-monitor-protection/validation/ui-matrix.md`.
-- [ ] T123 Verify normal exit restoration, failed restore status, disconnect/reconnect baseline invalidation, and restart behavior. in `specs/oled-monitor-protection/validation/protection-lifecycle.md`.
-- [ ] T124 Verify no frame/image data appears in logs, settings, crash metadata, ABI snapshots, or persisted state. in `specs/oled-monitor-protection/validation/privacy.md`.
-- [x] T125 Produce a release-readiness report listing verified OS/device combinations, unavailable features, and remaining gaps in `specs/oled-monitor-protection/validation/release-readiness.md`.
+- [ ] T119 Verify clean-account installation, native library loading, camera permission prompts, and launch-at-login opt-in on macOS. in `specs/archived/external-monitor-control-and-oled-presence-protection/validation/release-macos.md`.
+- [ ] T120 Verify clean-account installation, native library loading, camera permission prompts, and launch-at-login opt-in on Windows. in `specs/archived/external-monitor-control-and-oled-presence-protection/validation/release-windows.md`.
+- [ ] T121 Run the compatibility matrix for supported/unsupported monitor brightness and volume across agreed cables, docks, and M1 paths. in `specs/archived/external-monitor-control-and-oled-presence-protection/validation/monitor-matrix.md`.
+- [ ] T122 Verify two-monitor selection, popup behavior, high-DPI placement, settings persistence, and both locales on each OS. in `specs/archived/external-monitor-control-and-oled-presence-protection/validation/ui-matrix.md`.
+- [ ] T123 Verify normal exit restoration, failed restore status, disconnect/reconnect baseline invalidation, and restart behavior. in `specs/archived/external-monitor-control-and-oled-presence-protection/validation/protection-lifecycle.md`.
+- [ ] T124 Verify no frame/image data appears in logs, settings, crash metadata, ABI snapshots, or persisted state. in `specs/archived/external-monitor-control-and-oled-presence-protection/validation/privacy.md`.
+- [x] T125 Produce a release-readiness report listing verified OS/device combinations, unavailable features, and remaining gaps in `specs/archived/external-monitor-control-and-oled-presence-protection/validation/release-readiness.md`.
 - [x] T126 Preserve final design rationale in `adr/0001-native-shell-and-rust-core.md` and update `ARCHITECTURE.md` and `README.md` to distinguish implemented features from hardware-verified support.
 
 **Checkpoint**: ✋ Release claims match the measured compatibility matrix, package provenance, and platform validation evidence.

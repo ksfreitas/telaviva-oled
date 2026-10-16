@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+TEMP_DIR=$(mktemp -d)
+trap 'rm -rf "$TEMP_DIR"' EXIT HUP INT TERM
+swiftc \
+  "$ROOT/native/macos/TelaViva/MediaKeyProbe.swift" \
+  "$ROOT/native/macos/Tests/MediaKeyProbeTests.swift" \
+  -framework AppKit \
+  -o "$TEMP_DIR/media-key-probe-tests"
+"$TEMP_DIR/media-key-probe-tests"

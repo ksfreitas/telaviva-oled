@@ -23,12 +23,14 @@ fn settings_defaults_validate_and_reject_future_schema_and_bad_ranges() {
     assert_eq!(defaults.return_sampling_interval_s, 1.0);
     assert!(defaults.suspend_presence_on_battery);
     assert!(!defaults.always_on_camera);
+    assert!(!defaults.hardware_keys_enabled);
     let old_schema = Settings::from_json(
         br#"{"schema_version":1,"locale":"pt-BR","presence_protection_enabled":true}"#,
     )
     .unwrap();
     assert!(old_schema.presence_protection_enabled);
     assert!(!old_schema.always_on_camera);
+    assert!(!old_schema.hardware_keys_enabled);
     assert!(
         Settings::from_json(br#"{"schema_version":1,"always_on_camera":true}"#)
             .unwrap()
@@ -63,6 +65,9 @@ fn settings_defaults_validate_and_reject_future_schema_and_bad_ranges() {
         Settings::from_json(br#"{"schema_version":1,"locale":"en-US","locale":"pt-BR"}"#).is_err()
     );
     assert!(Settings::from_json(br#"{"schema_version":1,"selected_camera_id":""}"#).is_err());
+    assert!(
+        Settings::from_json(br#"{"schema_version":1,"hardware_keys_enabled":"enabled"}"#).is_err()
+    );
 }
 
 #[test]
@@ -145,6 +150,177 @@ fn settings_updates_enforce_new_interval_bounds() {
             .is_err());
     }
     assert_eq!(core.settings().unwrap(), Settings::default());
+}
+
+#[test]
+fn hardware_key_setting_is_optional_default_false_persisted_and_type_checked() {
+    let root = std::env::temp_dir().join(format!("telaviva-hardware-keys-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&root);
+    let path = root.join("settings.json");
+    std::fs::write(
+        &path,
+        br#"{"schema_version":1,"presence_protection_enabled":true}"#,
+    )
+    .unwrap();
+    let mut core = Core::new(CoreOptions {
+        config_path: Some(path.clone()),
+        ..CoreOptions::default()
+    })
+    .unwrap();
+    assert!(!core.settings().unwrap().hardware_keys_enabled);
+    assert!(core
+        .submit_json(br#"{"type":"update_settings","settings":{"hardware_keys_enabled":true}}"#)
+        .is_ok());
+    assert!(core.settings().unwrap().hardware_keys_enabled);
+    let persisted: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(persisted["schema_version"], 1);
+    assert_eq!(persisted["hardware_keys_enabled"], true);
+    assert!(core
+        .submit_json(br#"{"type":"update_settings","settings":{"hardware_keys_enabled":"yes"}}"#)
+        .is_err());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn manual_commands_reject_stale_or_invalid_connection_generation_without_mutation() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    let discovered = json!({"type":"monitor_discovered","monitor":{
+        "id":"screen","name":"Display","identity_status":"stable","connection_path":"usb",
+        "brightness":{"supported":true,"value":50,"raw":50,"min":0,"max":100},
+        "volume":{"supported":true,"value":25,"raw":25,"min":0,"max":100}
+    }});
+    let first = send(&mut core, discovered.clone());
+    let old_generation = first["monitors"][0]["generation"].as_u64().unwrap();
+    send(
+        &mut core,
+        json!({"type":"monitor_disconnected","monitor_id":"screen"}),
+    );
+    let reconnected = send(&mut core, discovered);
+    let current_generation = reconnected["monitors"][0]["generation"].as_u64().unwrap();
+    assert!(current_generation > old_generation);
+    let before = core.snapshot_value().unwrap();
+    for invalid in [
+        json!({"type":"set_brightness","monitor_id":"screen","value":80,"connection_generation":old_generation}),
+        json!({"type":"set_volume","monitor_id":"screen","value":80,"connection_generation":"bad"}),
+    ] {
+        assert!(core
+            .submit_json(&serde_json::to_vec(&invalid).unwrap())
+            .is_err());
+    }
+    let after = core.snapshot_value().unwrap();
+    assert_eq!(after, before);
+    assert!(core.submit_json(&serde_json::to_vec(&json!({"type":"set_brightness","monitor_id":"screen","value":80,"connection_generation":current_generation})).unwrap()).is_ok());
+    assert_eq!(
+        core.snapshot_value().unwrap()["pending_actions"][0]["kind"],
+        "set_brightness"
+    );
+    // Existing popup callers remain source-compatible when generation is omitted.
+    assert!(core
+        .submit_json(br#"{"type":"set_volume","monitor_id":"screen","value":60}"#)
+        .is_ok());
+}
+
+#[test]
+fn generation_checked_manual_command_keeps_existing_behavior_during_active_protections() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    let discovered = send(
+        &mut core,
+        json!({"type":"monitor_discovered","monitor":{
+            "id":"screen","name":"Display","identity_status":"stable","connection_path":"usb",
+            "brightness":{"supported":true,"value":50,"raw":50,"min":0,"max":100},
+            "volume":{"supported":true,"value":25,"raw":25,"min":0,"max":100}
+        }}),
+    );
+    send(
+        &mut core,
+        json!({"type":"update_settings","settings":{
+            "presence_protection_enabled":true,
+            "screensaver_protection_enabled":true,
+            "screensaver_targets":{"screen":5.0}
+        }}),
+    );
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    send(&mut core, json!({"type":"screensaver","state":"active"}));
+    let camera_generation = core.snapshot_value().unwrap()["camera"]["generation"]
+        .as_u64()
+        .unwrap();
+    for timestamp in [capture_time(10_000), capture_time(20_000)] {
+        send(
+            &mut core,
+            json!({"type":"presence_observation","status":"absent","captured_at_ms":timestamp,"camera_generation":camera_generation}),
+        );
+    }
+    let protected = core.snapshot_value().unwrap();
+    let monitor = &protected["monitors"][0];
+    assert!(monitor["presence_dimmed"].as_bool().unwrap());
+    assert!(monitor["brightness"]["reasons"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("screensaver")));
+    assert!(monitor["brightness"]["reasons"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("presence")));
+    let generation = discovered["monitors"][0]["generation"].as_u64().unwrap();
+    assert!(core
+        .submit_json(
+            &serde_json::to_vec(&json!({
+                "type":"set_brightness",
+                "monitor_id":"screen",
+                "value":61.0,
+                "connection_generation":generation
+            }))
+            .unwrap()
+        )
+        .is_ok());
+    let after = core.snapshot_value().unwrap();
+    assert_eq!(after["monitors"][0]["brightness"]["desired"], 61.0);
+    assert_eq!(
+        after["monitors"][0]["brightness"]["reasons"],
+        protected["monitors"][0]["brightness"]["reasons"]
+    );
+}
+
+#[test]
+fn full_action_queue_does_not_mutate_generation_checked_manual_intent() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    let mut first_generation = None;
+    for index in 0..64 {
+        let id = format!("screen-{index}");
+        let discovered = send(
+            &mut core,
+            json!({"type":"monitor_discovered","monitor":{
+                "id":id,"name":id,"identity_status":"stable","connection_path":"usb",
+                "brightness":{"supported":true,"value":50,"raw":50,"min":0,"max":100},
+                "volume":{"supported":true,"value":25,"raw":25,"min":0,"max":100}
+            }}),
+        );
+        if index == 0 {
+            first_generation = discovered["monitors"][0]["generation"].as_u64();
+        }
+        send(
+            &mut core,
+            json!({"type":"set_brightness","monitor_id":id,"value":40}),
+        );
+        send(
+            &mut core,
+            json!({"type":"set_volume","monitor_id":id,"value":30}),
+        );
+    }
+    let before = core.snapshot_value().unwrap();
+    let error = core
+        .submit_json(
+            &serde_json::to_vec(&json!({
+                "type":"set_brightness",
+                "monitor_id":"screen-0",
+                "value":90,
+                "connection_generation":first_generation.unwrap()
+            }))
+            .unwrap(),
+        )
+        .unwrap_err();
+    assert_eq!(error, "hardware action queue is full");
+    assert_eq!(core.snapshot_value().unwrap(), before);
 }
 
 #[test]

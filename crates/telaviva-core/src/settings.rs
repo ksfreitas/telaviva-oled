@@ -27,6 +27,8 @@ pub struct Settings {
     #[serde(default)]
     pub launch_at_login: bool,
     #[serde(default)]
+    pub hardware_keys_enabled: bool,
+    #[serde(default)]
     pub selected_camera_id: Option<String>,
     #[serde(default)]
     pub screensaver_targets: std::collections::BTreeMap<String, f64>,
@@ -60,6 +62,7 @@ impl Default for Settings {
             always_on_camera: false,
             screensaver_protection_enabled: false,
             launch_at_login: false,
+            hardware_keys_enabled: false,
             selected_camera_id: None,
             screensaver_targets: Default::default(),
         }

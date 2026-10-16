@@ -138,7 +138,13 @@ impl Core {
                 "camera_status" => &["type", "status", "generation"],
                 "power" => &["type", "on_battery"],
                 "screensaver" => &["type", "state"],
-                "set_brightness" | "set_volume" => &["type", "monitor_id", "value", "revision"],
+                "set_brightness" | "set_volume" => &[
+                    "type",
+                    "monitor_id",
+                    "value",
+                    "revision",
+                    "connection_generation",
+                ],
                 "update_settings" => &["type", "settings", "revision"],
                 "hardware_result" => &["type", "action_id", "generation", "ok", "value", "error"],
                 "shutdown" => &["type"],
@@ -371,9 +377,26 @@ impl Core {
         if !(0.0..=100.0).contains(&value) {
             return Err("control value must be in 0..=100".into());
         }
-        reject_unknown_fields(v, &["type", "monitor_id", "value", "revision"])?;
+        reject_unknown_fields(
+            v,
+            &[
+                "type",
+                "monitor_id",
+                "value",
+                "revision",
+                "connection_generation",
+            ],
+        )?;
+        let expected_generation = if v.get("connection_generation").is_some() {
+            Some(number_u64(v, "connection_generation")?)
+        } else {
+            None
+        };
         let action_generation = self.revision.saturating_add(1);
         let m = self.monitors.get_mut(&id).ok_or("unknown monitor")?;
+        if expected_generation.is_some_and(|generation| generation != m.generation) {
+            return Err("stale connection_generation".into());
+        }
         if m.identity != "stable" {
             return Ok(());
         }
@@ -391,11 +414,8 @@ impl Core {
             return Ok(());
         }
         let raw = map_normalized(value, feature.min, feature.max);
-        feature.desired = Some(raw);
-        feature.status = "pending".into();
-        if kind == "set_brightness" {
-            m.baseline = Some(raw);
-        }
+        // Reserve the action before changing desired values or brightness ownership. A full
+        // bounded queue must leave keyboard intent and protection state untouched.
         enqueue(
             &mut self.actions,
             &mut self.next_id,
@@ -405,7 +425,10 @@ impl Core {
             Some(raw),
             None,
         )?;
+        feature.desired = Some(raw);
+        feature.status = "pending".into();
         if kind == "set_brightness" {
+            m.baseline = Some(raw);
             m.manual_override = true;
         }
         Ok(())
@@ -449,6 +472,9 @@ impl Core {
                 }
                 "launch_at_login" => {
                     next.launch_at_login = val.as_bool().ok_or("setting must be boolean")?
+                }
+                "hardware_keys_enabled" => {
+                    next.hardware_keys_enabled = val.as_bool().ok_or("setting must be boolean")?
                 }
                 "selected_camera_id" => {
                     next.selected_camera_id = if val.is_null() {

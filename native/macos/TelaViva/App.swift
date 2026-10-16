@@ -27,6 +27,11 @@ struct TelaVivaApp: App {
             }
             exit(0)
         }
+        if let probeIndex = CommandLine.arguments.firstIndex(of: "--probe-media-keys") {
+            let next = CommandLine.arguments.index(after: probeIndex)
+            let seconds = next < CommandLine.arguments.count ? Int(CommandLine.arguments[next]) : nil
+            exit(MediaKeyProbe.run(seconds: seconds ?? 20))
+        }
         if CommandLine.arguments.contains("--smoke-test") {
             #if TELAVIVA_CORE
             exit(Int32(CoreBridge.smokeTest()))
