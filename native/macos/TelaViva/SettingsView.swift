@@ -15,6 +15,8 @@ struct SettingsView: View {
     @State private var battery = true
     @State private var login = false
     @State private var hardwareKeys = false
+    @State private var brightnessKeyStep = 5.0
+    @State private var volumeKeyStep = 5.0
     @State private var presentInterval = 10.0
     @State private var returnInterval = 1.0
     @State private var selectedCameraID: String?
@@ -70,6 +72,14 @@ struct SettingsView: View {
                     .help(AppText.string("hardwareKeys.help", locale: locale))
                 Text(AppText.string(core.hardwareKeyStatusKey, locale: locale))
                     .font(.caption).foregroundStyle(.secondary)
+                LabeledContent(AppText.string("hardwareKeys.brightnessStep", locale: locale)) {
+                    HStack { Slider(value: $brightnessKeyStep, in: 1...15, step: 1); Text("\(Int(brightnessKeyStep)) pt").monospacedDigit() }
+                }
+                .disabled(!hardwareKeys)
+                LabeledContent(AppText.string("hardwareKeys.volumeStep", locale: locale)) {
+                    HStack { Slider(value: $volumeKeyStep, in: 1...15, step: 1); Text("\(Int(volumeKeyStep)) pt").monospacedDigit() }
+                }
+                .disabled(!hardwareKeys)
                 if hardwareKeys {
                     permissionRow(
                         title: AppText.string("hardwareKeys.accessibility", locale: locale),
@@ -112,6 +122,8 @@ struct SettingsView: View {
         .onChange(of: battery) { _, _ in save() }
         .onChange(of: presentInterval) { _, _ in save() }
         .onChange(of: returnInterval) { _, _ in save() }
+        .onChange(of: brightnessKeyStep) { _, _ in save() }
+        .onChange(of: volumeKeyStep) { _, _ in save() }
         .alert(AppText.string("loginItemFailureTitle", locale: locale), isPresented: $showLoginItemError) {
             Button(AppText.string("ok", locale: locale), role: .cancel) { }
         } message: {
@@ -149,6 +161,8 @@ struct SettingsView: View {
         screensaver = value.screensaver_protection_enabled; battery = value.suspend_presence_on_battery
         login = value.launch_at_login; presentInterval = Double(value.presence_sampling_interval_s)
         hardwareKeys = value.hardware_keys_enabled ?? false
+        brightnessKeyStep = Double(value.brightness_key_step ?? 5)
+        volumeKeyStep = Double(value.volume_key_step ?? 5)
         returnInterval = Double(value.return_sampling_interval_s)
         selectedCameraID = value.selected_camera_id
     }
@@ -162,6 +176,8 @@ struct SettingsView: View {
         settings.launch_at_login = login; settings.presence_sampling_interval_s = presentInterval
         settings.return_sampling_interval_s = returnInterval; settings.selected_camera_id = selectedCameraID
         settings.hardware_keys_enabled = hardwareKeys
+        settings.brightness_key_step = Int(brightnessKeyStep.rounded())
+        settings.volume_key_step = Int(volumeKeyStep.rounded())
         core.updateSettings(settings)
     }
 }

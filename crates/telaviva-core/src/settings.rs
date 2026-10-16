@@ -28,6 +28,10 @@ pub struct Settings {
     pub launch_at_login: bool,
     #[serde(default)]
     pub hardware_keys_enabled: bool,
+    #[serde(default = "default_key_step")]
+    pub brightness_key_step: u8,
+    #[serde(default = "default_key_step")]
+    pub volume_key_step: u8,
     #[serde(default)]
     pub selected_camera_id: Option<String>,
     #[serde(default)]
@@ -49,6 +53,9 @@ fn default_return_interval() -> f64 {
 fn yes() -> bool {
     true
 }
+fn default_key_step() -> u8 {
+    5
+}
 
 impl Default for Settings {
     fn default() -> Self {
@@ -63,6 +70,8 @@ impl Default for Settings {
             screensaver_protection_enabled: false,
             launch_at_login: false,
             hardware_keys_enabled: false,
+            brightness_key_step: 5,
+            volume_key_step: 5,
             selected_camera_id: None,
             screensaver_targets: Default::default(),
         }
@@ -100,6 +109,12 @@ impl Settings {
             || !(0.25..=5.0).contains(&self.return_sampling_interval_s)
         {
             return Err("return interval out of range".into());
+        }
+        if !(1..=15).contains(&self.brightness_key_step) {
+            return Err("brightness key step out of range".into());
+        }
+        if !(1..=15).contains(&self.volume_key_step) {
+            return Err("volume key step out of range".into());
         }
         if self
             .screensaver_targets

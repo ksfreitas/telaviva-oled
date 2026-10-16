@@ -107,6 +107,17 @@ private struct HardwareKeyRouterTests {
         handoffInvalidationAndLateShutdown()
         observedChangesAndOrphanRepeats()
         rebasingDoesNotGrowInFlightWork()
+        pureSteppingPolicy()
+        setStepsClampsAndFallsBack()
+        independentConfiguredSteps()
+        fineStepIgnoresConfiguredStep()
+        stepChangeAppliesToNextPress()
+        boundaryClampsWithLargeStep()
+        muteRestoreUsesVolumeStep()
+        rebaseWaitsForOwnHardwareActions()
+        rebaseResumesAfterSettleWindow()
+        outstandingActionExpires()
+        earlyCompletionLeavesNothingOutstanding()
         print("Hardware-key router and coordinator tests passed")
     }
 
@@ -202,14 +213,14 @@ private struct HardwareKeyRouterTests {
         let first = fake.waitForCommands(1)
         expect(first.count == 1 && first[0].monitorID == "monitor-a" && first[0].feature == .brightness,
                "keyboard press targets the brightness of the monitor under the pointer")
-        expect(first[0].target == 50 + HardwareKeyPolicy.normalStep, "keyboard press steps brightness by the normal step")
+        expect(first[0].target == 50 + HardwareKeyPolicy.defaultStep, "keyboard press steps brightness by the default step")
         expect(router.processForTesting(keyboard(.keyDown, repeat: true), pointer: .zero, displays: [monitor]),
                "keyboard autorepeat is consumed")
         expect(router.processForTesting(keyboard(.keyUp), pointer: .zero, displays: [monitor]), "keyboard release is consumed")
         expect(fake.commands.count == 1, "held keyboard brightness submits no second command while in flight")
         fake.acknowledge(0, accepted: true)
         let coalesced = fake.waitForCommands(2)[1]
-        expect(coalesced.target == 50 + 2 * HardwareKeyPolicy.normalStep, "keyboard repeat coalesces into one follow-up write")
+        expect(coalesced.target == 50 + 2 * HardwareKeyPolicy.defaultStep, "keyboard repeat coalesces into one follow-up write")
         fake.acknowledge(1, accepted: true)
         router.waitForWorkerForTesting()
         router.shutdown()
@@ -240,10 +251,10 @@ private struct HardwareKeyRouterTests {
                "unsupported feature passes through independently")
         expect(HardwareKeyPolicy.target(at: CGPoint(x: 20, y: 20), displays: [display(awake: false)], feature: .brightness) == nil,
                "sleeping display passes through")
-        expect(HardwareKeyPolicy.stepped(96.875, direction: .increase, fine: false) == 100, "normal step clamps at maximum")
-        expect(HardwareKeyPolicy.stepped(0, direction: .decrease, fine: true) == 0, "fine step clamps at minimum")
-        expect(HardwareKeyPolicy.stepped(50, direction: .increase, fine: false) == 56.25, "normal step is 6.25")
-        expect(HardwareKeyPolicy.stepped(50, direction: .decrease, fine: true) == 48.4375, "fine step is 1.5625")
+        expect(HardwareKeyPolicy.stepped(96.875, direction: .increase, fine: false, step: HardwareKeyPolicy.defaultStep) == 100, "normal step clamps at maximum")
+        expect(HardwareKeyPolicy.stepped(0, direction: .decrease, fine: true, step: HardwareKeyPolicy.defaultStep) == 0, "fine step clamps at minimum")
+        expect(HardwareKeyPolicy.stepped(50, direction: .increase, fine: false, step: HardwareKeyPolicy.defaultStep) == 55, "normal step is the default 5")
+        expect(HardwareKeyPolicy.stepped(50, direction: .decrease, fine: true, step: HardwareKeyPolicy.defaultStep) == 49, "fine step is 1 point")
     }
 
     private static func sequenceRouting() {
@@ -253,7 +264,7 @@ private struct HardwareKeyRouterTests {
         var writes: [Double] = []
         let valueFor: (HardwareKeyDisplay, HardwareKeyFeature) -> Double? = { d, _ in values[d.monitorID!] }
         let reserve: (HardwareKeyDisplay, HardwareKeyFeature, HardwareKeyEvent.Direction, Bool, Double) -> Bool = { d, _, direction, fine, current in
-            let next = HardwareKeyPolicy.stepped(current, direction: direction, fine: fine)
+            let next = HardwareKeyPolicy.stepped(current, direction: direction, fine: fine, step: HardwareKeyPolicy.defaultStep)
             if next != current { writes.append(next); values[d.monitorID!] = next }
             return true
         }
@@ -262,7 +273,7 @@ private struct HardwareKeyRouterTests {
                "eligible keydown is consumed after reserving")
         expect(sequence.process(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), repeat: true), pointer: CGPoint(x: 1200, y: 10), enabled: true, defaultOutputUID: nil,
                                 displays: [initial], valueFor: valueFor, reserve: reserve), "repeat stays latched across pointer movement")
-        expect(writes == [56.25, 62.5], "repeat increments the original monitor intent")
+        expect(writes == [55, 60], "repeat increments the original monitor intent")
         expect(sequence.process(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up, modifiersEligible: false), pointer: .zero,
                                 enabled: true, defaultOutputUID: nil, displays: [initial], valueFor: valueFor, reserve: reserve),
                "handled key-up remains consumed after modifiers change")
@@ -305,18 +316,18 @@ private struct HardwareKeyRouterTests {
         let down = key(Int(NX_KEYTYPE_BRIGHTNESS_UP))
         expect(router.processForTesting(down, pointer: .zero, displays: [d]), "first press reserves an intent")
         let first = fake.waitForCommands(1)
-        expect(first[0].target == 56.25 && first[0].generation == 1, "first worker command has normalized target and generation")
+        expect(first[0].target == 55 && first[0].generation == 1, "first worker command has normalized target and generation")
         expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), repeat: true), pointer: .zero, displays: [d]), "repeat while first command is in flight is consumed")
         expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), repeat: true), pointer: .zero, displays: [d]), "second repeat accumulates while first command is in flight")
         fake.acknowledge(0, accepted: true)
         let second = fake.waitForCommands(2)
-        expect(second[1].target == 68.75, "in-flight repeats coalesce to latest accumulated value")
+        expect(second[1].target == 65, "in-flight repeats coalesce to latest accumulated value")
         fake.acknowledge(1, accepted: true)
 
         router.manualControlChanged(monitorID: "monitor-a", generation: 1, feature: .brightness, value: 20, revision: 1)
         expect(router.processForTesting(down, pointer: .zero, displays: [d]), "manual rebase is used by next key")
         let third = fake.waitForCommands(3)
-        expect(third[2].target == 26.25, "manual app value rebases future keyboard steps")
+        expect(third[2].target == 25, "manual app value rebases future keyboard steps")
         fake.acknowledge(2, accepted: false)
     }
 
@@ -355,7 +366,7 @@ private struct HardwareKeyRouterTests {
         let up = key(Int(NX_KEYTYPE_BRIGHTNESS_UP))
         expect(router.processForTesting(up, pointer: .zero, displays: [d]), "key after slider reserves a newer target")
         let first = fake.waitForCommands(1)[0]
-        expect(first.target == 26.25, "key target starts from latest slider value")
+        expect(first.target == 25, "key target starts from latest slider value")
 
         router.manualControlAccepted(monitorID: "monitor-a", generation: 1, feature: .brightness,
                                      value: 20, revision: 42)
@@ -363,7 +374,7 @@ private struct HardwareKeyRouterTests {
                "held key remains routed after the late slider acceptance")
         fake.acknowledge(0, accepted: true)
         let second = fake.waitForCommands(2)[1]
-        expect(second.target == 32.5, "older slider acceptance cannot rebase over the newer key target")
+        expect(second.target == 30, "older slider acceptance cannot rebase over the newer key target")
         fake.acknowledge(1, accepted: false)
         router.shutdown()
     }
@@ -380,7 +391,7 @@ private struct HardwareKeyRouterTests {
         router.waitForWorkerForTesting()
         expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), repeat: true), pointer: .zero, displays: [d]), "held key continues from the manual rebase")
         let current = fake.waitForCommands(2)[1]
-        expect(current.target == 26.25 && router.isCommandCurrent(current), "stale completion cannot erase a newer manual epoch")
+        expect(current.target == 25 && router.isCommandCurrent(current), "stale completion cannot erase a newer manual epoch")
         router.shutdown()
         expect(!router.isCommandCurrent(current), "shutdown invalidates handed-off work")
         router.apply(enabled: true, displays: [d])
@@ -408,7 +419,7 @@ private struct HardwareKeyRouterTests {
         _ = router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP), phase: .up), pointer: .zero, displays: [display(volume: 56, audioUID: outputUID)])
         expect(router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP)), pointer: .zero, displays: [display(volume: 30, audioUID: outputUID)]), "external adjustment is reconciled before a new press")
         let updated = fake.waitForCommands(2)[1]
-        expect(updated.target == 36.25, "external observed change replaces idle keyboard intent")
+        expect(updated.target == 35, "external observed change replaces idle keyboard intent")
         fake.acknowledge(1, accepted: true)
         router.waitForWorkerForTesting()
         router.shutdown()
@@ -429,7 +440,7 @@ private struct HardwareKeyRouterTests {
         expect(fake.waitForCommands(1).count == 1, "manual rebases cannot create unbounded outstanding submissions")
         fake.acknowledge(0, accepted: false)
         let latest = fake.waitForCommands(2)
-        expect(latest[1].target == 46.25, "one coalesced intent follows a superseded in-flight epoch")
+        expect(latest[1].target == 45, "one coalesced intent follows a superseded in-flight epoch")
         fake.acknowledge(1, accepted: true)
         router.waitForWorkerForTesting()
         router.shutdown()
@@ -573,7 +584,7 @@ private struct HardwareKeyRouterTests {
         expect(!router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP), phase: .up, modifiersEligible: false), pointer: elsewhere, displays: [monitor]),
                "disallowed-modifier release passes through")
         expect(router.processForTesting(key(Int(NX_KEYTYPE_SOUND_DOWN), fine: true), pointer: elsewhere, displays: [monitor]), "fine press is handled")
-        expect(fake.waitForCommands(1)[0].target == 48.4375, "fine step is 1.5625")
+        expect(fake.waitForCommands(1)[0].target == 49, "fine step is one point")
         fake.acknowledge(0, accepted: true)
         router.waitForWorkerForTesting()
         _ = router.processForTesting(key(Int(NX_KEYTYPE_SOUND_DOWN), phase: .up), pointer: elsewhere, displays: [monitor])
@@ -651,7 +662,7 @@ private struct HardwareKeyRouterTests {
         expect(upRouter.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP), phase: .up), pointer: elsewhere, displays: [silent]),
                "volume-up release while muted is consumed")
         let unmuted = upFake.waitForCommands(2)[1]
-        expect(unmuted.feature == .volume && unmuted.target == 50 + HardwareKeyPolicy.normalStep,
+        expect(unmuted.feature == .volume && unmuted.target == 50 + HardwareKeyPolicy.defaultStep,
                "volume-up while muted steps from the remembered level")
         upFake.acknowledge(1, accepted: true)
         upRouter.waitForWorkerForTesting()
@@ -982,5 +993,255 @@ private struct HardwareKeyRouterTests {
         drain()
         expect(fresh.status == .permissionRequired, "never-granted Accessibility is permission required")
         fresh.shutdown()
+    }
+
+    /// One press on a fresh router with the given steps and monitor levels.
+    /// Returns the submitted target, or nil when the press wrote nothing.
+    private static func pressOnce(_ keyType: Int, brightness: Double = 50, volume: Double = 50,
+                                  brightnessStep: Double = 5, volumeStep: Double = 5, fine: Bool = false) -> Double? {
+        let fake = FakeSubmission()
+        let router = HardwareKeyRouter(submit: fake.submit)
+        router.setDefaultOutput(uid: outputUID)
+        router.setSteps(brightness: brightnessStep, volume: volumeStep)
+        let monitor = display(brightness: brightness, volume: volume, audioUID: outputUID)
+        expect(router.processForTesting(key(keyType, fine: fine), pointer: .zero, displays: [monitor]), "single press is consumed")
+        router.waitForWorkerForTesting()
+        let target = fake.commands.first?.target
+        router.shutdown()
+        return target
+    }
+
+    /// The pure stepping and clamping rules, in both directions, for fine and normal steps.
+    private static func pureSteppingPolicy() {
+        let up = HardwareKeyEvent.Direction.increase
+        let down = HardwareKeyEvent.Direction.decrease
+        expect(HardwareKeyPolicy.stepped(50, direction: up, fine: false, step: 5) == 55, "normal increase adds the step")
+        expect(HardwareKeyPolicy.stepped(50, direction: down, fine: false, step: 5) == 45, "normal decrease subtracts the step")
+        expect(HardwareKeyPolicy.stepped(50, direction: up, fine: false, step: 15) == 65, "normal increase uses a 15-point step")
+        expect(HardwareKeyPolicy.stepped(50, direction: down, fine: false, step: 1) == 49, "normal decrease uses a 1-point step")
+        expect(HardwareKeyPolicy.stepped(50, direction: up, fine: true, step: 15) == 51, "fine increase ignores the configured step")
+        expect(HardwareKeyPolicy.stepped(50, direction: down, fine: true, step: 15) == 49, "fine decrease ignores the configured step")
+        expect(HardwareKeyPolicy.stepped(50, direction: up, fine: true, step: 1) == 51, "fine increase moves one point")
+        expect(HardwareKeyPolicy.stepped(95, direction: up, fine: false, step: 15) == 100, "normal increase clamps at 100")
+        expect(HardwareKeyPolicy.stepped(5, direction: down, fine: false, step: 15) == 0, "normal decrease clamps at 0")
+        expect(HardwareKeyPolicy.stepped(100, direction: up, fine: true, step: 15) == 100, "fine increase clamps at 100")
+        expect(HardwareKeyPolicy.defaultStep == 5 && HardwareKeyPolicy.minStep == 1 && HardwareKeyPolicy.maxStep == 15
+               && HardwareKeyPolicy.fineStep == 1, "default 5, range 1...15, fine step 1")
+        expect(HardwareKeyPolicy.clampedStep(0) == 1 && HardwareKeyPolicy.clampedStep(99) == 15, "clampedStep clamps to 1...15")
+        expect(HardwareKeyPolicy.clampedStep(.nan) == 5 && HardwareKeyPolicy.clampedStep(.infinity) == 5,
+               "clampedStep maps non-finite input to the default")
+        expect(HardwareKeyPolicy.clampedStep(7.4) == 7 && HardwareKeyPolicy.clampedStep(7.6) == 8, "clampedStep rounds to whole points")
+    }
+
+    /// setSteps clamps each step to whole points in 1...15; NaN falls back to the default 5.
+    private static func setStepsClampsAndFallsBack() {
+        expect(pressOnce(Int(NX_KEYTYPE_BRIGHTNESS_UP), brightnessStep: 0) == 51, "brightness step 0 clamps to 1")
+        expect(pressOnce(Int(NX_KEYTYPE_BRIGHTNESS_UP), brightnessStep: 99) == 65, "brightness step 99 clamps to 15")
+        expect(pressOnce(Int(NX_KEYTYPE_BRIGHTNESS_UP), brightnessStep: .nan) == 55, "brightness step NaN falls back to 5")
+        expect(pressOnce(Int(NX_KEYTYPE_BRIGHTNESS_UP), brightnessStep: 7.4) == 57, "brightness step 7.4 rounds to 7")
+        expect(pressOnce(Int(NX_KEYTYPE_SOUND_DOWN), volumeStep: 0) == 49, "volume step 0 clamps to 1")
+        expect(pressOnce(Int(NX_KEYTYPE_SOUND_DOWN), volumeStep: 99) == 35, "volume step 99 clamps to 15")
+        expect(pressOnce(Int(NX_KEYTYPE_SOUND_DOWN), volumeStep: .nan) == 45, "volume step NaN falls back to 5")
+        expect(pressOnce(Int(NX_KEYTYPE_SOUND_DOWN), volumeStep: 7.4) == 43, "volume step 7.4 rounds to 7")
+    }
+
+    /// Brightness and volume keep their own steps in one session: 1 point for brightness, 15 for volume.
+    private static func independentConfiguredSteps() {
+        let fake = FakeSubmission()
+        let router = HardwareKeyRouter(submit: fake.submit)
+        router.setDefaultOutput(uid: outputUID)
+        router.setSteps(brightness: 1, volume: 15)
+        let monitor = display(audioUID: outputUID)
+        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), pointer: .zero, displays: [monitor]), "brightness press is handled")
+        let brightness = fake.waitForCommands(1)[0]
+        expect(brightness.feature == .brightness && brightness.target == 51, "brightness steps by its own 1-point step")
+        fake.acknowledge(0, accepted: true)
+        router.waitForWorkerForTesting()
+        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up), pointer: .zero, displays: [monitor]),
+               "brightness release is consumed")
+        expect(router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP)), pointer: .zero, displays: [monitor]), "volume press is handled")
+        let volume = fake.waitForCommands(2)[1]
+        expect(volume.feature == .volume && volume.target == 65, "volume steps by its own 15-point step")
+        fake.acknowledge(1, accepted: true)
+        router.waitForWorkerForTesting()
+        expect(router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP), phase: .up), pointer: .zero, displays: [monitor]),
+               "volume release is consumed")
+        router.shutdown()
+    }
+
+    /// Shift+Option moves exactly one point whatever the configured step is.
+    private static func fineStepIgnoresConfiguredStep() {
+        expect(pressOnce(Int(NX_KEYTYPE_BRIGHTNESS_UP), brightnessStep: 15) == 65, "normal brightness press at step 15 moves 15 points")
+        expect(pressOnce(Int(NX_KEYTYPE_BRIGHTNESS_UP), brightnessStep: 15, fine: true) == 51, "Shift+Option brightness moves 1 point at step 15")
+        expect(pressOnce(Int(NX_KEYTYPE_BRIGHTNESS_DOWN), brightnessStep: 1, fine: true) == 49, "Shift+Option brightness moves 1 point at step 1")
+        expect(pressOnce(Int(NX_KEYTYPE_SOUND_UP), volumeStep: 15, fine: true) == 51, "Shift+Option volume moves 1 point at step 15")
+        expect(pressOnce(Int(NX_KEYTYPE_SOUND_DOWN), volumeStep: 15, fine: true) == 49, "Shift+Option volume down moves 1 point at step 15")
+    }
+
+    /// A step change applies to the next press; a key still held keeps being consumed and uses the step current at each repeat.
+    private static func stepChangeAppliesToNextPress() {
+        let fake = FakeSubmission()
+        let router = HardwareKeyRouter(submit: fake.submit)
+        let monitor = display()
+        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), pointer: .zero, displays: [monitor]), "first press is handled")
+        expect(fake.waitForCommands(1)[0].target == 55, "first press uses the default 5-point step")
+        fake.acknowledge(0, accepted: true)
+        router.waitForWorkerForTesting()
+        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up), pointer: .zero, displays: [monitor]),
+               "first release is consumed")
+
+        router.setSteps(brightness: 12, volume: 5)
+        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), pointer: .zero, displays: [monitor]), "next press is handled")
+        expect(fake.waitForCommands(2)[1].target == 67, "next press uses the new 12-point step")
+
+        // The key is still held while the step changes again.
+        router.setSteps(brightness: 3, volume: 5)
+        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), repeat: true), pointer: .zero, displays: [monitor]),
+               "held key repeat is consumed after the step change")
+        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up), pointer: .zero, displays: [monitor]),
+               "held key release is consumed")
+        fake.acknowledge(1, accepted: true)
+        router.waitForWorkerForTesting()
+        expect(fake.waitForCommands(3)[2].target == 70, "held key repeat uses the step current at the repeat")
+        fake.acknowledge(2, accepted: true)
+        router.waitForWorkerForTesting()
+        router.shutdown()
+    }
+
+    /// Clamping at 0 and 100 with a step of 15 stops at the bounds and writes nothing when already there.
+    private static func boundaryClampsWithLargeStep() {
+        expect(pressOnce(Int(NX_KEYTYPE_BRIGHTNESS_UP), brightness: 90, brightnessStep: 15) == 100, "brightness up clamps at 100")
+        expect(pressOnce(Int(NX_KEYTYPE_BRIGHTNESS_DOWN), brightness: 10, brightnessStep: 15) == 0, "brightness down clamps at 0")
+        expect(pressOnce(Int(NX_KEYTYPE_BRIGHTNESS_UP), brightness: 100, brightnessStep: 15) == nil, "brightness at 100 writes nothing")
+        expect(pressOnce(Int(NX_KEYTYPE_SOUND_UP), volume: 95, volumeStep: 15) == 100, "volume up clamps at 100")
+        expect(pressOnce(Int(NX_KEYTYPE_SOUND_DOWN), volume: 5, volumeStep: 15) == 0, "volume down clamps at 0")
+        expect(pressOnce(Int(NX_KEYTYPE_SOUND_DOWN), volume: 0, volumeStep: 15) == nil, "volume at 0 writes nothing")
+    }
+
+    /// A brightness-up press whose readback is `readback`; the release follows at once.
+    private static func pressBrightnessUp(_ router: HardwareKeyRouter, readback: Double) {
+        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), pointer: .zero, displays: [display(brightness: readback)]),
+               "brightness press is handled")
+        _ = router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up), pointer: .zero, displays: [display(brightness: readback)])
+    }
+
+    /// A display snapshot with no key effect: an unpaired release only reconciles the intents with the readback.
+    private static func observeReadback(_ router: HardwareKeyRouter, readback: Double) {
+        _ = router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up), pointer: .zero, displays: [display(brightness: readback)])
+    }
+
+    /// While our accepted write is outstanding, a readback that still shows the old level must not rebase the target 55.
+    private static func rebaseWaitsForOwnHardwareActions() {
+        let fake = FakeSubmission()
+        let clock: UInt64 = 1_000
+        let router = HardwareKeyRouter(submit: fake.submit, nowMs: { clock })
+        pressBrightnessUp(router, readback: 50)
+        expect(fake.waitForCommands(1)[0].target == 55, "first write targets 55")
+        router.hardwareActionAccepted(monitorID: "monitor-a", generation: 1, feature: .brightness, actionGeneration: 7)
+        fake.acknowledge(0, accepted: true)
+        router.waitForWorkerForTesting()
+        observeReadback(router, readback: 20)
+        pressBrightnessUp(router, readback: 20)
+        expect(fake.waitForCommands(2)[1].target == 60, "next press starts from target 55, not from readback 20")
+        fake.acknowledge(1, accepted: true)
+        router.waitForWorkerForTesting()
+        router.shutdown()
+    }
+
+    /// The settle window after our completed write ignores the readback; after it, an external change rebases.
+    private static func rebaseResumesAfterSettleWindow() {
+        let fake = FakeSubmission()
+        var clock: UInt64 = 1_000
+        let router = HardwareKeyRouter(submit: fake.submit, nowMs: { clock })
+        pressBrightnessUp(router, readback: 50)
+        _ = fake.waitForCommands(1)
+        router.hardwareActionAccepted(monitorID: "monitor-a", generation: 1, feature: .brightness, actionGeneration: 7)
+        fake.acknowledge(0, accepted: true)
+        router.waitForWorkerForTesting()
+        clock = 1_100
+        router.hardwareActionCompleted(monitorID: "monitor-a", generation: 1, feature: .brightness, actionGeneration: 7)
+        clock = 1_500
+        pressBrightnessUp(router, readback: 20)
+        expect(fake.waitForCommands(2)[1].target == 60, "inside the settle window the readback does not rebase the target")
+        fake.acknowledge(1, accepted: true)
+        router.waitForWorkerForTesting()
+        clock = 2_200
+        observeReadback(router, readback: 20)
+        pressBrightnessUp(router, readback: 20)
+        expect(fake.waitForCommands(3)[2].target == 25, "after the settle window an external readback rebases the next press")
+        fake.acknowledge(2, accepted: true)
+        router.waitForWorkerForTesting()
+        router.shutdown()
+    }
+
+    /// An accepted write whose completion never arrives stops blocking rebases once outstandingExpiryMs has passed.
+    private static func outstandingActionExpires() {
+        let fake = FakeSubmission()
+        var clock: UInt64 = 1_000
+        let router = HardwareKeyRouter(submit: fake.submit, nowMs: { clock })
+        pressBrightnessUp(router, readback: 50)
+        _ = fake.waitForCommands(1)
+        router.hardwareActionAccepted(monitorID: "monitor-a", generation: 1, feature: .brightness, actionGeneration: 7)
+        fake.acknowledge(0, accepted: true)
+        router.waitForWorkerForTesting()
+        clock = 1_000 + HardwareKeyRouter.outstandingExpiryMs - 1
+        observeReadback(router, readback: 20)
+        pressBrightnessUp(router, readback: 20)
+        expect(fake.waitForCommands(2)[1].target == 60, "an unfinished write still blocks the rebase just before expiry")
+        fake.acknowledge(1, accepted: true)
+        router.waitForWorkerForTesting()
+        clock = 1_000 + HardwareKeyRouter.outstandingExpiryMs + 1
+        observeReadback(router, readback: 20)
+        pressBrightnessUp(router, readback: 20)
+        expect(fake.waitForCommands(3)[2].target == 25, "an expired acceptance no longer blocks the rebase")
+        fake.acknowledge(2, accepted: true)
+        router.waitForWorkerForTesting()
+        router.shutdown()
+    }
+
+    /// A completion that arrives before its acceptance cancels that acceptance instead of leaving it outstanding.
+    private static func earlyCompletionLeavesNothingOutstanding() {
+        let fake = FakeSubmission()
+        var clock: UInt64 = 1_000
+        let router = HardwareKeyRouter(submit: fake.submit, nowMs: { clock })
+        pressBrightnessUp(router, readback: 50)
+        _ = fake.waitForCommands(1)
+        router.hardwareActionCompleted(monitorID: "monitor-a", generation: 1, feature: .brightness, actionGeneration: 9)
+        router.hardwareActionAccepted(monitorID: "monitor-a", generation: 1, feature: .brightness, actionGeneration: 9)
+        fake.acknowledge(0, accepted: true)
+        router.waitForWorkerForTesting()
+        // Only the settle window (until 2000) applies; nothing is left outstanding after it.
+        clock = 2_100
+        observeReadback(router, readback: 20)
+        pressBrightnessUp(router, readback: 20)
+        expect(fake.waitForCommands(2)[1].target == 25, "a completed early acceptance leaves nothing outstanding")
+        fake.acknowledge(1, accepted: true)
+        router.waitForWorkerForTesting()
+        router.shutdown()
+    }
+
+    /// Mute, then volume-up restores the remembered level and adds the volume step; a brightness step change does not alter it.
+    private static func muteRestoreUsesVolumeStep() {
+        let loud = display(audioUID: outputUID)
+        let silent = display(volume: 0, audioUID: outputUID)
+        let fake = FakeSubmission()
+        let router = HardwareKeyRouter(submit: fake.submit)
+        router.setDefaultOutput(uid: outputUID)
+        router.setSteps(brightness: 9, volume: 12)
+        expect(router.processForTesting(muteKey(), pointer: elsewhere, displays: [loud]), "mute press is handled")
+        _ = fake.waitForCommands(1)
+        expect(router.processForTesting(muteKey(phase: .up), pointer: elsewhere, displays: [loud]), "mute release is consumed")
+        fake.acknowledge(0, accepted: true)
+        router.waitForWorkerForTesting()
+        // The brightness step changes while muted; the volume restore must not follow it.
+        router.setSteps(brightness: 1, volume: 12)
+        expect(router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP)), pointer: elsewhere, displays: [silent]), "volume-up while muted is handled")
+        expect(router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP), phase: .up), pointer: elsewhere, displays: [silent]),
+               "volume-up release while muted is consumed")
+        let restored = fake.waitForCommands(2)[1]
+        expect(restored.feature == .volume && restored.target == 62, "restore from the remembered 50 adds the 12-point volume step")
+        fake.acknowledge(1, accepted: true)
+        router.waitForWorkerForTesting()
+        router.shutdown()
     }
 }

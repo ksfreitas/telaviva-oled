@@ -24,6 +24,24 @@ fn settings_defaults_validate_and_reject_future_schema_and_bad_ranges() {
     assert!(defaults.suspend_presence_on_battery);
     assert!(!defaults.always_on_camera);
     assert!(!defaults.hardware_keys_enabled);
+    assert_eq!(defaults.brightness_key_step, 5);
+    assert_eq!(defaults.volume_key_step, 5);
+    assert!(defaults.validate().is_ok());
+    let mut invalid_steps = Settings::default();
+    for step in [0, 16] {
+        invalid_steps.brightness_key_step = step;
+        assert_eq!(
+            invalid_steps.validate().unwrap_err(),
+            "brightness key step out of range"
+        );
+        invalid_steps.brightness_key_step = 5;
+        invalid_steps.volume_key_step = step;
+        assert_eq!(
+            invalid_steps.validate().unwrap_err(),
+            "volume key step out of range"
+        );
+        invalid_steps.volume_key_step = 5;
+    }
     let old_schema = Settings::from_json(
         br#"{"schema_version":1,"locale":"pt-BR","presence_protection_enabled":true}"#,
     )
@@ -178,6 +196,75 @@ fn hardware_key_setting_is_optional_default_false_persisted_and_type_checked() {
     assert!(core
         .submit_json(br#"{"type":"update_settings","settings":{"hardware_keys_enabled":"yes"}}"#)
         .is_err());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn key_step_settings_are_optional_default_five_persisted_and_range_checked() {
+    let root = std::env::temp_dir().join(format!("telaviva-key-steps-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&root);
+    let path = root.join("settings.json");
+    std::fs::write(
+        &path,
+        br#"{"schema_version":1,"presence_protection_enabled":true}"#,
+    )
+    .unwrap();
+    let mut core = Core::new(CoreOptions {
+        config_path: Some(path.clone()),
+        ..CoreOptions::default()
+    })
+    .unwrap();
+    assert_eq!(core.settings().unwrap().brightness_key_step, 5);
+    assert_eq!(core.settings().unwrap().volume_key_step, 5);
+    for key in ["brightness_key_step", "volume_key_step"] {
+        for step in [1, 15] {
+            let event = json!({"type":"update_settings","settings":{key:step}});
+            assert!(core
+                .submit_json(&serde_json::to_vec(&event).unwrap())
+                .is_ok());
+            assert_eq!(core.snapshot_value().unwrap()["settings"][key], step);
+            let persisted: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(persisted[key], step);
+            let reloaded = Core::new(CoreOptions {
+                config_path: Some(path.clone()),
+                ..CoreOptions::default()
+            })
+            .unwrap();
+            assert_eq!(reloaded.settings().unwrap(), core.settings().unwrap());
+        }
+    }
+    let before = core.settings().unwrap();
+    let before_file = std::fs::read(&path).unwrap();
+    for key in ["brightness_key_step", "volume_key_step"] {
+        for invalid in [
+            json!(0),
+            json!(16),
+            json!(5.5),
+            json!("5"),
+            json!(true),
+            json!(null),
+            json!(-1),
+        ] {
+            let event = json!({"type":"update_settings","settings":{key:invalid}});
+            assert!(core
+                .submit_json(&serde_json::to_vec(&event).unwrap())
+                .is_err());
+            assert_eq!(core.settings().unwrap(), before);
+        }
+    }
+    assert_eq!(std::fs::read(&path).unwrap(), before_file);
+    assert!(core
+        .submit_json(br#"{"type":"update_settings","settings":{"brightness_key_step":3}}"#)
+        .is_ok());
+    let after_brightness = core.settings().unwrap();
+    assert_eq!(after_brightness.brightness_key_step, 3);
+    assert_eq!(after_brightness.volume_key_step, before.volume_key_step);
+    assert!(core
+        .submit_json(br#"{"type":"update_settings","settings":{"volume_key_step":12}}"#)
+        .is_ok());
+    let after_volume = core.settings().unwrap();
+    assert_eq!(after_volume.brightness_key_step, 3);
+    assert_eq!(after_volume.volume_key_step, 12);
     let _ = std::fs::remove_dir_all(root);
 }
 

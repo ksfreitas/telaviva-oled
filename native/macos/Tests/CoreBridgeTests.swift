@@ -12,6 +12,8 @@ private struct CoreBridgeTests {
         asynchronousManualControlUsesCoreReceiptAndCompletion()
         refreshBurstsAreConflated()
         hardwareBrightnessKeyDuringProtections()
+        coreSettingsKeyStepJSON()
+        keyStepSettingsReachRouterThroughCore()
         print("Core bridge asynchronous tests passed")
     }
 
@@ -201,7 +203,7 @@ private struct CoreBridgeTests {
         let monitor = screen()!
         expect(monitor.brightness?.value != nil, "screen reports a brightness value")
         let observed = monitor.brightness!.value!
-        let expectedTarget = observed + HardwareKeyPolicy.normalStep
+        let expectedTarget = observed + HardwareKeyPolicy.defaultStep
         let displays = [HardwareKeyDisplay(displayID: 7, bounds: CGRect(x: 0, y: 0, width: 1000, height: 800),
                                            isBuiltin: false, monitorID: "screen", generation: monitor.generation!,
                                            audioDeviceUID: nil,
@@ -227,6 +229,141 @@ private struct CoreBridgeTests {
         expect(waitUntil { abs((screen()?.brightness?.desired ?? -1) - expectedTarget) < 0.001 },
                "manual target is recorded as the desired brightness")
         expect(screen()?.presence_dimmed == true, "manual key keeps presence protection active")
+
+        router.shutdown()
+        var shutdownFinished = false
+        bridge.beginShutdown { shutdownFinished = true }
+        expect(waitUntil { shutdownFinished }, "shutdown completes before the temporary directory is removed")
+    }
+
+    private static func coreSettingsKeyStepJSON() {
+        // Synthesized Decodable requires every non-optional field, even one with a default, so all of them are
+        // supplied here; only the two key-step entries vary between the cases.
+        func decodeSettings(_ stepKeys: [String: Any]) -> CoreSettings {
+            var object: [String: Any] = [
+                "locale": "auto", "presence_sampling_interval_s": 10.0, "return_sampling_interval_s": 1.0,
+                "suspend_presence_on_battery": true, "presence_protection_enabled": false,
+                "screensaver_protection_enabled": false, "launch_at_login": false,
+                "screensaver_targets": [String: Double]()
+            ]
+            object.merge(stepKeys) { _, new in new }
+            let data = try! JSONSerialization.data(withJSONObject: object)
+            return try! JSONDecoder().decode(CoreSettings.self, from: data)
+        }
+
+        let withKeys = decodeSettings(["brightness_key_step": 3, "volume_key_step": 12])
+        expect(withKeys.brightness_key_step == 3 && withKeys.volume_key_step == 12,
+               "key steps decode from a snapshot that carries them")
+        expect((withKeys.json["brightness_key_step"] as? Int) == 3 && (withKeys.json["volume_key_step"] as? Int) == 12,
+               "key steps are emitted as integers when they are set")
+
+        let withoutKeys = decodeSettings([:])
+        expect(withoutKeys.brightness_key_step == nil && withoutKeys.volume_key_step == nil,
+               "absent key steps decode as nil")
+        expect((withoutKeys.json["brightness_key_step"] as? Int) == 5 && (withoutKeys.json["volume_key_step"] as? Int) == 5,
+               "absent key steps are emitted as the default of 5")
+    }
+
+    private static func keyStepSettingsReachRouterThroughCore() {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("telaviva-core-bridge-tests-\(UUID().uuidString)", isDirectory: true)
+        try! FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let bridge = CoreBridge(configPath: directory.appendingPathComponent("settings.json"))
+        expect(waitUntil { bridge.snapshot.revision != nil }, "initial snapshot is published before the step test")
+
+        expect(bridge.submit(["type": "monitor_discovered", "monitor": [
+            "id": "screen", "name": "Display", "identity_status": "stable", "connection_path": "usb",
+            "brightness": ["supported": true, "value": 50, "raw": 50, "min": 0, "max": 100],
+            "volume": ["supported": true, "value": 50, "raw": 50, "min": 0, "max": 100]
+        ]]), "synthetic screen is accepted by the local core")
+        // Saved the same way the Settings window saves: a full CoreSettings through updateSettings.
+        var settings = CoreSettings()
+        settings.brightness_key_step = 3
+        settings.volume_key_step = 12
+        bridge.updateSettings(settings)
+        bridge.refresh()
+        expect(waitUntil {
+            bridge.snapshot.settings?.brightness_key_step == 3 && bridge.snapshot.settings?.volume_key_step == 12 &&
+                bridge.snapshot.monitors?.contains(where: { $0.id == "screen" }) == true
+        }, "key steps 3 and 12 and the synthetic screen are published in the snapshot")
+
+        // MenuBarController feeds the snapshot's steps to the router, with 5 as the fallback when a key is absent.
+        let snapshotSettings = bridge.snapshot.settings!
+        let router = HardwareKeyRouter(submit: { command, completion in
+            DispatchQueue.main.async { completion(bridge.submitHardwareKey(command)) }
+        }, permissionProvider: { HardwareKeyPermissions(accessibility: true, inputMonitoring: true) })
+        router.setSteps(brightness: Double(snapshotSettings.brightness_key_step ?? 5),
+                        volume: Double(snapshotSettings.volume_key_step ?? 5))
+        // Volume keys follow the default sound output, so the display fixture names the output it owns.
+        router.setDefaultOutput(uid: "synthetic-output")
+        bridge.hardwareKeyValidator = { router.isCommandCurrent($0) }
+        var keyAccepted: Bool?
+        var keyActionGeneration: UInt64?
+        var keyCommand: HardwareKeyCommand?
+        bridge.onHardwareKeyAccepted = { command, accepted, actionGeneration in
+            keyCommand = command
+            keyAccepted = accepted
+            keyActionGeneration = actionGeneration
+        }
+
+        func screen() -> CoreMonitor? { bridge.snapshot.monitors?.first(where: { $0.id == "screen" }) }
+        let monitor = screen()!
+        expect(monitor.brightness?.value != nil && monitor.volume?.value != nil,
+               "synthetic screen reports brightness and volume values")
+        let observedBrightness = monitor.brightness!.value!
+        let observedVolume = monitor.volume!.value!
+        let displays = [HardwareKeyDisplay(displayID: 7, bounds: CGRect(x: 0, y: 0, width: 1000, height: 800),
+                                           isBuiltin: false, monitorID: "screen", generation: monitor.generation!,
+                                           audioDeviceUID: "synthetic-output",
+                                           brightness: HardwareKeyFeatureState(value: observedBrightness, supported: true, awake: true),
+                                           volume: HardwareKeyFeatureState(value: observedVolume,
+                                                                           supported: monitor.volume?.supported ?? false,
+                                                                           awake: true))]
+        let pointer = CGPoint(x: 500, y: 400)
+
+        // One brightness press moves the target by the configured brightness step (3), not the default.
+        let brightnessUp = Int(NX_KEYTYPE_BRIGHTNESS_UP)
+        let brightnessDown = HardwareKeyEvent(keyIdentity: brightnessUp, feature: .brightness, direction: .increase,
+                                              phase: .down, isRepeat: false, isFineStep: false, modifiersEligible: true)
+        let brightnessRelease = HardwareKeyEvent(keyIdentity: brightnessUp, feature: .brightness, direction: .increase,
+                                                 phase: .up, isRepeat: false, isFineStep: false, modifiersEligible: true)
+        expect(router.processForTesting(brightnessDown, pointer: pointer, displays: displays),
+               "brightness key down is handled by the router with the configured step")
+        expect(router.processForTesting(brightnessRelease, pointer: pointer, displays: displays),
+               "brightness key up is consumed with its down")
+        expect(waitUntil { keyAccepted == true && keyActionGeneration != nil },
+               "core accepts the brightness key command")
+        expect(keyCommand.map { $0.feature == .brightness && abs($0.target - (observedBrightness + 3)) < 0.001 } == true,
+               "brightness key target is the observed value plus the brightness step of 3")
+        expect(waitUntil {
+            bridge.snapshot.pending_actions?.contains(where: { $0.monitor_id == "screen" && $0.kind == "set_brightness" }) == true
+        }, "accepted brightness key is queued as a set_brightness action")
+        expect(waitUntil { abs((screen()?.brightness?.desired ?? -1) - (observedBrightness + 3)) < 0.001 },
+               "brightness target is recorded as the desired brightness")
+
+        // Clear the callback state so only the volume press's own acceptance can satisfy the checks below.
+        keyAccepted = nil
+        keyActionGeneration = nil
+        keyCommand = nil
+        // One volume press moves the target by the configured volume step (12) on the default output display.
+        let soundUp = Int(NX_KEYTYPE_SOUND_UP)
+        let volumeDown = HardwareKeyEvent(keyIdentity: soundUp, feature: .volume, direction: .increase,
+                                          phase: .down, isRepeat: false, isFineStep: false, modifiersEligible: true)
+        let volumeRelease = HardwareKeyEvent(keyIdentity: soundUp, feature: .volume, direction: .increase,
+                                             phase: .up, isRepeat: false, isFineStep: false, modifiersEligible: true)
+        expect(router.processForTesting(volumeDown, pointer: pointer, displays: displays),
+               "volume key down is handled by the router with the configured step")
+        expect(router.processForTesting(volumeRelease, pointer: pointer, displays: displays),
+               "volume key up is consumed with its down")
+        expect(waitUntil { keyAccepted == true && keyActionGeneration != nil },
+               "core accepts the volume key command")
+        expect(keyCommand.map { $0.feature == .volume && abs($0.target - (observedVolume + 12)) < 0.001 } == true,
+               "volume key target is the observed value plus the volume step of 12")
+        // The snapshot lists one scheduled action per monitor, so the queued set_volume is verified through its desired value.
+        expect(waitUntil { abs((screen()?.volume?.desired ?? -1) - (observedVolume + 12)) < 0.001 },
+               "volume target is recorded as the desired volume")
 
         router.shutdown()
         var shutdownFinished = false

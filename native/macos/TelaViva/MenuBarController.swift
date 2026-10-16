@@ -54,6 +54,8 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             self.manualControls.apply(snapshot)
             self.ddc.process(snapshot)
             guard !self.terminating else { return }
+            self.hardwareKeyRouter.setSteps(brightness: Double(snapshot.settings?.brightness_key_step ?? 5),
+                                            volume: Double(snapshot.settings?.volume_key_step ?? 5))
             self.hardwareKeyRouter.apply(enabled: snapshot.settings?.hardware_keys_enabled ?? false,
                                          displays: self.hardwareKeyDisplays)
             if snapshot.settings?.hardware_keys_enabled ?? false {
@@ -79,14 +81,20 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             self?.hardwareKeyRouter.manualControlAccepted(monitorID: monitorID, generation: generation,
                                                           feature: feature, value: value, revision: revision)
         }
-        core.onHardwareActionCompleted = { [weak manualControls] monitorID, actionID, actionGeneration, connectionGeneration, feature, success, rawValue in
+        core.onHardwareActionCompleted = { [weak self, weak manualControls] monitorID, actionID, actionGeneration, connectionGeneration, feature, success, rawValue in
             manualControls?.actionCompleted(monitorID: monitorID, actionID: actionID,
                                              actionGeneration: actionGeneration,
                                              connectionGeneration: connectionGeneration, feature: feature,
                                              success: success, confirmedValue: rawValue)
+            self?.hardwareKeyRouter.hardwareActionCompleted(monitorID: monitorID, generation: connectionGeneration,
+                                                            feature: feature, actionGeneration: actionGeneration)
         }
         core.onHardwareKeyAccepted = { [weak self] command, accepted, actionGeneration in
             guard let self else { return }
+            if accepted, let actionGeneration {
+                self.hardwareKeyRouter.hardwareActionAccepted(monitorID: command.monitorID, generation: command.generation,
+                                                              feature: command.feature, actionGeneration: actionGeneration)
+            }
             let keyRevision = command.intentRevision
             guard let draft = self.externalKeyboardDrafts.removeValue(forKey: keyRevision),
                   self.hardwareKeyRouter.isCommandCurrent(command) else { return }
@@ -199,7 +207,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                 self?.requestHardwareKeyPermission()
             })
                 .frame(minWidth: 420, minHeight: 420)
-            let created = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 560),
+            let created = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 640),
                                    styleMask: [.titled, .closable, .miniaturizable],
                                    backing: .buffered, defer: false)
             created.title = "TelaViva OLED"

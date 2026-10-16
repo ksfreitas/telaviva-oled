@@ -146,8 +146,16 @@ struct HardwareKeyEvent {
 
 /// Target selection and normalized stepping contain no operating-system or DDC side effects.
 enum HardwareKeyPolicy {
-    static let normalStep = 6.25
-    static let fineStep = 1.5625
+    static let defaultStep = 5.0
+    static let minStep = 1.0
+    static let maxStep = 15.0
+    static let fineStep = 1.0
+
+    /// Non-finite input falls back to the default; other input is rounded to whole points and kept in minStep...maxStep.
+    static func clampedStep(_ value: Double) -> Double {
+        guard value.isFinite else { return defaultStep }
+        return min(maxStep, max(minStep, value.rounded()))
+    }
 
     static func target(at point: CGPoint, displays: [HardwareKeyDisplay], feature: HardwareKeyFeature) -> HardwareKeyDisplay? {
         let hits = displays.filter { $0.bounds.contains(point) }
@@ -177,9 +185,10 @@ enum HardwareKeyPolicy {
         return lhs.caseInsensitiveCompare(rhs) == .orderedSame
     }
 
-    static func stepped(_ value: Double, direction: HardwareKeyEvent.Direction, fine: Bool) -> Double {
-        let step = fine ? fineStep : normalStep
-        let delta = direction == .increase ? step : -step
+    /// Fine steps always move one point; normal steps use the configured whole-point step.
+    static func stepped(_ value: Double, direction: HardwareKeyEvent.Direction, fine: Bool, step: Double) -> Double {
+        let amount = fine ? fineStep : step
+        let delta = direction == .increase ? amount : -amount
         return min(100, max(0, value + delta))
     }
 }
@@ -283,6 +292,10 @@ private struct HardwareKeyIntent {
 final class HardwareKeyRouter: ObservableObject {
     typealias Submit = (HardwareKeyCommand, @escaping (Bool) -> Void) -> Void
     typealias TapInstaller = () -> (CFMachPort, CFRunLoopSource)?
+    /// After one of our hardware writes completes, the readback may still lag; rebases wait this long (ms).
+    static let rebaseSettleMs: UInt64 = 1_000
+    /// An accepted write whose completion never arrives stops blocking rebases after this long (ms).
+    static let outstandingExpiryMs: UInt64 = 10_000
 
     @Published private(set) var status: HardwareKeyRouterStatus = .disabled
     var onStatusChange: ((HardwareKeyRouterStatus) -> Void)?
@@ -299,11 +312,22 @@ final class HardwareKeyRouter: ObservableObject {
     private var stopped = false
     private var displays: [HardwareKeyDisplay] = []
     private var defaultOutputUID: String?
+    /// Configured whole-point steps; written by setSteps and read in reserveStep under stateLock.
+    private var brightnessStep = HardwareKeyPolicy.defaultStep
+    private var volumeStep = HardwareKeyPolicy.defaultStep
     private var sequence = HardwareKeySequence()
     private var intents: [HardwareKeyIntentKey: HardwareKeyIntent] = [:]
     /// Volume level to restore on the next mute press; in memory only and bounded to 128 entries.
     private var muteMemory: [HardwareKeyIntentKey: Double] = [:]
     private var inFlightKeys = Set<HardwareKeyIntentKey>()
+    /// Our accepted hardware writes per key (actionGeneration -> acceptance time in ms); bounded to 128 in total.
+    private var outstandingActions: [HardwareKeyIntentKey: [UInt64: UInt64]] = [:]
+    /// Rebases of a key stay blocked until this time in ms; set when one of our writes for that key completes.
+    private var rebaseBlockedUntil: [HardwareKeyIntentKey: UInt64] = [:]
+    /// Completions that arrived before their acceptance was registered; bounded to 64 entries.
+    private var earlyCompleted: [HardwareKeyIntentKey: Set<UInt64>] = [:]
+    /// Millisecond clock, injected by tests so that the settle window and expiry need no real sleeping.
+    private let nowMs: () -> UInt64
     private var intentRevision: UInt64 = 0
     private var tap: CFMachPort?
     private var tapSource: CFRunLoopSource?
@@ -313,10 +337,12 @@ final class HardwareKeyRouter: ObservableObject {
 
     init(submit: @escaping Submit,
          permissionProvider: @escaping () -> HardwareKeyPermissions = HardwareKeyPermissions.current,
-         tapInstaller: TapInstaller? = nil) {
+         tapInstaller: TapInstaller? = nil,
+         nowMs: @escaping () -> UInt64 = { DispatchTime.now().uptimeNanoseconds / 1_000_000 }) {
         self.submit = submit
         self.permissionProvider = permissionProvider
         self.customTapInstaller = tapInstaller
+        self.nowMs = nowMs
     }
 
     /// Re-reads permissions and retries a failed tap creation. Callable from any thread; there is
@@ -417,6 +443,16 @@ final class HardwareKeyRouter: ObservableObject {
         if uid != previous { muteMemory.removeAll() } // Remembered levels belong to the previous sound output.
     }
 
+    /// Stores the configured key steps, clamped to whole points in 1...15 (non-finite falls back to the default).
+    /// Intents and the mute memory are kept, so a change applies from the next press onward.
+    func setSteps(brightness: Double, volume: Double) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard !stopped else { return }
+        brightnessStep = HardwareKeyPolicy.clampedStep(brightness)
+        volumeStep = HardwareKeyPolicy.clampedStep(volume)
+    }
+
     /// Call immediately before the matching manual core command is submitted.
     func manualControlChanged(monitorID: String, generation: UInt64, feature: HardwareKeyFeature, value: Double, revision: UInt64) {
         guard value.isFinite, (0...100).contains(value) else { return }
@@ -444,6 +480,55 @@ final class HardwareKeyRouter: ObservableObject {
               intent.target == value else { return }
         intent.lastObserved = displays.first { $0.monitorID == monitorID && $0.generation == generation }?.state(for: feature).value
         intents[key] = intent
+    }
+
+    /// Called when the core accepts one of our hardware writes. Until that write completes, the readback of
+    /// its key is our own write in progress, so it must not rebase the key's intent.
+    func hardwareActionAccepted(monitorID: String, generation: UInt64, feature: HardwareKeyFeature, actionGeneration: UInt64) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        let key = HardwareKeyIntentKey(monitorID: monitorID, generation: generation, feature: feature)
+        // The completion arrived first, so this acceptance is already settled and registers nothing.
+        if earlyCompleted[key]?.remove(actionGeneration) != nil {
+            if earlyCompleted[key]?.isEmpty == true { earlyCompleted.removeValue(forKey: key) }
+            return
+        }
+        registerOutstandingLocked(key, actionGeneration: actionGeneration, now: nowMs())
+    }
+
+    /// Called when the core reports that one of our hardware writes finished, successfully or not. The readback
+    /// can still lag behind the final value for a moment, so rebases stay blocked for a short settle window.
+    func hardwareActionCompleted(monitorID: String, generation: UInt64, feature: HardwareKeyFeature, actionGeneration: UInt64) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        let key = HardwareKeyIntentKey(monitorID: monitorID, generation: generation, feature: feature)
+        if outstandingActions[key]?.removeValue(forKey: actionGeneration) != nil {
+            if outstandingActions[key]?.isEmpty == true { outstandingActions.removeValue(forKey: key) }
+        } else {
+            // The acceptance has not been registered yet; remember this completion so that it cancels the acceptance.
+            if earlyCompleted.values.reduce(0, { $0 + $1.count }) >= 64 { earlyCompleted.removeAll() }
+            earlyCompleted[key, default: []].insert(actionGeneration)
+        }
+        rebaseBlockedUntil[key] = nowMs() + HardwareKeyRouter.rebaseSettleMs
+    }
+
+    /// Records an acceptance. At the 128-entry bound the oldest acceptance is dropped: first for this key, then overall.
+    private func registerOutstandingLocked(_ key: HardwareKeyIntentKey, actionGeneration: UInt64, now: UInt64) {
+        if (outstandingActions[key]?.count ?? 0) >= 128 { dropOldestOutstandingLocked(in: key) }
+        if outstandingActions.values.reduce(0, { $0 + $1.count }) >= 128 { dropOldestOutstandingLocked(in: nil) }
+        outstandingActions[key, default: [:]][actionGeneration] = now
+    }
+
+    private func dropOldestOutstandingLocked(in key: HardwareKeyIntentKey?) {
+        var oldest: (key: HardwareKeyIntentKey, action: UInt64, at: UInt64)?
+        for (candidate, actions) in outstandingActions where key == nil || key == candidate {
+            for (action, at) in actions where at < (oldest?.at ?? UInt64.max) {
+                oldest = (candidate, action, at)
+            }
+        }
+        guard let oldest else { return }
+        outstandingActions[oldest.key]?.removeValue(forKey: oldest.action)
+        if outstandingActions[oldest.key]?.isEmpty == true { outstandingActions.removeValue(forKey: oldest.key) }
     }
 
     func isCommandCurrent(_ command: HardwareKeyCommand) -> Bool {
@@ -541,8 +626,30 @@ final class HardwareKeyRouter: ObservableObject {
     private func clearPendingLocked(clearOutput: Bool = false) {
         sequence.clear()
         intents.removeAll(keepingCapacity: true)
+        outstandingActions.removeAll(keepingCapacity: true)
+        rebaseBlockedUntil.removeAll(keepingCapacity: true)
+        earlyCompleted.removeAll(keepingCapacity: true)
         muteMemory.removeAll(keepingCapacity: true)
         if clearOutput { defaultOutputUID = nil }
+    }
+
+    /// Drops acceptances older than outstandingExpiryMs, settle windows that have ended, and state of displays that are gone.
+    private func pruneRebaseStateLocked(now: UInt64) {
+        for key in Array(outstandingActions.keys) {
+            let live = (outstandingActions[key] ?? [:]).filter { now <= $0.value + HardwareKeyRouter.outstandingExpiryMs }
+            outstandingActions[key] = live.isEmpty ? nil : live
+        }
+        rebaseBlockedUntil = rebaseBlockedUntil.filter { $0.value > now }
+        let keys = Set(outstandingActions.keys).union(rebaseBlockedUntil.keys).union(earlyCompleted.keys)
+        for key in keys where !displays.contains(where: { $0.monitorID == key.monitorID && $0.generation == key.generation }) {
+            forgetRebaseStateLocked(key)
+        }
+    }
+
+    private func forgetRebaseStateLocked(_ key: HardwareKeyIntentKey) {
+        outstandingActions.removeValue(forKey: key)
+        rebaseBlockedUntil.removeValue(forKey: key)
+        earlyCompleted.removeValue(forKey: key)
     }
 
     private func setStatus(_ next: HardwareKeyRouterStatus) {
@@ -607,6 +714,8 @@ final class HardwareKeyRouter: ObservableObject {
 
     private func reconcileDisplaysLocked(_ next: [HardwareKeyDisplay]) {
         displays = next
+        let now = nowMs()
+        pruneRebaseStateLocked(now: now)
         // A remembered level survives only while its exact monitor and generation stay eligible.
         for key in Array(muteMemory.keys) {
             guard let display = displays.first(where: { $0.monitorID == key.monitorID && $0.generation == key.generation }),
@@ -618,13 +727,20 @@ final class HardwareKeyRouter: ObservableObject {
         }
         for key in Array(intents.keys) {
             guard let display = displays.first(where: { $0.monitorID == key.monitorID && $0.generation == key.generation }),
-                  !display.isBuiltin else { intents.removeValue(forKey: key); continue }
+                  !display.isBuiltin else { intents.removeValue(forKey: key); forgetRebaseStateLocked(key); continue }
             let state = display.state(for: key.feature)
             guard state.supported, state.awake, !state.failed, let observed = state.value, observed.isFinite else {
                 intents.removeValue(forKey: key)
+                forgetRebaseStateLocked(key)
                 continue
             }
             guard var intent = intents[key], !intent.scheduled, !state.pending else { continue }
+            // While our own write is outstanding or settling, the readback is not an external change: leave the intent and lastObserved alone.
+            let outstanding = outstandingActions[key]?.count ?? 0
+            let blockedUntil = rebaseBlockedUntil[key] ?? 0
+            if outstanding > 0 || now < blockedUntil {
+                continue
+            }
             if let previous = intent.lastObserved, observed != previous,
                abs(intent.target - observed) > state.tolerance {
                 intentRevision &+= 1
@@ -649,6 +765,8 @@ final class HardwareKeyRouter: ObservableObject {
                              direction: HardwareKeyEvent.Direction, fine: Bool, value: Double) -> Bool {
         guard let monitorID = display.monitorID, let generation = display.generation else { return false }
         let key = HardwareKeyIntentKey(monitorID: monitorID, generation: generation, feature: feature)
+        // Read directly: the tap callback already holds stateLock here.
+        let step = feature == .volume ? volumeStep : brightnessStep
         if feature == .volume, let remembered = muteMemory[key] {
             if value != 0 {
                 muteMemory.removeValue(forKey: key) // Changed elsewhere since the mute.
@@ -656,14 +774,14 @@ final class HardwareKeyRouter: ObservableObject {
                 return true // Still muted: consume without a write and keep the level.
             } else {
                 // Restore the remembered level, then step up from it, as one coalesced write.
-                let next = HardwareKeyPolicy.stepped(remembered, direction: direction, fine: fine)
+                let next = HardwareKeyPolicy.stepped(remembered, direction: direction, fine: fine, step: step)
                 guard reserveWrite(display: display, feature: feature, value: value, next: next) else { return false }
                 muteMemory.removeValue(forKey: key)
                 return true
             }
         }
         return reserveWrite(display: display, feature: feature, value: value,
-                            next: HardwareKeyPolicy.stepped(value, direction: direction, fine: fine))
+                            next: HardwareKeyPolicy.stepped(value, direction: direction, fine: fine, step: step))
     }
 
     /// Initial mute press: mute remembers the level and writes 0; the next press restores it.

@@ -8,9 +8,15 @@
 - Popup brightness and volume sliders now follow the pointer immediately from a local draft, while a bounded background coordinator sends only the latest target to the monitor and reconciles on real DDC completion. Interactive feel on the physical LG is still pending acceptance.
 - Keyboard routing now also requires and requests Input Monitoring, re-evaluates permissions when the app is activated or Settings opens (no polling), retries creating the event tap after permission changes, shows each permission's state with its request button disabled once granted, and local ad-hoc builds use an identifier-based designated requirement so permissions survive rebuilds (existing grants must be re-added once).
 - Brightness keys that the keyboard sends as plain key codes 144 and 145 are now recognized and routed to the external monitor under the cursor; they were ignored before.
+- Hardware brightness and volume keys pressed quickly no longer make the target jump back: the key router now ignores monitor readbacks while its own DDC writes are in flight and for one second afterwards, then compares again, so external changes and monitor clamping are still followed.
+
+### Changed
+
+- Default hardware-key step is now 5 points (was 6.25) and Shift+Option moves 1 point (was 1.5625).
 
 ### Added
 
+- Configurable hardware-key step for brightness and volume (1 to 15 points each, default 5) in Settings; Settings window is taller.
 - Optional macOS keyboard brightness and volume routing to the supported external monitor under the cursor, with Accessibility status and settings.
 - Hardware mute key for the external monitor that is the Mac's sound output: it sets the monitor volume to zero and the next press restores the previous level (emulated through the volume control; the monitor's own mute is not used). Other outputs keep macOS mute.
 - Generation-checked manual commands and deterministic keyboard-routing tests covering held keys, repeat accumulation, and stale targets.

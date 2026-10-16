@@ -476,6 +476,15 @@ impl Core {
                 "hardware_keys_enabled" => {
                     next.hardware_keys_enabled = val.as_bool().ok_or("setting must be boolean")?
                 }
+                "brightness_key_step" => {
+                    let n = val.as_u64().ok_or("key step must be integer")?;
+                    next.brightness_key_step =
+                        u8::try_from(n).map_err(|_| "key step out of range")?;
+                }
+                "volume_key_step" => {
+                    let n = val.as_u64().ok_or("key step must be integer")?;
+                    next.volume_key_step = u8::try_from(n).map_err(|_| "key step out of range")?;
+                }
                 "selected_camera_id" => {
                     next.selected_camera_id = if val.is_null() {
                         None

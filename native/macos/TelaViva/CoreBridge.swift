@@ -304,6 +304,8 @@ struct CoreSettings: Decodable {
     var screensaver_targets: [String: Double] = [:]
     var selected_camera_id: String?
     var hardware_keys_enabled: Bool?
+    var brightness_key_step: Int?
+    var volume_key_step: Int?
 
     var json: [String: Any] { [
         "locale": locale, "presence_sampling_interval_s": presence_sampling_interval_s,
@@ -314,7 +316,8 @@ struct CoreSettings: Decodable {
         "screensaver_protection_enabled": screensaver_protection_enabled,
         "launch_at_login": launch_at_login, "screensaver_targets": screensaver_targets,
         "selected_camera_id": selected_camera_id ?? NSNull(),
-        "hardware_keys_enabled": hardware_keys_enabled ?? false
+        "hardware_keys_enabled": hardware_keys_enabled ?? false,
+        "brightness_key_step": brightness_key_step ?? 5, "volume_key_step": volume_key_step ?? 5
     ] }
 }
 
