@@ -12,21 +12,19 @@ The macOS app targets Apple Silicon and macOS 14 or later. Development builds ha
 
 ## Build on macOS
 
-Requirements: Apple Silicon, macOS 14 or later, Xcode command-line tools and macOS SDK, stable Rust with the `aarch64-apple-darwin` target, Python 3, and `curl`/`shasum` for the runtime download. The model is included in the repository. Fetch the pinned ONNX Runtime explicitly; the script verifies its checksums, and the app does not download runtime files when it runs.
-
-From the repository root:
+Requirements: Apple Silicon, macOS 14 or later, Xcode command-line tools and macOS SDK, stable Rust, and Python 3. The model is included in the repository. From the repository root, run:
 
 ```sh
-rustup target add aarch64-apple-darwin
-tools/inference/fetch-macos-runtime.sh
-cargo build --workspace --release --target aarch64-apple-darwin --locked
-TELAVIVA_CORE_LIB="$PWD/target/aarch64-apple-darwin/release/libtelaviva_core.a" \
-TELAVIVA_INFERENCE_LIB="$PWD/target/aarch64-apple-darwin/release/libtelaviva_inference.a" \
-  packaging/macos/build-app.sh
-open 'build/macos/TelaViva OLED.app'
+./scripts/build-macos.sh
 ```
 
-The build script creates an ad-hoc signed local app bundle. It is suitable for local execution; distribution signing and notarization are separate release steps. See the [macOS build guide](packaging/macos/README.md) for diagnostics and packaging details.
+The script creates an ad-hoc signed local app bundle at `build/macos/TelaViva OLED.app`. On the first build, it downloads the pinned ONNX Runtime and verifies its checksums; later builds reuse the file and verify it again while packaging. The app does not download runtime files when it runs. Run `./scripts/build-macos.sh --help` for usage. See the [macOS build guide](packaging/macos/README.md) for the manual build steps, diagnostics and packaging details. Distribution signing and notarization are separate release steps.
+
+To open the compiled app:
+
+```sh
+open 'build/macos/TelaViva OLED.app'
+```
 
 ## Usage
 

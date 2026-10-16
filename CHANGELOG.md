@@ -6,6 +6,7 @@
 
 - Optional continuous camera capture, suspension while all eligible external displays sleep, and a five-second exposure-settling period for low-light recovery on macOS.
 - Deterministic native camera lifecycle tests, display-state policy/ABI coverage, and localized inline camera status wording.
+- One-command Apple Silicon macOS build through `scripts/build-macos.sh`, compatible with Sh, Bash, and Zsh.
 - Finalized the camera lifecycle decision in ADR 0003 and archived its standalone plan and unrun macOS hardware acceptance checklist.
 - Corrected the macOS CI `lipo` invocation to verify the packaged arm64 executable.
 

@@ -7,26 +7,28 @@ and does not provide Developer ID distribution or notarization.
 ## Prerequisites
 
 - Xcode command line tools and the macOS 14 SDK
-- Rust toolchain with the `aarch64-apple-darwin` target
+- Rust toolchain
 - Python 3
-- The repository-pinned YuNet model and ONNX Runtime files. Fetch the runtime
-  with `tools/inference/fetch-macos-runtime.sh`; the download and library hashes
-  are checked, and the packaging helper checks both assets again.
+- The repository-pinned YuNet model. The `scripts/build-macos.sh` helper fetches the
+  pinned ONNX Runtime on the first build, checks its hashes, and reuses it on
+  later builds. Packaging verifies both inference assets again.
 
 ## Build
 
-From the repository root:
+For the one-command build, run `./scripts/build-macos.sh` from the repository root. It
+creates `build/macos/TelaViva OLED.app`, installs the Rust target if needed,
+builds the workspace, and packages the app. The first build needs network access
+to download the pinned runtime. The lower-level steps are:
 
 ```sh
-cargo build --workspace --release --target aarch64-apple-darwin
-TARGET_DIR="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+cargo build --workspace --release --target aarch64-apple-darwin --locked
+TARGET_DIR="$(cargo metadata --locked --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
 TELAVIVA_CORE_LIB="$TARGET_DIR/aarch64-apple-darwin/release/libtelaviva_core.a" \
 TELAVIVA_INFERENCE_LIB="$TARGET_DIR/aarch64-apple-darwin/release/libtelaviva_inference.a" \
   packaging/macos/build-app.sh
 ```
 
-The resulting app is `build/macos/TelaViva OLED.app`. Pass a different output
-directory as the script's first argument to place it elsewhere. Full third-party
+The resulting app is `build/macos/TelaViva OLED.app`. Full third-party
 license texts, including ONNX Runtime notices and the DDC transport attribution,
 are included in `Contents/Resources/ThirdPartyLicenses/`. The app's MIT license
 is included separately at `Contents/Resources/LICENSE`.
