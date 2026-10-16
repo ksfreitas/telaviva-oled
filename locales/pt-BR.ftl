@@ -1,0 +1,16 @@
+app-title = TelaViva OLED
+status-ready = Pronto
+status-unsupported = Não compatível com esta conexão do monitor
+status-ambiguous = Identidade do monitor ambígua; controles desativados
+status-pending = Aguardando resposta do monitor
+status-error = Falha ao controlar o monitor
+presence-disabled = A proteção por presença está desativada
+presence-suspended = O monitoramento de presença está suspenso
+presence-active = A proteção por presença está ativa
+screensaver-unavailable = O estado do protetor de tela está indisponível
+settings-title = Ajustes
+control-brightness = Brilho
+control-volume = Volume
+camera-permission = A permissão da câmera é necessária
+camera-busy = Outro aplicativo está usando a câmera
+low-light = A iluminação está baixa para detectar presença

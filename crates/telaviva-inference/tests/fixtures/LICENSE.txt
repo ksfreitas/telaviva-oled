@@ -1,0 +1,8 @@
+cc0-face.ppm is a 320x320 center crop and resize of “Face portrait (Unsplash).jpg”
+by William Stitt (2016), downloaded from Wikimedia Commons:
+https://commons.wikimedia.org/wiki/File:Face_portrait_(Unsplash).jpg
+
+Wikimedia Commons documents the photograph as published on Unsplash before
+5 June 2017 under the Creative Commons CC0 1.0 Universal Public Domain
+Dedication. The original can be copied, modified, and redistributed without
+permission. This fixture is derived from that work.

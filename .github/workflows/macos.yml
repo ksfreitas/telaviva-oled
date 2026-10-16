@@ -1,0 +1,66 @@
+name: macOS checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  rust:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust tools
+        run: rustup toolchain install stable --profile minimal --component clippy --component rustfmt
+      - name: Check formatting
+        run: cargo +stable fmt --all -- --check
+      - name: Test workspace
+        run: cargo +stable test --workspace --all-targets --locked -- --skip bundled_runtime_executes_pinned_yunet_model_on_cpu
+      - name: Lint workspace
+        run: cargo +stable clippy --workspace --all-targets --locked -- -D warnings
+      - name: Install coverage tools
+        run: |
+          rustup component add llvm-tools-preview --toolchain stable
+          cargo +stable install cargo-llvm-cov --version 0.9.1 --locked
+      - name: Measure shared-core coverage
+        run: |
+          mkdir -p build/coverage
+          cargo +stable llvm-cov -p telaviva-core --all-targets --locked --lcov --output-path build/coverage/core.lcov
+      - name: Upload shared-core LCOV
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-core-coverage-lcov
+          path: build/coverage/core.lcov
+          if-no-files-found: error
+          retention-days: 14
+
+  native-arm64:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust tools and arm64 target
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add aarch64-apple-darwin --toolchain stable
+      - name: Build Rust libraries for Apple Silicon
+        run: cargo +stable build --workspace --release --target aarch64-apple-darwin --locked
+      - name: Fetch pinned Apple Silicon ONNX Runtime
+        run: tools/inference/fetch-macos-runtime.sh
+      - name: Package native macOS app
+        run: |
+          TELAVIVA_CORE_LIB="$GITHUB_WORKSPACE/target/aarch64-apple-darwin/release/libtelaviva_core.a" \
+          TELAVIVA_INFERENCE_LIB="$GITHUB_WORKSPACE/target/aarch64-apple-darwin/release/libtelaviva_inference.a" \
+            packaging/macos/build-app.sh
+      - name: Verify app architecture and signature
+        run: |
+          APP="build/macos/TelaViva OLED.app"
+          lipo -verify_arch arm64 "$APP/Contents/MacOS/TelaViva"
+          codesign --verify --deep --strict "$APP"
+      - name: Archive app bundle
+        run: ditto -c -k --sequesterRsrc --keepParent "build/macos/TelaViva OLED.app" "build/macos/TelaViva-OLED-macos-arm64.zip"
+      - name: Upload macOS arm64 app bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: telaviva-oled-macos-arm64
+          path: build/macos/TelaViva-OLED-macos-arm64.zip
+          if-no-files-found: error
+          retention-days: 14

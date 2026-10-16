@@ -1,0 +1,16 @@
+[package]
+name = "telaviva-inference"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["rlib", "staticlib", "cdylib"]
+
+[dependencies]
+ndarray = "=0.16.1"
+ort = { version = "=2.0.0-rc.9", default-features = false, features = ["load-dynamic", "ndarray"] }
+# Keep ort-sys aligned with the exact ONNX Runtime binding release.
+ort-sys = "=2.0.0-rc.9"
+sha2 = "0.10"

@@ -1,0 +1,37 @@
+# Public API
+
+This page records the consumer-facing native interfaces that exist in the repository. The Rust core C ABI is implemented; the inference C ABI is also implemented. The JSON snapshot schema is an implementation contract consumed by the native macOS shell, not a claim that the planned Windows consumer exists.
+
+## external-monitor-control-and-oled-presence-protection
+
+### Native shell core ABI
+
+Header: [`include/telaviva_core.h`](include/telaviva_core.h). ABI version: `1` (`TV_CORE_ABI_VERSION`). The interface uses opaque `TvCore` handles, UTF-8 JSON inputs, a revision-only snapshot callback, and Rust-owned snapshot buffers. C++ callers may include the header under `extern "C"`.
+
+| Function | Contract |
+|---|---|
+| `tv_abi_version()` | Returns the supported ABI version. |
+| `tv_create(version, options, options_len, callback, userdata, out_core)` | Creates a core when the requested version matches. Optional UTF-8 JSON options accept `config_path` and `os_locale`; `NULL`/zero length selects defaults. |
+| `tv_submit(core, json, json_len)` | Submits a UTF-8 JSON command, with a maximum input size of 64 KiB. Commands after shutdown return `TV_CLOSED`, except hardware results needed to complete pending work. |
+| `tv_snapshot(core, out_buffer)` | Copies the current revisioned UTF-8 JSON snapshot into a Rust-owned buffer, capped at 8 MiB. |
+| `tv_shutdown(core)` | Stops new callbacks/commands and emits best-effort ownership-checked restore actions. |
+| `tv_destroy(core)` | Destroys a handle after the host handles shutdown actions; callers must not race it with other calls. |
+| `tv_buffer_free(buffer)` | Frees and clears a buffer returned by `tv_snapshot`. |
+
+Return codes are `TV_OK=0`, `TV_INVALID_ARGUMENT=1`, `TV_ABI_MISMATCH=2`, `TV_CLOSED=3`, `TV_INTERNAL=4`, and `TV_SIZE_LIMIT=5`. The callback receives a revision and caller-owned `userdata`; it does not transfer a snapshot. Core buffers and pointers must follow the lifetimes stated in the header. Do not destroy a core concurrently with another call.
+
+Implemented command envelope types are `monitor_discovered`, `monitor_disconnected`, `monitor_observed`, `presence_observation`, `camera_status`, `power`, `screensaver`, `set_brightness`, `set_volume`, `update_settings`, `hardware_result`, and `shutdown`. Unknown fields and duplicate JSON keys are rejected. The snapshot currently includes `revision`, `settings`, `messages`, `monitors`, `pending_actions`, `camera`, `power`, `screensaver`, and top-level `status`. Pending hardware actions are dispatched by the native host; automatic ownership checks use `read_brightness` and require the raw readback to be returned as a `hardware_result`.
+
+Each monitor snapshot reports `id`, `name`, `identity_status`, `connection_path`, `generation`, `presence_dimmed`, `brightness`, and `volume`. Each brightness/volume feature reports `supported`, `normalized`, `raw`, `min`, `max`, `observed`, `desired`, `status`, `owned`, and `reasons`. Each pending action reports `id`, `monitor_id`, `generation`, `kind`, `value`, and `target`. Discovery identities are `stable` or `ambiguous`; camera status inputs are `unknown`, `ready`, `unavailable`, `busy`, `permission`, or `error`. Presence observations currently accept `present`, `absent`, `insufficient_light`, `unavailable`, and `usable_light`; observation freshness and camera generation gate whether an event is applied.
+
+Settings schema version `1` uses locale `auto`, `en-US`, or `pt-BR`; presence sampling interval 5–300 seconds (default 10); return sampling interval 0.25–5 seconds (default 1); Boolean presence, screensaver, battery-suspension, and launch-at-login options; optional selected camera ID; and per-monitor normalized screensaver targets 0–100. Defaults disable presence and screensaver protection, enable battery suspension, and disable launch at login. Brightness and volume control commands use normalized values 0–100; device actions/readbacks use adapter-reported raw values and ranges.
+
+The implemented camera snapshot has mode `disabled`, `suspended`, `light_only`, or `face`; capture mode is `stopped`, `single_frame`, or `continuous_return`. It reports status, display status, generation, and `next_sample_in_ms` (null while disabled or suspended). This is policy output; the native adapter performs capture. The core ABI carries no frame data. `display_status` is presentation-only: `disabled`, `checking`, `ready`, `insufficient_light`, `unavailable`, `busy`, `permission`, `error`, `suspended_battery`, `suspended_power_unknown`, `suspended_no_monitor`, or fallback `unknown`. It must not be used to override acquisition policy; consumers use `mode` and `capture_mode` for that.
+
+### Local inference C ABI
+
+Header: [`include/telaviva_inference.h`](include/telaviva_inference.h). `TvInferenceResult` contains integer `status` and floating-point `confidence`. `tv_inference_create` and `tv_inference_create_with_provider` load absolute app-bundled runtime/model paths. Provider values currently implemented are CPU (`0`) and CoreML candidate (`1`); candidate selection may fall back to CPU and does not promise that every operation runs on CoreML.
+
+`tv_inference_detect_bgra` accepts caller-owned top-down BGRA8 bytes with length, width, height, and stride, and returns status: absent `0`, present `1`, insufficient light `2`, unavailable `3`; negative values indicate invalid argument `-1`, runtime `-2`, model `-3`, or panic `-4`. `tv_inference_assess_light_bgra` performs quality-only light assessment, returning `0` for sufficient light, `2` for insufficient light, or a negative error. `tv_inference_coreml_available` reports runtime capability, while `tv_inference_selected_provider` reports the selected provider. Call `tv_inference_destroy` to release the handle. Frame data is processed synchronously and is not retained or logged.
+
+Windows OpenVINO integration, hardware camera behavior, DDC writes/restoration, and measured acceleration benefit are not established by these interfaces or their source-level tests.

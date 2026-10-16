@@ -1,0 +1,62 @@
+# TelaViva OLED
+
+TelaViva OLED is an open-source desktop app for controlling external monitor brightness and volume, with optional OLED brightness protection. Its shared policy and inference code is written in Rust; the current desktop shell uses SwiftUI and AppKit on Apple Silicon macOS. Windows support is planned and has not been implemented or validated.
+
+Presence protection detects any face locally. It does not identify people, enroll faces, save webcam images, or send frames to a service. The default presence sampling interval is 10 seconds (configurable from 5 to 300 seconds); while dimmed, return checks default to 1 second (0.25 to 5 seconds). Presence protection is off until enabled, and pauses on battery by default. The camera stays open during return checks, while inference still follows the configured interval; normal presence checks use one-frame sessions. Insufficient light suspends detection instead of counting as absence.
+
+## Status
+
+The project is under active development. Rust tests, native macOS builds, and an ABI smoke test have passed. A read-only DDC check has read brightness and volume on one Dell S3225QC connected to an M4 Pro. This does not establish support across monitors, ports, adapters, docks, or Apple Silicon generations. Broader camera, physical write/restoration, multi-monitor and release-distribution acceptance remains in progress. See the [implementation plan](specs/archived/external-monitor-control-and-oled-presence-protection/plan.md) and [validation reports](specs/archived/external-monitor-control-and-oled-presence-protection/validation/release-readiness.md) for evidence and outstanding work.
+
+The macOS app targets Apple Silicon and macOS 14 or later. Development builds have been exercised on macOS 27; this is not a tested compatibility matrix. Intel Macs are deferred. DDC support depends on the monitor and connection.
+
+## Build on macOS
+
+Requirements: Apple Silicon, macOS 14 or later, Xcode command-line tools and macOS SDK, stable Rust with the `aarch64-apple-darwin` target, Python 3, and `curl`/`shasum` for the runtime download. The model is included in the repository. Fetch the pinned ONNX Runtime explicitly; the script verifies its checksums, and the app does not download runtime files when it runs.
+
+From the repository root:
+
+```sh
+rustup target add aarch64-apple-darwin
+tools/inference/fetch-macos-runtime.sh
+cargo build --workspace --release --target aarch64-apple-darwin --locked
+TELAVIVA_CORE_LIB="$PWD/target/aarch64-apple-darwin/release/libtelaviva_core.a" \
+TELAVIVA_INFERENCE_LIB="$PWD/target/aarch64-apple-darwin/release/libtelaviva_inference.a" \
+  packaging/macos/build-app.sh
+open 'build/macos/TelaViva OLED.app'
+```
+
+The build script creates an ad-hoc signed local app bundle. It is suitable for local execution; distribution signing and notarization are separate release steps. See the [macOS build guide](packaging/macos/README.md) for diagnostics and packaging details.
+
+## Usage
+
+1. Open the app and click the monitor icon in the macOS menu bar.
+2. Adjust brightness and speaker volume independently for each detected external monitor. Unsupported controls are shown as unavailable.
+3. Open **Settings** to choose English (US) or Portuguese (Brazil), the camera, sampling intervals, battery behavior and optional launch at login.
+4. Enable presence protection to request camera access. Two valid no-face samples trigger dimming; a returning face clears the presence reason. Low light suspends detection instead of triggering absence.
+5. Optionally enable screensaver protection, then choose **Protection brightness** for each monitor in the popup. The slider cannot exceed that monitor's current brightness.
+
+Protection reasons are combined, and restoration checks the current brightness before changing it so external adjustments can be preserved. Screensaver startup reconciliation and connection-specific behavior remain validation work. Setting brightness to zero does not guarantee that an OLED panel turns completely off or prevent all burn-in.
+
+## Development checks
+
+The core tests do not require the ONNX Runtime. The integration test that executes the pinned model does; prepare the runtime first as above.
+
+```sh
+cargo fmt --all -- --check
+cargo test --workspace --all-targets --locked -- --skip bundled_runtime_executes_pinned_yunet_model_on_cpu
+cargo clippy --workspace --all-targets --locked -- -D warnings
+```
+
+After fetching the runtime, run the full test suite with `cargo test --workspace --all-targets --locked`. CI intentionally skips only the runtime integration test and builds/packages the native app separately. The macOS workflow runs on macOS 14; it does not perform camera acceptance or physical monitor writes.
+
+## Project layout
+
+- `crates/telaviva-core/`: shared settings, protection policy, and C ABI.
+- `crates/telaviva-inference/`: local image-quality assessment and YuNet inference.
+- `native/macos/`: SwiftUI/AppKit UI, camera capture, and macOS device adapters.
+- `include/`: C interfaces used by the native shell.
+- `assets/model/` and `licenses/`: model provenance and third-party license notices.
+- `specs/archived/external-monitor-control-and-oled-presence-protection/`: requirements, design, implementation plan, and validation evidence.
+
+TelaViva OLED is licensed under the [MIT License](LICENSE). Third-party dependency, model, runtime, and DDC attribution records are listed in [`licenses/`](licenses/README.md); those notices remain separate from the project's license.
