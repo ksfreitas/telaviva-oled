@@ -6,6 +6,7 @@ struct SettingsView: View {
     @ObservedObject var core: CoreBridge
     @State private var locale = "auto"
     @State private var presence = false
+    @State private var alwaysOnCamera = false
     @State private var screensaver = false
     @State private var battery = true
     @State private var login = false
@@ -42,6 +43,8 @@ struct SettingsView: View {
             Section(AppText.string("protection", locale: locale)) {
                 Toggle(AppText.string("presence", locale: locale), isOn: $presence)
                     .help(AppText.string("presenceHelp", locale: locale))
+                Toggle(AppText.string("alwaysOnCamera", locale: locale), isOn: $alwaysOnCamera)
+                    .help(AppText.string("alwaysOnCameraHelp", locale: locale))
                 Toggle(AppText.string("saver", locale: locale), isOn: $screensaver)
                 Toggle(AppText.string("battery", locale: locale), isOn: $battery)
                 LabeledContent(AppText.string("check", locale: locale)) {
@@ -57,7 +60,7 @@ struct SettingsView: View {
                     ForEach(cameras, id: \.uniqueID) { device in Text(device.localizedName).tag(Optional(device.uniqueID)) }
                 }
                 .onChange(of: selectedCameraID) { _, _ in save() }
-                Label("\(AppText.string("camera", locale: locale)): \(AppText.cameraStatus(core.snapshot, locale: locale))", systemImage: "camera")
+                Label(AppText.cameraInlineStatus(core.snapshot, locale: locale), systemImage: "camera")
                 Text(AppText.string("cameraHelp", locale: locale))
                     .font(.caption).foregroundStyle(.secondary)
                 Text(AppText.string("displayHelp", locale: locale))
@@ -70,6 +73,7 @@ struct SettingsView: View {
         .onChange(of: core.snapshot.revision) { _, _ in if !didLoad { load() } }
         .onChange(of: locale) { _, _ in save() }
         .onChange(of: presence) { _, _ in save() }
+        .onChange(of: alwaysOnCamera) { _, _ in save() }
         .onChange(of: screensaver) { _, _ in save() }
         .onChange(of: battery) { _, _ in save() }
         .onChange(of: presentInterval) { _, _ in save() }
@@ -85,6 +89,7 @@ struct SettingsView: View {
         guard let value = core.snapshot.settings else { return }
         didLoad = true
         locale = value.locale; presence = value.presence_protection_enabled
+        alwaysOnCamera = value.always_on_camera ?? false
         screensaver = value.screensaver_protection_enabled; battery = value.suspend_presence_on_battery
         login = value.launch_at_login; presentInterval = Double(value.presence_sampling_interval_s)
         returnInterval = Double(value.return_sampling_interval_s)
@@ -95,6 +100,7 @@ struct SettingsView: View {
         guard didLoad else { return }
         var settings = core.snapshot.settings ?? CoreSettings()
         settings.locale = locale; settings.presence_protection_enabled = presence
+        settings.always_on_camera = alwaysOnCamera
         settings.screensaver_protection_enabled = screensaver; settings.suspend_presence_on_battery = battery
         settings.launch_at_login = login; settings.presence_sampling_interval_s = presentInterval
         settings.return_sampling_interval_s = returnInterval; settings.selected_camera_id = selectedCameraID

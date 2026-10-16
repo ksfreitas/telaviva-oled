@@ -37,6 +37,8 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+      - name: Test camera lifecycle policy
+        run: tools/tests/test-camera-lifecycle.sh
       - name: Install Rust tools and arm64 target
         run: |
           rustup toolchain install stable --profile minimal

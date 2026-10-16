@@ -1,8 +1,9 @@
 import AVFoundation
+import CoreMedia
 import CoreVideo
 import Foundation
 
-/// Uses one-frame sessions while present and holds a shared, read-only session during return checks.
+/// Uses one-frame sessions by default and can retain a healthy session in opt-in always-on mode.
 /// Return frames are discarded between deadlines; frame bytes never enter the ABI.
 final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     private let queue = DispatchQueue(label: "com.telaviva.camera", qos: .utility)
@@ -19,8 +20,16 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var stopped = false
     private var sampleTimer: DispatchWorkItem?
     private var timeoutTimer: DispatchWorkItem?
+    private var settleTimer: DispatchWorkItem?
     private var detectorReleaseTimer: DispatchWorkItem?
     private var detector: OpaquePointer?
+    private var lifecycle = CameraLifecycle()
+    private var sampleGeneration: UInt64 = 0
+    private var timeoutEpoch: UInt64 = 0
+    private var sampleTimerEpoch: UInt64 = 0
+    private var sampleStartedAt: TimeInterval = 0
+    private var timeoutAssessmentToken: UInt64?
+    private var latestSnapshotRevision: UInt64?
 
     func apply(_ snapshot: CoreSnapshot, core: CoreBridge) {
         self.core = core
@@ -28,16 +37,36 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         let nextCaptureMode = snapshot.camera?.capture_mode ?? "single_frame"
         let nextGeneration = snapshot.camera?.generation ?? 0
         let nextCameraID = snapshot.settings?.selected_camera_id
+        let nextAlwaysOn = snapshot.settings?.always_on_camera ?? false
         queue.async { [weak self] in
             guard let self, !self.stopped else { return }
-            if nextMode != self.mode || nextCaptureMode != self.captureMode
-                || nextGeneration != self.generation || nextCameraID != self.selectedCameraID {
-                self.stopCapture()
-                self.mode = nextMode
-                self.captureMode = nextCaptureMode
-                self.generation = nextGeneration
-                self.selectedCameraID = nextCameraID
+            if let revision = snapshot.revision {
+                if let latest = self.latestSnapshotRevision, revision < latest { return }
+                self.latestSnapshotRevision = revision
             }
+            let previousGeneration = self.generation
+            let previousMode = self.mode
+            let previousCaptureMode = self.captureMode
+            let policyChanged = nextGeneration != previousGeneration || nextMode != previousMode
+                || nextCaptureMode != previousCaptureMode
+            let stop = self.lifecycle.reconcile(mode: nextMode, captureMode: nextCaptureMode,
+                generation: nextGeneration, cameraID: nextCameraID, alwaysOn: nextAlwaysOn)
+            if stop { self.stopCapture() }
+            if !stop && policyChanged {
+                self.sampleTimer?.cancel()
+                self.sampleTimer = nil
+                self.sampleTimerEpoch &+= 1
+                self.settleTimer?.cancel()
+                self.settleTimer = nil
+                self.timeoutTimer?.cancel()
+                self.timeoutTimer = nil
+                self.lifecycle.cancelDeadlines()
+                self.inferenceRequested = false
+            }
+            self.mode = nextMode
+            self.captureMode = nextCaptureMode
+            self.generation = nextGeneration
+            self.selectedCameraID = nextCameraID
             if self.mode == "face" {
                 self.cancelDetectorRelease()
             } else {
@@ -47,12 +76,19 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                 self.stopCapture()
                 return
             }
-            let canSchedule = self.captureMode == "continuous_return"
+            let canSchedule = self.captureMode == "continuous_return" || self.captureMode == "continuous_monitoring"
                 ? !self.inferenceRequested
                 : !self.sampling
             guard canSchedule, self.sampleTimer == nil else { return }
             let delay = Double(snapshot.camera?.next_sample_in_ms ?? 0) / 1000.0
-            let work = DispatchWorkItem { [weak self] in self?.requestSample() }
+            self.sampleTimerEpoch &+= 1
+            let expectedTimerEpoch = self.sampleTimerEpoch
+            let expectedGeneration = self.generation
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, !self.stopped, self.sampleTimerEpoch == expectedTimerEpoch,
+                      self.generation == expectedGeneration else { return }
+                self.requestSample()
+            }
             self.sampleTimer = work
             self.queue.asyncAfter(deadline: .now() + max(0, delay), execute: work)
         }
@@ -61,11 +97,31 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private func requestSample() {
         sampleTimer = nil
         guard !stopped, mode == "face" || mode == "light_only" else { return }
-        if captureMode == "continuous_return" {
+        sampleStartedAt = CMClockGetTime(CMClockGetHostTimeClock()).seconds
+        if captureMode == "continuous_return" || captureMode == "continuous_monitoring" {
             inferenceRequested = true
-            if sampling { armCaptureTimeout() }
+            sampleGeneration = generation
+            if sampling && mode != "light_only" { armCaptureTimeout() }
         }
-        if mode == "light_only" { startCapture(); return }
+        if mode == "light_only" {
+            sampleGeneration = generation
+            startCapture()
+            guard sampling else { return }
+            lifecycle.beginLightAssessment(now: cameraClockNow())
+            let assessmentToken = lifecycle.assessmentToken
+            settleTimer?.cancel()
+            let expectedGeneration = generation
+            let settle = DispatchWorkItem { [weak self] in
+                guard let self, !self.stopped, self.sampling, self.generation == expectedGeneration,
+                      self.mode == "light_only", self.lifecycle.isCurrentAssessment(assessmentToken) else { return }
+                guard !self.lifecycle.acquisitionPending else { return }
+                self.armCaptureTimeout(assessmentToken: assessmentToken)
+            }
+            settleTimer = settle
+            queue.asyncAfter(deadline: .now() + 5, execute: settle)
+            return
+        }
+        sampleGeneration = generation
         let requestGeneration = generation
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized: startCapture()
@@ -104,19 +160,33 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         capture.addOutput(frames)
         capture.commitConfiguration()
         session = capture; output = frames; sampling = true; receivedFirstFrame = false
-        if captureMode == "continuous_return" { inferenceRequested = true }
+        if captureMode == "continuous_return" || captureMode == "continuous_monitoring" { inferenceRequested = true }
+        lifecycle.beginAcquisition(now: cameraClockNow())
         armCaptureTimeout()
         capture.startRunning()
     }
 
     /// Bounds initial acquisition and each requested return frame. No watchdog runs between
     /// healthy return deadlines, so an open but idle session is not mistaken for a failure.
-    private func armCaptureTimeout() {
+    private func armCaptureTimeout(assessmentToken: UInt64? = nil) {
         timeoutTimer?.cancel()
+        timeoutAssessmentToken = assessmentToken
+        timeoutEpoch &+= 1
+        let expectedTimeoutEpoch = timeoutEpoch
         let expectedGeneration = generation
         let timeout = DispatchWorkItem { [weak self] in
-            guard let self, self.sampling, self.generation == expectedGeneration else { return }
-            let stillWaiting = self.captureMode == "continuous_return"
+            guard let self, self.sampling, self.generation == expectedGeneration,
+                  self.timeoutEpoch == expectedTimeoutEpoch else { return }
+            if self.mode == "light_only" {
+                if let assessmentToken {
+                    guard self.lifecycle.isCurrentAssessment(assessmentToken) else { return }
+                }
+                guard self.lifecycle.timedOut(at: self.cameraClockNow()) else { return }
+                self.stopCapture()
+                self.report(status: "unavailable", cameraStatus: "busy")
+                return
+            }
+            let stillWaiting = self.captureMode == "continuous_return" || self.captureMode == "continuous_monitoring"
                 ? self.inferenceRequested
                 : !self.receivedFirstFrame
             guard stillWaiting else { return }
@@ -129,12 +199,33 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard !stopped, output === self.output, sampling else { return }
-        if captureMode == "continuous_return", !inferenceRequested { return }
+        if (captureMode == "continuous_return" || captureMode == "continuous_monitoring"), !inferenceRequested { return }
         guard let frame = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        inferenceRequested = false
+        guard let activeSession = session, let synchronizationClock = activeSession.synchronizationClock else { return }
+        let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        let frameTime = CMSyncConvertTime(presentationTime, from: synchronizationClock,
+                                          to: CMClockGetHostTimeClock()).seconds
+        guard frameTime.isFinite, frameTime >= sampleStartedAt else { return }
         receivedFirstFrame = true
+        lifecycle.acquiredFrame()
+        let keepSessionOpen = lifecycle.shouldKeepSession || captureMode == "continuous_return"
+        let decision = lifecycle.frame(at: frameTime)
+        if decision == .assessmentExpired {
+            stopCapture()
+            report(status: "unavailable", cameraStatus: "busy")
+            return
+        }
+        if decision == .discardWarmup {
+            if timeoutAssessmentToken == nil {
+                timeoutTimer?.cancel(); timeoutTimer = nil
+                timeoutEpoch &+= 1
+            }
+            return
+        }
         timeoutTimer?.cancel(); timeoutTimer = nil
-        let keepSessionOpen = captureMode == "continuous_return"
+        timeoutAssessmentToken = nil
+        timeoutEpoch &+= 1
+        inferenceRequested = false
         defer { if !keepSessionOpen { stopCapture() } }
         CVPixelBufferLockBaseAddress(frame, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(frame, .readOnly) }
@@ -145,7 +236,7 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         let width = CVPixelBufferGetWidth(frame), height = CVPixelBufferGetHeight(frame)
         let stride = CVPixelBufferGetBytesPerRow(frame)
         let length = stride * height
-        if mode == "light_only" {
+        if decision == .assessLight {
             let code = tv_inference_assess_light_bgra(
                 base.assumingMemoryBound(to: UInt8.self), length, UInt32(width), UInt32(height), stride)
             switch code {
@@ -167,7 +258,6 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         default: status = "unavailable"
         }
         report(status: status, cameraStatus: status == "unavailable" ? "error" : "ready")
-        if keepSessionOpen && status == "present" { stopCapture() }
     }
 
     private func ensureDetector() -> Bool {
@@ -207,19 +297,28 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     }
 
     private func report(status: String, cameraStatus: String) {
+        guard !stopped, lifecycle.acceptsCallback(generation: sampleGeneration) else { return }
         let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
         core?.submit(["type": "presence_observation", "status": status,
-                      "captured_at_ms": timestamp, "camera_generation": generation,
+                      "captured_at_ms": timestamp, "camera_generation": sampleGeneration,
                       "camera_status": cameraStatus])
+    }
+
+    private func cameraClockNow() -> TimeInterval {
+        CMClockGetTime(CMClockGetHostTimeClock()).seconds
     }
 
     private func stopCapture() {
         sampleTimer?.cancel(); sampleTimer = nil
+        sampleTimerEpoch &+= 1
         timeoutTimer?.cancel(); timeoutTimer = nil
+        timeoutAssessmentToken = nil
+        settleTimer?.cancel(); settleTimer = nil
         output?.setSampleBufferDelegate(nil, queue: nil)
         if session?.isRunning == true { session?.stopRunning() }
         output = nil; session = nil; sampling = false
         inferenceRequested = false; receivedFirstFrame = false
+        lifecycle.cancelDeadlines()
     }
 
     func shutdown() {

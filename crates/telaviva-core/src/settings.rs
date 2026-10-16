@@ -21,6 +21,8 @@ pub struct Settings {
     #[serde(default)]
     pub presence_protection_enabled: bool,
     #[serde(default)]
+    pub always_on_camera: bool,
+    #[serde(default)]
     pub screensaver_protection_enabled: bool,
     #[serde(default)]
     pub launch_at_login: bool,
@@ -55,6 +57,7 @@ impl Default for Settings {
             return_sampling_interval_s: 1.0,
             suspend_presence_on_battery: true,
             presence_protection_enabled: false,
+            always_on_camera: false,
             screensaver_protection_enabled: false,
             launch_at_login: false,
             selected_camera_id: None,

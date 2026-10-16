@@ -15,9 +15,23 @@ final class MacDDCController {
     private var handledActionOrder: [UInt64] = []
     private var displays: [String: DisplayTransport] = [:]
     private var observer: NSObjectProtocol?
+    private var workspaceObservers: [NSObjectProtocol] = []
+    private var displayStates: [String: String] = [:]
+    private var pendingDisplayStates: [String: String] = [:]
+    private var connectionGenerations: [String: UInt64] = [:]
+    private var lastReportedDisplayStates: [String: ReportedDisplayState] = [:]
+    private var incompleteBrightnessAtDiscovery = Set<String>()
+    private var latestPendingActionIDs = Set<UInt64>()
+    private var latestSnapshotRevision: UInt64?
+    private var asleepActionIDs = Set<UInt64>()
     private var stopped = false
     private var probeReport: [String: Any] = [:]
     private var lastAVSearchStage = "not_attempted"
+
+    private struct ReportedDisplayState: Equatable {
+        let generation: UInt64
+        let state: String
+    }
 
     init(core: CoreBridge) { self.core = core }
 
@@ -28,6 +42,13 @@ final class MacDDCController {
             object: nil,
             queue: .main
         ) { [weak self] _ in self?.enumerate() }
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        workspaceObservers.append(workspaceCenter.addObserver(
+            forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: nil
+        ) { [weak self] _ in self?.setAllDisplaysAsleep() })
+        workspaceObservers.append(workspaceCenter.addObserver(
+            forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: nil
+        ) { [weak self] _ in self?.refreshDisplayStates() })
     }
 
     /// Performs the same real DDC reads used by display discovery and returns
@@ -54,6 +75,8 @@ final class MacDDCController {
     func shutdown() {
         if let observer { NotificationCenter.default.removeObserver(observer) }
         observer = nil
+        for token in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(token) }
+        workspaceObservers.removeAll()
         queue.async { [weak self] in
             guard let self else { return }
             self.stopped = true
@@ -66,10 +89,38 @@ final class MacDDCController {
     }
 
     func process(_ snapshot: CoreSnapshot) {
-        guard let actions = snapshot.pending_actions else { return }
+        guard let revision = snapshot.revision else { return }
+        let actions = snapshot.pending_actions ?? []
         queue.async { [weak self] in
             guard let self, !self.stopped else { return }
-            for action in actions where self.remember(action.id) {
+            if let latest = self.latestSnapshotRevision, revision < latest { return }
+            self.latestSnapshotRevision = revision
+            self.connectionGenerations = Dictionary(uniqueKeysWithValues: (snapshot.monitors ?? []).compactMap { monitor in
+                monitor.generation.map { (monitor.id, $0) }
+            })
+            self.latestPendingActionIDs = Set(actions.map(\.id))
+            self.asleepActionIDs.formIntersection(self.latestPendingActionIDs)
+            for (monitorID, state) in self.displayStates {
+                if let generation = self.connectionGenerations[monitorID],
+                   self.lastReportedDisplayStates[monitorID] != ReportedDisplayState(generation: generation, state: state) {
+                    self.pendingDisplayStates[monitorID] = state
+                }
+            }
+            self.flushPendingDisplayStates()
+            for action in actions {
+                guard self.latestPendingActionIDs.contains(action.id) else { continue }
+                guard !self.asleepActionIDs.contains(action.id) else { continue }
+                guard self.displayStates[action.monitor_id] != "asleep" else {
+                    self.asleepActionIDs.insert(action.id)
+                    continue
+                }
+                guard let transport = self.displays[action.monitor_id] else { continue }
+                if CGDisplayIsAsleep(transport.displayID) != 0 {
+                    self.blockForSleep(action)
+                    self.reportDisplayState(action.monitor_id, state: "asleep")
+                    continue
+                }
+                guard self.remember(action.id) else { continue }
                 self.perform(action)
             }
         }
@@ -78,7 +129,7 @@ final class MacDDCController {
     private func enumerate() {
         queue.async { [weak self] in
             guard let self, !self.stopped else { return }
-            self.discoverDisplays()
+            self.discoverDisplays(recoverInitialBrightness: true)
         }
     }
 
@@ -96,7 +147,7 @@ final class MacDDCController {
         let identityIsStable: Bool
     }
 
-    private func discoverDisplays() {
+    private func discoverDisplays(recoverInitialBrightness: Bool = false) {
         var count: UInt32 = 0
         guard CGGetOnlineDisplayList(0, nil, &count) == .success, count > 0 else {
             probeReport = ["online_display_count": count, "external_display_count": 0, "discovered_monitor_count": 0, "ioav_transport_count": 0, "displays": []]
@@ -182,20 +233,105 @@ final class MacDDCController {
         for (key, transport) in displays {
             let previousTransport = previous[key]
             if previousTransport == nil {
+                let brightness = readVCP(transport: transport, code: 0x10)
+                let volume = readVCP(transport: transport, code: 0x62)
+                if brightness == nil, transport.service != nil {
+                    incompleteBrightnessAtDiscovery.insert(key)
+                } else {
+                    incompleteBrightnessAtDiscovery.remove(key)
+                }
                 core?.submit(["type": "monitor_discovered", "monitor": [
                     "id": key,
                     "name": transport.name,
                     "identity_status": transport.identityIsStable ? "stable" : "ambiguous",
                     "connection_path": transport.location,
-                    "brightness": featureJSON(readVCP(transport: transport, code: 0x10)),
-                    "volume": featureJSON(readVCP(transport: transport, code: 0x62))
+                    "brightness": featureJSON(brightness),
+                    "volume": featureJSON(volume)
                 ]])
             }
         }
+        refreshDisplayStatesOnQueue(recoverInitialBrightness: recoverInitialBrightness)
         publishDisconnectedDisplays(Set(displays.keys))
     }
 
+    private func setAllDisplaysAsleep() {
+        queue.async { [weak self] in
+            guard let self, !self.stopped else { return }
+            // The workspace sleep notification is authoritative for this edge;
+            // CGDisplayIsAsleep can lag behind it.
+            for monitorID in self.displays.keys {
+                self.reportDisplayState(monitorID, state: "asleep")
+            }
+        }
+    }
+
+    private func refreshDisplayStates() {
+        queue.async { [weak self] in
+            guard let self, !self.stopped else { return }
+            self.discoverDisplays(recoverInitialBrightness: true)
+        }
+    }
+
+    private func refreshDisplayStatesOnQueue(recoverInitialBrightness: Bool = false) {
+        for (monitorID, transport) in displays {
+            let state = CGDisplayIsAsleep(transport.displayID) != 0 ? "asleep" : "awake"
+            if recoverInitialBrightness, state == "awake", incompleteBrightnessAtDiscovery.contains(monitorID),
+               let brightness = readVCP(transport: transport, code: 0x10) {
+                let volume = readVCP(transport: transport, code: 0x62)
+                incompleteBrightnessAtDiscovery.remove(monitorID)
+                // Initial discovery happened while the display was asleep, so
+                // there was no trustworthy baseline. Rebuild this one monitor
+                // from a fresh physical read before reporting it awake.
+                connectionGenerations.removeValue(forKey: monitorID)
+                core?.submit(["type": "monitor_discovered", "monitor": [
+                    "id": monitorID,
+                    "name": transport.name,
+                    "identity_status": transport.identityIsStable ? "stable" : "ambiguous",
+                    "connection_path": transport.location,
+                    "brightness": featureJSON(brightness),
+                    "volume": featureJSON(volume)
+                ]])
+            }
+            reportDisplayState(monitorID, state: state)
+        }
+    }
+
+    private func reportDisplayState(_ monitorID: String, state: String) {
+        displayStates[monitorID] = state
+        pendingDisplayStates[monitorID] = state
+        flushPendingDisplayStates()
+    }
+
+    private func flushPendingDisplayStates() {
+        for (monitorID, state) in Array(pendingDisplayStates) {
+            guard let generation = connectionGenerations[monitorID] else { continue }
+            let reported = ReportedDisplayState(generation: generation, state: state)
+            guard lastReportedDisplayStates[monitorID] != reported else {
+                pendingDisplayStates.removeValue(forKey: monitorID)
+                continue
+            }
+            core?.submit(["type": "monitor_display_state", "monitor_id": monitorID,
+                          "generation": generation, "state": state])
+            lastReportedDisplayStates[monitorID] = reported
+            pendingDisplayStates.removeValue(forKey: monitorID)
+        }
+    }
+
+    private func blockForSleep(_ action: PendingAction) {
+        asleepActionIDs.insert(action.id)
+        if handledActions.remove(action.id) != nil {
+            handledActionOrder.removeAll { $0 == action.id }
+        }
+    }
+
     private func publishDisconnectedDisplays(_ present: Set<String>) {
+        for removed in Set(displayStates.keys).subtracting(present) {
+            displayStates.removeValue(forKey: removed)
+            pendingDisplayStates.removeValue(forKey: removed)
+            connectionGenerations.removeValue(forKey: removed)
+            lastReportedDisplayStates.removeValue(forKey: removed)
+            incompleteBrightnessAtDiscovery.remove(removed)
+        }
         for removed in active.subtracting(present) {
             core?.submit(["type": "monitor_disconnected", "monitor_id": removed])
         }
@@ -296,6 +432,7 @@ final class MacDDCController {
     }
 
     private func perform(_ action: PendingAction) {
+        guard displayStates[action.monitor_id] != "asleep" else { return }
         guard let transport = displays[action.monitor_id], transport.identityIsStable else {
             submitResult(action, ok: false, error: displays[action.monitor_id] == nil ? "disconnected" : "ambiguous")
             return
@@ -315,6 +452,13 @@ final class MacDDCController {
             // Core has already mapped the user-facing 0...100 value into this
             // feature's raw DDC range before creating the hardware action.
             let raw = UInt16(max(0, min(Double(current.maximum), target.rounded())))
+            guard let currentDisplayID = displays[action.monitor_id]?.displayID,
+                  CGDisplayIsAsleep(currentDisplayID) == 0,
+                  displayStates[action.monitor_id] != "asleep" else {
+                blockForSleep(action)
+                reportDisplayState(action.monitor_id, state: "asleep")
+                return
+            }
             guard writeVCP(transport: transport, code: feature, value: raw) else {
                 submitResult(action, ok: false, error: "io"); return
             }

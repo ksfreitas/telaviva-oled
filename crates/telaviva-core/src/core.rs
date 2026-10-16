@@ -40,6 +40,7 @@ struct Monitor {
     identity: String,
     path: String,
     generation: u64,
+    display_state: String,
     brightness: Feature,
     volume: Feature,
     baseline: Option<f64>,
@@ -47,6 +48,7 @@ struct Monitor {
     saver_dimmed: bool,
     misses: u8,
     manual_override: bool,
+    wake_ownership_check: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -125,6 +127,7 @@ impl Core {
                 "monitor_discovered" => &["type", "monitor"][..],
                 "monitor_disconnected" => &["type", "monitor_id"],
                 "monitor_observed" => &["type", "monitor_id", "generation", "brightness", "volume"],
+                "monitor_display_state" => &["type", "monitor_id", "generation", "state"],
                 "presence_observation" => &[
                     "type",
                     "status",
@@ -149,6 +152,7 @@ impl Core {
             "monitor_discovered" => self.discover(&value)?,
             "monitor_disconnected" => self.disconnect(&value)?,
             "monitor_observed" => self.observe_monitor(&value)?,
+            "monitor_display_state" => self.display_state(&value)?,
             "presence_observation" => self.presence(&value)?,
             "power" => {
                 if !value
@@ -266,6 +270,7 @@ impl Core {
                 identity: identity.into(),
                 path: path.into(),
                 generation,
+                display_state: "unknown".into(),
                 brightness,
                 volume,
                 baseline,
@@ -273,6 +278,7 @@ impl Core {
                 saver_dimmed: false,
                 misses: 0,
                 manual_override: false,
+                wake_ownership_check: false,
             },
         );
         Ok(())
@@ -329,6 +335,36 @@ impl Core {
         Ok(())
     }
 
+    fn display_state(&mut self, v: &Value) -> Result<(), String> {
+        let id = string(v, "monitor_id")?.to_owned();
+        let generation = number_u64(v, "generation")?;
+        let state = string(v, "state")?;
+        if !["unknown", "awake", "asleep"].contains(&state) {
+            return Err("invalid display state".into());
+        }
+        let monitor = self.monitors.get_mut(&id).ok_or("unknown monitor")?;
+        if generation != monitor.generation {
+            return Ok(());
+        }
+        if monitor.display_state == state {
+            return Ok(());
+        }
+        let was_asleep = monitor.display_state == "asleep";
+        monitor.display_state = state.into();
+        monitor.misses = 0;
+        monitor.presence_dimmed = false;
+        monitor.brightness.ownership_checked_target = None;
+        monitor.wake_ownership_check = if state == "asleep" {
+            false
+        } else {
+            was_asleep || monitor.wake_ownership_check
+        };
+        self.actions.retain(|action| action.monitor_id != id);
+        self.camera_generation = self.camera_generation.saturating_add(1);
+        self.reconcile_camera();
+        self.reconcile_all()
+    }
+
     fn manual_set(&mut self, kind: &str, v: &Value) -> Result<(), String> {
         let id = string(v, "monitor_id")?.to_owned();
         let value = number(v, "value")?;
@@ -348,6 +384,10 @@ impl Core {
         };
         if !feature.supported {
             feature.status = "unsupported".into();
+            return Ok(());
+        }
+        if m.display_state == "asleep" {
+            feature.status = "suspended_display_sleep".into();
             return Ok(());
         }
         let raw = map_normalized(value, feature.min, feature.max);
@@ -399,6 +439,9 @@ impl Core {
                 "presence_protection_enabled" => {
                     next.presence_protection_enabled =
                         val.as_bool().ok_or("setting must be boolean")?
+                }
+                "always_on_camera" => {
+                    next.always_on_camera = val.as_bool().ok_or("setting must be boolean")?
                 }
                 "screensaver_protection_enabled" => {
                     next.screensaver_protection_enabled =
@@ -471,6 +514,7 @@ impl Core {
             .map_err(|e| e.to_string())?
             .as_millis() as u64;
         if gen != self.camera_generation
+            || matches!(self.camera_mode(), "disabled" | "suspended")
             || ts <= self.last_presence_ms
             || ts > now
             || now.saturating_sub(ts) > 60_000
@@ -499,6 +543,9 @@ impl Core {
                     return Ok(());
                 }
                 for m in self.monitors.values_mut() {
+                    if m.display_state == "asleep" {
+                        continue;
+                    }
                     m.misses = m.misses.saturating_add(1);
                     if m.misses >= 2 {
                         m.presence_dimmed = true;
@@ -551,16 +598,24 @@ impl Core {
                 monitor.presence_dimmed = false;
                 monitor.misses = 0;
             }
+        } else if self.all_eligible_displays_asleep() {
+            if !["unavailable", "busy", "permission", "error"]
+                .contains(&self.camera_status.as_str())
+            {
+                self.camera_status = "unknown".into();
+            }
+            for monitor in self.monitors.values_mut() {
+                monitor.presence_dimmed = false;
+                monitor.misses = 0;
+            }
         }
     }
     fn camera_mode(&self) -> &'static str {
         if self.closed || !self.settings.presence_protection_enabled {
             "disabled"
         } else if (self.settings.suspend_presence_on_battery && self.on_battery != Some(false))
-            || !self
-                .monitors
-                .values()
-                .any(|m| m.identity == "stable" && m.brightness.supported && m.baseline.is_some())
+            || !self.monitors.values().any(Self::monitor_is_camera_eligible)
+            || self.all_eligible_displays_asleep()
             || (self.camera_status != "unknown"
                 && ["unavailable", "busy", "permission", "error"]
                     .contains(&self.camera_status.as_str()))
@@ -571,6 +626,19 @@ impl Core {
         } else {
             "face"
         }
+    }
+
+    fn monitor_is_camera_eligible(m: &Monitor) -> bool {
+        m.identity == "stable" && m.brightness.supported && m.baseline.is_some()
+    }
+
+    fn all_eligible_displays_asleep(&self) -> bool {
+        let mut eligible = self
+            .monitors
+            .values()
+            .filter(|monitor| Self::monitor_is_camera_eligible(monitor))
+            .peekable();
+        eligible.peek().is_some() && eligible.all(|monitor| monitor.display_state == "asleep")
     }
 
     fn camera_display_status(&self, mode: &str) -> &'static str {
@@ -587,6 +655,7 @@ impl Core {
                 _ if self.settings.suspend_presence_on_battery && self.on_battery.is_none() => {
                     "suspended_power_unknown"
                 }
+                _ if self.all_eligible_displays_asleep() => "suspended_display_sleep",
                 _ => "suspended_no_monitor",
             },
             "light_only" => "insufficient_light",
@@ -614,6 +683,9 @@ impl Core {
                 reasons.push("screensaver".to_owned());
             }
             m.brightness.reasons = reasons;
+            if m.display_state == "asleep" {
+                continue;
+            }
             if m.presence_dimmed && m.baseline.is_none() {
                 m.brightness.status = "read_required".into();
                 continue;
@@ -644,6 +716,22 @@ impl Core {
                 None
             };
             if let Some(target) = target {
+                if m.wake_ownership_check
+                    && m.brightness
+                        .observed
+                        .map(|observed| (observed - target).abs() > 0.0001)
+                        .unwrap_or(true)
+                {
+                    enqueue_brightness_read(
+                        &mut self.actions,
+                        &mut self.next_id,
+                        &m.id,
+                        action_generation,
+                        target,
+                        &mut m.brightness.status,
+                    )?;
+                    continue;
+                }
                 if m.brightness.owned
                     && m.brightness
                         .raw
@@ -663,20 +751,14 @@ impl Core {
                             Some(target),
                             None,
                         )?;
-                    } else if !self
-                        .actions
-                        .iter()
-                        .any(|a| a.monitor_id == m.id && a.kind == "read_brightness")
-                    {
-                        m.brightness.status = "verifying_ownership".into();
-                        enqueue(
+                    } else {
+                        enqueue_brightness_read(
                             &mut self.actions,
                             &mut self.next_id,
                             &m.id,
                             action_generation,
-                            "read_brightness",
-                            None,
-                            Some(target),
+                            target,
+                            &mut m.brightness.status,
                         )?;
                     }
                     continue;
@@ -754,6 +836,7 @@ impl Core {
         };
         if action.kind == "read_brightness" {
             let feature = &mut m.brightness;
+            m.wake_ownership_check = false;
             if ok {
                 let value = v
                     .get("value")
@@ -827,7 +910,7 @@ impl Core {
         for m in self.monitors.values_mut() {
             m.presence_dimmed = false;
             m.saver_dimmed = false;
-            if m.brightness.owned {
+            if m.brightness.owned && m.display_state != "asleep" {
                 if let Some(v) = m.baseline {
                     enqueue(
                         &mut self.actions,
@@ -846,7 +929,7 @@ impl Core {
     }
 
     pub fn snapshot_value(&self) -> Result<Value, String> {
-        let monitors:Vec<Value>=self.monitors.values().map(|m|json!({"id":m.id,"name":m.name,"identity_status":m.identity,"connection_path":m.path,"generation":m.generation,
+        let monitors:Vec<Value>=self.monitors.values().map(|m|json!({"id":m.id,"name":m.name,"identity_status":m.identity,"connection_path":m.path,"generation":m.generation,"display_state":m.display_state,
             "presence_dimmed":m.presence_dimmed,"brightness":feature_json(&m.brightness),"volume":feature_json(&m.volume)})).collect();
         let mut scheduled_monitors = std::collections::BTreeSet::new();
         let actions: Vec<Value> = self.actions.iter()
@@ -871,6 +954,8 @@ impl Core {
             "stopped"
         } else if camera_mode == "face" && self.monitors.values().any(|m| m.presence_dimmed) {
             "continuous_return"
+        } else if self.settings.always_on_camera {
+            "continuous_monitoring"
         } else {
             "single_frame"
         };
@@ -1084,6 +1169,30 @@ fn enqueue(
         target,
     });
     Ok(())
+}
+fn enqueue_brightness_read(
+    q: &mut VecDeque<Action>,
+    next: &mut u64,
+    monitor_id: &str,
+    generation: u64,
+    target: f64,
+    status: &mut String,
+) -> Result<(), String> {
+    if q.iter()
+        .any(|action| action.monitor_id == monitor_id && action.kind == "read_brightness")
+    {
+        return Ok(());
+    }
+    *status = "verifying_ownership".into();
+    enqueue(
+        q,
+        next,
+        monitor_id,
+        generation,
+        "read_brightness",
+        None,
+        Some(target),
+    )
 }
 fn map_normalized(v: f64, min: f64, max: f64) -> f64 {
     min + (v / 100.0) * (max - min)

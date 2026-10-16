@@ -106,6 +106,8 @@ struct CoreMonitor: Decodable, Identifiable {
     var presence_dimmed: Bool?
     var identity_status: String?
     var connection_path: String?
+    var generation: UInt64?
+    var display_state: String?
     var brightness: VcpValue?
     var volume: VcpValue?
 }
@@ -126,6 +128,7 @@ struct CoreSettings: Decodable {
     var return_sampling_interval_s = 1.0
     var suspend_presence_on_battery = true
     var presence_protection_enabled = false
+    var always_on_camera: Bool?
     var screensaver_protection_enabled = false
     var launch_at_login = false
     var screensaver_targets: [String: Double] = [:]
@@ -136,6 +139,7 @@ struct CoreSettings: Decodable {
         "return_sampling_interval_s": return_sampling_interval_s,
         "suspend_presence_on_battery": suspend_presence_on_battery,
         "presence_protection_enabled": presence_protection_enabled,
+        "always_on_camera": always_on_camera ?? false,
         "screensaver_protection_enabled": screensaver_protection_enabled,
         "launch_at_login": launch_at_login, "screensaver_targets": screensaver_targets,
         "selected_camera_id": selected_camera_id ?? NSNull()

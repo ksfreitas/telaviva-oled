@@ -22,6 +22,18 @@ fn settings_defaults_validate_and_reject_future_schema_and_bad_ranges() {
     assert_eq!(defaults.presence_sampling_interval_s, 10.0);
     assert_eq!(defaults.return_sampling_interval_s, 1.0);
     assert!(defaults.suspend_presence_on_battery);
+    assert!(!defaults.always_on_camera);
+    let old_schema = Settings::from_json(
+        br#"{"schema_version":1,"locale":"pt-BR","presence_protection_enabled":true}"#,
+    )
+    .unwrap();
+    assert!(old_schema.presence_protection_enabled);
+    assert!(!old_schema.always_on_camera);
+    assert!(
+        Settings::from_json(br#"{"schema_version":1,"always_on_camera":true}"#)
+            .unwrap()
+            .always_on_camera
+    );
     assert!(
         Settings::from_json(&serde_json::to_vec(&json!({"schema_version":2})).unwrap()).is_err()
     );
@@ -91,6 +103,7 @@ fn old_valid_interval_settings_are_clamped_without_losing_other_preferences() {
     assert!(settings.launch_at_login);
     assert_eq!(settings.selected_camera_id.as_deref(), Some("camera-1"));
     assert_eq!(settings.screensaver_targets.get("display-1"), Some(&27.0));
+    assert!(!settings.always_on_camera);
     assert!(path.exists());
     assert!(!root.join("settings.json.corrupt").exists());
     let _ = std::fs::remove_dir_all(root);
@@ -105,6 +118,9 @@ fn command_rejects_duplicate_and_unknown_fields_without_changing_revision() {
         .is_err());
     assert!(core
         .submit_json(br#"{"type":"power","on_battery":false,"extra":true}"#)
+        .is_err());
+    assert!(core
+        .submit_json(br#"{"type":"monitor_display_state","monitor_id":"screen","generation":1,"state":"offline"}"#)
         .is_err());
     assert_eq!(
         core.snapshot_value().unwrap()["revision"].as_u64(),
@@ -351,6 +367,299 @@ fn camera_display_status_tracks_capture_success_and_policy_states() {
     assert_eq!(
         no_monitor["camera"]["display_status"],
         "suspended_no_monitor"
+    );
+}
+
+#[test]
+fn always_on_capture_is_opt_in_and_keeps_return_mode() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    send(
+        &mut core,
+        json!({"type":"monitor_discovered","monitor":{
+            "id":"screen","name":"Display","identity_status":"stable","connection_path":"usb",
+            "brightness":{"supported":true,"value":70,"raw":70,"min":0,"max":100},
+            "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}
+        }}),
+    );
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    let normal = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true}}),
+    );
+    assert_eq!(normal["camera"]["capture_mode"], "single_frame");
+    let always = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"always_on_camera":true}}),
+    );
+    assert_eq!(always["camera"]["mode"], "face");
+    assert_eq!(always["camera"]["capture_mode"], "continuous_monitoring");
+    let returning = send(
+        &mut core,
+        json!({"type":"presence_observation","status":"absent","captured_at_ms":capture_time(10_000),"camera_generation":always["camera"]["generation"]}),
+    );
+    let returning = send(
+        &mut core,
+        json!({"type":"presence_observation","status":"absent","captured_at_ms":capture_time(20_000),"camera_generation":returning["camera"]["generation"]}),
+    );
+    assert_eq!(returning["camera"]["capture_mode"], "continuous_return");
+}
+
+#[test]
+fn display_sleep_suspends_only_when_all_eligible_displays_sleep_and_ignores_stale_state() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    for id in ["one", "two"] {
+        send(
+            &mut core,
+            json!({"type":"monitor_discovered","monitor":{
+                "id":id,"name":id,"identity_status":"stable","connection_path":"usb",
+                "brightness":{"supported":true,"value":70,"raw":70,"min":0,"max":100},
+                "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}
+            }}),
+        );
+    }
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    let active = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true,"always_on_camera":true}}),
+    );
+    let one = active["monitors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == "one")
+        .unwrap();
+    let one_gen = one["generation"].as_u64().unwrap();
+    let mixed = send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"one","generation":one_gen,"state":"asleep"}),
+    );
+    assert_eq!(mixed["camera"]["mode"], "face");
+    let observed = send(
+        &mut core,
+        json!({"type":"presence_observation","status":"absent","captured_at_ms":capture_time(10_000),"camera_generation":mixed["camera"]["generation"]}),
+    );
+    let observed = send(
+        &mut core,
+        json!({"type":"presence_observation","status":"absent","captured_at_ms":capture_time(20_000),"camera_generation":observed["camera"]["generation"]}),
+    );
+    let monitors = observed["monitors"].as_array().unwrap();
+    assert_eq!(
+        monitors.iter().find(|m| m["id"] == "one").unwrap()["presence_dimmed"],
+        false
+    );
+    assert_eq!(
+        monitors.iter().find(|m| m["id"] == "two").unwrap()["presence_dimmed"],
+        true
+    );
+    assert_eq!(
+        observed["monitors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == "one")
+            .unwrap()["display_state"],
+        "asleep"
+    );
+    let two = observed["monitors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == "two")
+        .unwrap();
+    let asleep = send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"two","generation":two["generation"],"state":"asleep"}),
+    );
+    assert_eq!(asleep["camera"]["mode"], "suspended");
+    assert_eq!(
+        asleep["camera"]["display_status"],
+        "suspended_display_sleep"
+    );
+    assert_eq!(asleep["camera"]["capture_mode"], "stopped");
+    let current_gen = asleep["camera"]["generation"].as_u64().unwrap();
+    send(
+        &mut core,
+        json!({"type":"presence_observation","status":"present","captured_at_ms":capture_time(10_000),"camera_generation":current_gen}),
+    );
+    let rejected = core.snapshot_value().unwrap();
+    assert_eq!(rejected["camera"]["status"], asleep["camera"]["status"]);
+    let awake = send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"one","generation":one_gen,"state":"awake"}),
+    );
+    assert_eq!(awake["camera"]["mode"], "face");
+    assert!(awake["camera"]["generation"].as_u64().unwrap() > current_gen);
+    let before_stale = awake["camera"]["generation"].as_u64().unwrap();
+    send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"one","generation":999,"state":"asleep"}),
+    );
+    assert_eq!(
+        core.snapshot_value().unwrap()["camera"]["generation"],
+        before_stale
+    );
+}
+
+#[test]
+fn display_sleep_handles_unknown_zero_brightness_and_no_eligible_monitor() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    send(
+        &mut core,
+        json!({"type":"monitor_discovered","monitor":{
+            "id":"zero","name":"Zero","identity_status":"stable","connection_path":"usb",
+            "brightness":{"supported":true,"value":0,"raw":0,"min":0,"max":100},
+            "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}
+        }}),
+    );
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    let active = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true}}),
+    );
+    assert_eq!(active["camera"]["mode"], "face");
+    let monitor = active["monitors"][0].clone();
+    let unknown = send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"zero","generation":monitor["generation"],"state":"unknown"}),
+    );
+    assert_eq!(unknown["camera"]["mode"], "face");
+    let asleep = send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"zero","generation":monitor["generation"],"state":"asleep"}),
+    );
+    assert_eq!(
+        asleep["camera"]["display_status"],
+        "suspended_display_sleep"
+    );
+    let mut empty = Core::new(CoreOptions::default()).unwrap();
+    send(&mut empty, json!({"type":"power","on_battery":false}));
+    let empty = send(
+        &mut empty,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true}}),
+    );
+    assert_eq!(empty["camera"]["display_status"], "suspended_no_monitor");
+}
+
+#[test]
+fn asleep_displays_drop_pending_writes_and_wake_checks_ownership_before_write() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    let discovered = send(
+        &mut core,
+        json!({"type":"monitor_discovered","monitor":{
+            "id":"screen","name":"Display","identity_status":"stable","connection_path":"usb",
+            "brightness":{"supported":true,"value":70,"raw":70,"min":0,"max":100},
+            "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}
+        }}),
+    );
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    let generation = discovered["monitors"][0]["generation"].clone();
+    send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"screensaver_protection_enabled":true,"screensaver_targets":{"screen":20.0}}}),
+    );
+    let pending = send(&mut core, json!({"type":"screensaver","state":"active"}));
+    let pending_write = pending["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["kind"] == "set_brightness")
+        .unwrap()["id"]
+        .clone();
+    let asleep = send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"screen","generation":generation,"state":"asleep"}),
+    );
+    assert_eq!(asleep["screensaver"]["state"], "active");
+    assert!(asleep["monitors"][0]["brightness"]["reasons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|reason| reason == "screensaver"));
+    assert!(asleep["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|a| a["kind"] != "set_brightness"));
+    send(
+        &mut core,
+        json!({"type":"hardware_result","action_id":pending_write,"generation":pending["pending_actions"][0]["generation"],"ok":true,"value":20}),
+    );
+    let after_stale_write_ack = core.snapshot_value().unwrap();
+    assert_eq!(
+        after_stale_write_ack["monitors"][0]["brightness"]["observed"],
+        asleep["monitors"][0]["brightness"]["observed"]
+    );
+    assert!(after_stale_write_ack["pending_actions"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let awake = send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"screen","generation":generation,"state":"awake"}),
+    );
+    let read = awake["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["kind"] == "read_brightness")
+        .expect("wake must read before writing");
+    let read = read.clone();
+    let changed = send(
+        &mut core,
+        json!({"type":"hardware_result","action_id":read["id"],"generation":read["generation"],"ok":true,"value":35}),
+    );
+    assert!(changed["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|a| a["kind"] != "set_brightness"));
+    assert_eq!(changed["monitors"][0]["brightness"]["observed"], 35.0);
+}
+
+#[test]
+fn wake_read_failure_does_not_issue_a_protection_write() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    let discovered = send(
+        &mut core,
+        json!({"type":"monitor_discovered","monitor":{
+            "id":"screen","name":"Display","identity_status":"stable","connection_path":"usb",
+            "brightness":{"supported":true,"value":70,"raw":70,"min":0,"max":100},
+            "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}
+        }}),
+    );
+    let generation = discovered["monitors"][0]["generation"].clone();
+    send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"screensaver_protection_enabled":true,"screensaver_targets":{"screen":20.0}}}),
+    );
+    send(&mut core, json!({"type":"screensaver","state":"active"}));
+    send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"screen","generation":generation,"state":"asleep"}),
+    );
+    let awake = send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"screen","generation":generation,"state":"awake"}),
+    );
+    let read = awake["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|action| action["kind"] == "read_brightness")
+        .unwrap()
+        .clone();
+    let after_failure = send(
+        &mut core,
+        json!({"type":"hardware_result","action_id":read["id"],"generation":read["generation"],"ok":false,"error":"read_error"}),
+    );
+    assert!(after_failure["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|action| action["kind"] != "set_brightness"));
+    assert_eq!(
+        after_failure["monitors"][0]["brightness"]["status"],
+        "read_error"
     );
 }
 

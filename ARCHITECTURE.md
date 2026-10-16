@@ -113,3 +113,15 @@ The original [feature specification](specs/archived/external-monitor-control-and
 - The camera snapshot separates operational status from localized presentation status, including awaiting-first-image, functioning, low-light, failure and suspension reasons. Successful fresh observations update operational readiness.
 - The native popup aligns monitor controls, caps the protection-brightness slider at current brightness, and opens settings centered in the invoking monitor's visible area. Settings errors are localized and failed login registration is not persisted as successful.
 - MIT applies to project code; bundled third-party artifacts retain their notices. Packaging verifies asset digests and includes both project and dependency licenses.
+
+## Camera lifecycle and display suspension — 2026-10-16
+
+The camera lifecycle extension adds an opt-in `always_on_camera` preference to retain capture between scheduled presence checks. Capture eligibility remains controlled by the shared Rust policy; battery suspension, disabled protection, no eligible external monitor, display sleep, camera errors, and shutdown take priority. Retaining a capture session does not increase inference frequency. Return checks retain their existing continuous capture behavior.
+
+The native macOS adapter reports per-monitor OS sleep state with connection generations. Camera monitoring suspends when all eligible external displays are asleep; mixed awake/asleep configurations continue monitoring, while sleeping targets receive no DDC writes. Wake reconciliation uses fresh brightness readback and existing ownership rules. Brightness zero and screensaver state do not imply physical display sleep. A monitor manually powered off can remain logically awake depending on its connection.
+
+Low-light recovery uses the existing 10-second retry delay, then a five-second monotonic exposure-settling window before assessing a fresh frame. Initial acquisition and the post-settling frame each have a bounded timeout. Warmup frames do not enter inference or absence counting; two usable-light assessments remain required. The implementation plan and separate hardware checklist live under [camera lifecycle and display suspension](specs/camera-lifecycle-and-display-suspension.md). Source and automated checks do not establish physical camera or monitor compatibility.
+
+## camera-lifecycle-and-display-suspension — 2026-10-16
+
+This macOS extension adds opt-in continuous camera capture, per-display sleep policy, and exposure-settling behavior for low-light recovery, while retaining existing eligibility and brightness-ownership rules. The accepted decision is in [ADR 0003](adr/0003-camera-lifecycle-and-display-suspension.md); the standalone plan and unrun physical acceptance checklist are preserved in the [feature archive](specs/archived/camera-lifecycle-and-display-suspension/). Hardware behavior remains unverified, and Windows remains deferred.

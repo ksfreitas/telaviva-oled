@@ -30,7 +30,7 @@ cp "$ROOT/native/macos/DDC-LICENSE" "$LICENSES/DDC-LICENSE"
 cp "$ROOT/LICENSE" "$APP/Contents/Resources/LICENSE"
 
 SDK="$(xcrun --sdk macosx --show-sdk-path)"
-SOURCES=("$SRC/App.swift" "$SRC/CoreBridge.swift" "$SRC/MenuBarController.swift" "$SRC/MonitorPopup.swift" "$SRC/SettingsView.swift" "$SRC/PresenceCamera.swift" "$SRC/Localization.swift" "$SRC/MacDDCController.swift")
+SOURCES=("$SRC/App.swift" "$SRC/CoreBridge.swift" "$SRC/CameraLifecycle.swift" "$SRC/MenuBarController.swift" "$SRC/MonitorPopup.swift" "$SRC/SettingsView.swift" "$SRC/PresenceCamera.swift" "$SRC/Localization.swift" "$SRC/MacDDCController.swift")
 swiftc -sdk "$SDK" -target arm64-apple-macos14.0 -module-cache-path "$OUT/module-cache" \
   -O \
   -import-objc-header "$SRC/TelaViva-Bridging-Header.h" -I "$ROOT/include" -Xcc -I -Xcc "$ROOT/include" \
