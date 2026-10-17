@@ -18,7 +18,7 @@ private struct CoreBridgeTests {
         cameraHistoryDecodesAndStaysOutOfSaves()
         cameraSelectionRoundTripsThroughCore()
         coreSettingsAmbientFieldsJSON()
-        ambientLowPointsJSON()
+        ambientCurvePointsJSON()
         monitorFollowAndProtectionDecode()
         ambientSnapshotDecodes()
         builtInDisplayReportReachesTheSnapshot()
@@ -454,24 +454,35 @@ private struct CoreBridgeTests {
         return try! JSONDecoder().decode(CoreSnapshot.self, from: data)
     }
 
+    /// Builds a curve from (monitor percent, MacBook percent) pairs, in the order given.
+    private static func makeCurve(_ pairs: [(Int, Double)]) -> AmbientCurve {
+        AmbientCurve(points: pairs.map { AmbientCurvePoint(monitor: Double($0.0), builtin: $0.1) })
+    }
+
+    /// Reads the (monitor, builtin) pairs of an emitted curve object, in emitted order.
+    private static func emittedPointPairs(_ curve: [String: Any]?) -> [[Double]]? {
+        (curve?["points"] as? [[String: Any]])?.map { [($0["monitor"] as? Double) ?? -1, ($0["builtin"] as? Double) ?? -1] }
+    }
+
     private static func coreSettingsAmbientFieldsJSON() {
         // Snapshots from before brightness follow existed must still decode, with the new settings absent.
         let withoutAmbient = decodeSettings([:])
         expect(withoutAmbient.ambientFollowEnabled == nil && withoutAmbient.ambientCurves == nil &&
                withoutAmbient.protectionDisabled == nil, "absent ambient settings decode as nil")
 
-        // A curve with a null point is incomplete, but it must still decode so the settings can be saved back.
-        let complete = AmbientCurve(p25: 18, p50: 40, p75: 66, p100: 100)
-        let partial = AmbientCurve(p25: 18, p50: nil, p75: nil, p100: 100)
+        // A curve with fewer than two points is incomplete, but it must still decode so the settings can be saved back.
+        let complete = makeCurve([(25, 18), (50, 40), (75, 66), (100, 100)])
+        let partial = makeCurve([(25, 18)])
         let withAmbient = decodeSettings([
             "ambient_follow_enabled": true,
-            "ambient_curves": ["monitor-a": ["p25": 18, "p50": 40, "p75": 66, "p100": 100],
-                               "monitor-c": ["p25": 18, "p50": NSNull(), "p75": NSNull(), "p100": 100]],
+            "ambient_curves": ["monitor-a": ["points": [["monitor": 25, "builtin": 18], ["monitor": 50, "builtin": 40],
+                                                        ["monitor": 75, "builtin": 66], ["monitor": 100, "builtin": 100]]],
+                               "monitor-c": ["points": [["monitor": 25, "builtin": 18]]]],
             "protection_disabled": ["monitor-b"]
         ])
         expect(withAmbient.ambientFollowEnabled == true, "ambient_follow_enabled decodes from a snapshot that carries it")
         expect(withAmbient.ambientCurves == ["monitor-a": complete, "monitor-c": partial],
-               "ambient_curves decode per monitor, with null points as nil")
+               "ambient_curves decode per monitor from the points list")
         expect(withAmbient.protectionDisabled == ["monitor-b"], "protection_disabled decodes as a list of monitor IDs")
 
         var settings = CoreSettings()
@@ -483,16 +494,20 @@ private struct CoreBridgeTests {
         expect((emitted["ambient_follow_enabled"] as? Bool) == true, "ambient_follow_enabled is emitted as a bool when set")
         expect((emitted["protection_disabled"] as? [String]) == ["monitor-b"],
                "protection_disabled is emitted as an array of monitor IDs when set")
+        let pointsOnly: Set<String> = ["points"]
+        let pointKeys: Set<String> = ["monitor", "builtin"]
         let curves = emitted["ambient_curves"] as? [String: Any]
         let emittedComplete = curves?["monitor-a"] as? [String: Any]
-        expect((emittedComplete?["p25"] as? Double) == 18 && (emittedComplete?["p50"] as? Double) == 40 &&
-               (emittedComplete?["p75"] as? Double) == 66 && (emittedComplete?["p100"] as? Double) == 100,
-               "a complete curve is emitted with its four points as numbers")
+        expect(emittedPointPairs(emittedComplete) == [[25, 18], [50, 40], [75, 66], [100, 100]],
+               "a complete curve is emitted as its points, with monitor and builtin as numbers")
+        expect(emittedComplete.map { Set($0.keys) } == pointsOnly, "a curve object carries only the points list")
+        let completePointObjects = emittedComplete?["points"] as? [[String: Any]]
+        expect(completePointObjects?.allSatisfy { Set($0.keys) == pointKeys } == true,
+               "each emitted point carries exactly monitor and builtin")
         let emittedPartial = curves?["monitor-c"] as? [String: Any]
-        expect((emittedPartial?["p25"] as? Double) == 18 && (emittedPartial?["p100"] as? Double) == 100,
-               "a partial curve keeps its present points as numbers")
-        expect(emittedPartial?["p50"] is NSNull && emittedPartial?["p75"] is NSNull,
-               "a partial curve emits null for its missing points")
+        expect(emittedPointPairs(emittedPartial) == [[25, 18]],
+               "an incomplete curve keeps its single point as numbers")
+        expect(emittedPartial.map { Set($0.keys) } == pointsOnly, "an incomplete curve carries only the points list")
 
         // Omitted keys leave the core's stored values untouched, so an unrelated save must not send these.
         let unset = CoreSettings()
@@ -501,51 +516,28 @@ private struct CoreBridgeTests {
                "unset ambient settings are omitted from the payload so an unrelated save leaves them untouched")
     }
 
-    /// Low calibration points (1, 5, 10, 15 and 20%) are optional on the wire: emitted only when set, decoded as nil when absent.
-    private static func ambientLowPointsJSON() {
-        let allKeys: Set<String> = ["p1", "p5", "p10", "p15", "p20", "p25", "p50", "p75", "p100"]
-        let withLow = AmbientCurve(p1: 2, p5: 4, p10: 9, p15: 13, p20: 17, p25: 22, p50: 40, p75: 66, p100: 100)
-        // Low points without p1: the 1% point must stay absent while the other low points are still emitted.
-        let lowWithoutP1 = AmbientCurve(p5: 4, p10: 9, p15: 13, p20: 17, p25: 22, p50: 40, p75: 66, p100: 100)
-        let withoutLow = AmbientCurve(p25: 18, p50: 40, p75: 66, p100: 100)
-
+    /// Curves are emitted as a `points` list in stored (ascending) order, and an empty curve emits an empty list.
+    private static func ambientCurvePointsJSON() {
+        // Points are inserted out of order, so the emitted order depends on the sorted storage in `set`.
+        var built = AmbientCurve()
+        built.set(monitor: 75, builtin: 66)
+        built.set(monitor: 25, builtin: 18)
+        built.set(monitor: 50, builtin: 40)
         var settings = CoreSettings()
-        settings.ambientCurves = ["monitor-a": withLow, "monitor-b": lowWithoutP1, "monitor-c": withoutLow]
+        settings.ambientCurves = ["monitor-a": built, "monitor-b": AmbientCurve()]
         let emitted = settings.json
         let curves = emitted["ambient_curves"] as? [String: Any]
-        let emittedLow = curves?["monitor-a"] as? [String: Any]
-        expect(emittedLow.map { Set($0.keys) } == allKeys, "a curve with low points emits all nine point keys")
-        expect((emittedLow?["p1"] as? Double) == 2, "a curve with p1 emits p1 as a number with its value")
-        expect((emittedLow?["p5"] as? Double) == 4 && (emittedLow?["p10"] as? Double) == 9 &&
-               (emittedLow?["p15"] as? Double) == 13 && (emittedLow?["p20"] as? Double) == 17,
-               "a curve with low points emits p5, p10, p15 and p20 as numbers with their values")
-        let emittedLowWithoutP1 = curves?["monitor-b"] as? [String: Any]
-        let expectedLowWithoutP1Keys: Set<String> = ["p5", "p10", "p15", "p20", "p25", "p50", "p75", "p100"]
-        expect(emittedLowWithoutP1.map { Set($0.keys) } == expectedLowWithoutP1Keys,
-               "a curve without p1 emits no p1 key and keeps its other low points")
-        let emittedWithout = curves?["monitor-c"] as? [String: Any]
-        let expectedWithoutKeys: Set<String> = ["p25", "p50", "p75", "p100"]
-        expect(emittedWithout.map { Set($0.keys) } == expectedWithoutKeys,
-               "a curve without low points emits no p1, p5, p10, p15 or p20 keys")
-
-        let decoded = decodeSettings([
-            "ambient_curves": ["monitor-a": ["p1": 2, "p5": 4, "p10": 9, "p15": 13, "p20": 17, "p25": 22, "p50": 40, "p75": 66, "p100": 100],
-                               "monitor-b": ["p5": 4, "p10": 9, "p15": 13, "p20": 17, "p25": 22, "p50": 40, "p75": 66, "p100": 100],
-                               "monitor-c": ["p25": 18, "p50": 40, "p75": 66, "p100": 100]]
-        ])
-        expect(decoded.ambientCurves == ["monitor-a": withLow, "monitor-b": lowWithoutP1, "monitor-c": withoutLow],
-               "low points decode when the curve carries them and stay nil when it does not")
-        let decodedLow = decoded.ambientCurves?["monitor-a"]
-        expect(decodedLow?.p1 == 2, "a p1 value decodes from the settings JSON")
-        expect(decodedLow?.p5 == 4 && decodedLow?.p10 == 9 && decodedLow?.p15 == 13 && decodedLow?.p20 == 17,
-               "decoded low points hold the values from the settings JSON")
-        let decodedLowWithoutP1 = decoded.ambientCurves?["monitor-b"]
-        expect(decodedLowWithoutP1?.p1 == nil, "a curve without p1 decodes p1 as nil")
-        expect(decodedLowWithoutP1?.p5 == 4, "the other low points of a curve without p1 still decode")
-        let decodedWithout = decoded.ambientCurves?["monitor-c"]
-        expect(decodedWithout?.p1 == nil, "a curve without low points decodes p1 as nil")
-        expect(decodedWithout?.p5 == nil && decodedWithout?.p10 == nil && decodedWithout?.p15 == nil && decodedWithout?.p20 == nil,
-               "absent low points decode as nil")
+        let emittedBuilt = curves?["monitor-a"] as? [String: Any]
+        expect(emittedPointPairs(emittedBuilt) == [[25, 18], [50, 40], [75, 66]],
+               "points are emitted as monitor and builtin numbers in ascending monitor order")
+        let pointKeys: Set<String> = ["monitor", "builtin"]
+        let pointsOnly: Set<String> = ["points"]
+        let builtPointObjects = emittedBuilt?["points"] as? [[String: Any]]
+        expect(builtPointObjects?.allSatisfy { Set($0.keys) == pointKeys } == true,
+               "each emitted point carries exactly monitor and builtin")
+        expect(emittedBuilt.map { Set($0.keys) } == pointsOnly, "a curve object carries only the points list")
+        let emittedEmpty = curves?["monitor-b"] as? [String: Any]
+        expect((emittedEmpty?["points"] as? [Any])?.isEmpty == true, "a curve with no points emits an empty list")
     }
 
     private static func monitorFollowAndProtectionDecode() {

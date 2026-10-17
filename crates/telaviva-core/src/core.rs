@@ -1573,32 +1573,23 @@ fn enqueue_brightness_read(
         Some(target),
     )
 }
-// Monitor percent for a built-in level: piecewise linear through (0, 0) and the points
-// (MacBook level, monitor percent). The optional p1, p5, p10, p15 and p20 points refine the low
-// end and are used only when present. Clamps to 100 above the last point.
-// None while the curve is incomplete: p25, p50, p75 and p100 are required.
+// Monitor percent for a built-in level: piecewise linear through (0, 0) and each point
+// (MacBook level, monitor percent) in order. Above the last point it holds that point's monitor
+// percent. None while the curve has fewer than MIN_CURVE_POINTS points.
 fn curve_percent(curve: &AmbientCurve, level: f64) -> Option<f64> {
-    let mut knots = vec![(0.0, 0.0)];
-    for (value, percent) in [
-        (curve.p1, 1.0),
-        (curve.p5, 5.0),
-        (curve.p10, 10.0),
-        (curve.p15, 15.0),
-        (curve.p20, 20.0),
-    ] {
-        if let Some(value) = value {
-            knots.push((value, percent));
-        }
+    if !curve.is_complete() {
+        return None;
     }
-    knots.extend([
-        (curve.p25?, 25.0),
-        (curve.p50?, 50.0),
-        (curve.p75?, 75.0),
-        (curve.p100?, 100.0),
-    ]);
+    let mut knots = vec![(0.0, 0.0)];
+    knots.extend(
+        curve
+            .points
+            .iter()
+            .map(|point| (point.builtin, point.monitor)),
+    );
     let x = level.clamp(0.0, 100.0);
     let Some(segment) = knots.windows(2).find(|pair| x <= pair[1].0) else {
-        return Some(100.0);
+        return knots.last().map(|knot| knot.1);
     };
     let ((x0, y0), (x1, y1)) = (segment[0], segment[1]);
     if x1 <= x0 {

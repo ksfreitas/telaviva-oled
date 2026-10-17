@@ -26,11 +26,11 @@
 - Following the MacBook screen brightness now pauses while the MacBook lid is closed or its built-in screen is off, and resumes by itself when the lid opens or the screen turns on; manual brightness control of the external monitors returns during the pause. The Settings message for an offline built-in display now also covers a switched-off screen. Hardware checks are pending acceptance.
 - Presence checking on macOS now stays off while every eligible monitor is at or below the brightness threshold, which defaults to 20%; lower the slider to 10% to keep protection at low brightness. Hardware acceptance is pending.
 - Calibration of external monitors against the MacBook screen is inverted: each point now sets the monitor to 25, 50, 75 or 100% of its brightness, the calibration slider sets the MacBook brightness, and the core inverts the saved points when following. Monitors calibrated with earlier development builds need recalibration. Calibration is refused, and a calibration in progress stops, while the MacBook screen is off or the lid is closed. Hardware checks are pending acceptance.
+- Ambient calibration points are now added and removed by the user (at least two, kept in ascending order); existing points are kept. Hardware checks are pending acceptance.
 
 ### Added
 
-- On macOS, external monitors follow the MacBook screen brightness through per-monitor four-point curves, with a calibration tab; hardware checks are pending acceptance.
-- Calibration gains optional 1, 5, 10, 15 and 20% monitor points for the low end of the follow curve; the existing 25, 50, 75 and 100% points stay the only required ones, so existing calibrations keep working. Hardware checks are pending acceptance.
+- On macOS, external monitors follow the MacBook screen brightness through per-monitor calibration curves, with a calibration tab; hardware checks are pending acceptance.
 - New application icon for macOS: an Icon Composer `.icon` layered for Liquid Glass on macOS 26 and later, with an `.icns` fallback for macOS 14 and 15; vector sources are in `assets/branding/` and regenerate with `tools/branding/build-icons.sh`; Dock and Finder appearance is pending acceptance.
 - Presence menu-bar icon on macOS replaces the static monitor symbol: a filled dot when a face is detected, no dot when no face is detected or presence is off, suspended or unavailable, and a dot outline when light is insufficient. The core adds the additive snapshot field `camera.presence`; pending acceptance on a real menu bar.
 - Per-monitor OLED protection participation toggle in the popup and in Settings, so each external monitor can opt in or out; hardware checks are pending acceptance.

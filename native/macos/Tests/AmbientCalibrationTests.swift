@@ -11,6 +11,11 @@ private func levelText(_ value: Double) -> String {
     value.rounded() == value ? String(Int(value)) : String(value)
 }
 
+/// Builds a curve from (monitor percent, MacBook percent) pairs, in the order given.
+private func makeCurve(_ pairs: [(Int, Double)]) -> AmbientCurve {
+    AmbientCurve(points: pairs.map { AmbientCurvePoint(monitor: Double($0.0), builtin: $0.1) })
+}
+
 /// Ordered log shared by the fake backend and the hooks. Each write or save appends one entry.
 private final class EventLog {
     var events: [String] = []
@@ -85,7 +90,7 @@ private final class Fixture {
         CalibrationHooks(
             monitorBrightness: { id in self.monitors[id] },
             setMonitorBrightness: { id, value in self.log.events.append("setMonitor \(id) \(levelText(value))") },
-            curve: { id in self.curves[id] ?? AmbientCurve(p25: nil, p50: nil, p75: nil, p100: nil) },
+            curve: { id in self.curves[id] ?? AmbientCurve() },
             saveCurve: { id, curve in
                 self.log.events.append("saveCurve \(id)")
                 self.curves[id] = curve
@@ -115,16 +120,26 @@ private struct AmbientCalibrationTests {
         secondPointKeepsOriginalCapture()
         initialSliderFallsBackToTheCapturedBuiltInLevel()
         lowPointsStartASessionAtTheirMonitorLevel()
-        p1StartsASessionAtMonitorOne()
+        monitorOnePointStartsASessionAtMonitorOne()
         sliderRangeIsBoundedByNeighbors()
         sliderRangeIsBoundedByLowPointNeighbors()
-        sliderRangeIsBoundedByP1Neighbors()
+        sliderRangeIsBoundedByMonitorOneNeighbors()
+        allowedRangeWithoutNeighborsIsTheFullRange()
+        allowedRangeWithEqualNeighborsIsZeroWidth()
+        curveSetKeepsAscendingOrder()
+        addKeepsAscendingOrder()
         confirmSavesOnlyTheChangedPoint()
+        confirmOnAnExistingPointReplacesItsValue()
         confirmSavesALowPointOnly()
-        confirmSavesOnlyTheP1Point()
+        confirmSavesOnlyTheMonitorOnePoint()
+        removePointDeletesThePoint()
+        removePointIsRefusedForTheActivePoint()
+        removingBelowTwoPointsMakesItIncomplete()
+        beginIgnoresPointsOutsideOneToHundred()
+        beginOnANewPointIsIgnoredAtThirtyTwoPoints()
         anchorReachedFollowsTheMonitorLevel()
         anchorReachedUsesTheLowPointLevel()
-        anchorReachedUsesTheP1Level()
+        anchorReachedUsesTheMonitorOneLevel()
         everyEndReasonRestoresInOrder()
         endSkipsAutomaticBrightnessWhenItWasOff()
         endSkipsMonitorWhenItsBrightnessWasUnknown()
@@ -156,9 +171,9 @@ private struct AmbientCalibrationTests {
         let fixture = Fixture()
         defer { fixture.cleanUp() }
         let controller = makeController(fixture)
-        controller.begin(monitorID: "monitor-a", point: .p25)
+        controller.begin(monitorID: "monitor-a", point: 25)
         expect(controller.isActive, "first point starts a session")
-        expect(controller.active == ActiveCalibration(monitorID: "monitor-a", point: .p25, sliderValue: 44),
+        expect(controller.active == ActiveCalibration(monitorID: "monitor-a", point: 25, sliderValue: 44),
                "the MacBook slider starts at the captured built-in level when no point is stored")
         expect(fixture.store.load() == .session(capturedSession()),
                "session file holds the captured state with version 1")
@@ -170,14 +185,14 @@ private struct AmbientCalibrationTests {
     private static func secondPointKeepsOriginalCapture() {
         let fixture = Fixture()
         defer { fixture.cleanUp() }
-        fixture.curves["monitor-a"] = AmbientCurve(p25: nil, p50: 45, p75: nil, p100: nil)
+        fixture.curves["monitor-a"] = makeCurve([(50, 45)])
         let controller = makeController(fixture)
-        controller.begin(monitorID: "monitor-a", point: .p25)
+        controller.begin(monitorID: "monitor-a", point: 25)
         fixture.log.events.removeAll()
-        controller.begin(monitorID: "monitor-a", point: .p50)
+        controller.begin(monitorID: "monitor-a", point: 50)
         expect(fixture.log.events == ["setMonitor monitor-a 50", "writeLevel 45"],
                "second point moves the monitor to the new point and sets the MacBook to the stored value")
-        expect(controller.active == ActiveCalibration(monitorID: "monitor-a", point: .p50, sliderValue: 45),
+        expect(controller.active == ActiveCalibration(monitorID: "monitor-a", point: 50, sliderValue: 45),
                "the MacBook slider starts at the stored value for the point")
         expect(fixture.store.load() == .session(capturedSession()),
                "second point keeps the original capture at level 44")
@@ -187,8 +202,8 @@ private struct AmbientCalibrationTests {
         let fixture = Fixture(level: 37)
         defer { fixture.cleanUp() }
         let controller = makeController(fixture)
-        controller.begin(monitorID: "monitor-a", point: .p75)
-        expect(controller.active == ActiveCalibration(monitorID: "monitor-a", point: .p75, sliderValue: 37),
+        controller.begin(monitorID: "monitor-a", point: 75)
+        expect(controller.active == ActiveCalibration(monitorID: "monitor-a", point: 75, sliderValue: 37),
                "with no stored point the slider starts at the captured built-in level, not the monitor brightness")
         expect(fixture.log.events == ["setCalibrating true", "setAuto false", "setMonitor monitor-a 75", "writeLevel 37"],
                "the captured built-in level is written as the initial slider")
@@ -197,50 +212,50 @@ private struct AmbientCalibrationTests {
     private static func lowPointsStartASessionAtTheirMonitorLevel() {
         let fixture = Fixture()
         defer { fixture.cleanUp() }
-        // A stored p10 of 8 caps the p5 range at 8, so the captured built-in level 44 is clamped to it.
-        fixture.curves["monitor-a"] = AmbientCurve(p10: 8)
+        // A stored 10% point at 8 caps the 5% range at 8, so the captured built-in level 44 is clamped to it.
+        fixture.curves["monitor-a"] = makeCurve([(10, 8)])
         let controller = makeController(fixture)
-        controller.begin(monitorID: "monitor-a", point: .p5)
-        expect(controller.active == ActiveCalibration(monitorID: "monitor-a", point: .p5, sliderValue: 8),
-               "the p5 slider starts at the captured built-in level clamped to the range 0...8")
+        controller.begin(monitorID: "monitor-a", point: 5)
+        expect(controller.active == ActiveCalibration(monitorID: "monitor-a", point: 5, sliderValue: 8),
+               "the 5% slider starts at the captured built-in level clamped to the range 0...8")
         expect(fixture.log.events == ["setCalibrating true", "setAuto false", "setMonitor monitor-a 5", "writeLevel 8"],
-               "p5 moves the monitor to 5, then writes the clamped MacBook level")
+               "5% moves the monitor to 5, then writes the clamped MacBook level")
         fixture.log.events.removeAll()
-        // p20 is bounded below by p10 and has no upper neighbor, so the captured level 44 is inside its range.
-        controller.begin(monitorID: "monitor-a", point: .p20)
-        expect(controller.active == ActiveCalibration(monitorID: "monitor-a", point: .p20, sliderValue: 44),
-               "the p20 slider starts at the captured built-in level when it is inside the range")
+        // 20% is bounded below by the 10% point and has no upper neighbor, so the captured level 44 is inside its range.
+        controller.begin(monitorID: "monitor-a", point: 20)
+        expect(controller.active == ActiveCalibration(monitorID: "monitor-a", point: 20, sliderValue: 44),
+               "the 20% slider starts at the captured built-in level when it is inside the range")
         expect(fixture.log.events == ["setMonitor monitor-a 20", "writeLevel 44"],
-               "p20 moves the monitor to 20, then writes the MacBook level")
-        expect(fixture.store.load() == .session(capturedSession()), "the session keeps the original capture for p20")
+               "20% moves the monitor to 20, then writes the MacBook level")
+        expect(fixture.store.load() == .session(capturedSession()), "the session keeps the original capture for 20%")
     }
 
-    private static func p1StartsASessionAtMonitorOne() {
+    private static func monitorOnePointStartsASessionAtMonitorOne() {
         let fixture = Fixture()
         defer { fixture.cleanUp() }
         let controller = makeController(fixture)
-        controller.begin(monitorID: "monitor-a", point: .p1)
-        expect(controller.active == ActiveCalibration(monitorID: "monitor-a", point: .p1, sliderValue: 44),
-               "the p1 slider starts at the captured built-in level when no point is stored")
+        controller.begin(monitorID: "monitor-a", point: 1)
+        expect(controller.active == ActiveCalibration(monitorID: "monitor-a", point: 1, sliderValue: 44),
+               "the 1% slider starts at the captured built-in level when no point is stored")
         expect(fixture.log.events == ["setCalibrating true", "setAuto false", "setMonitor monitor-a 1", "writeLevel 44"],
-               "p1 moves the monitor to 1, then writes the MacBook level")
-        expect(fixture.store.load() == .session(capturedSession()), "the session keeps the original capture for p1")
+               "1% moves the monitor to 1, then writes the MacBook level")
+        expect(fixture.store.load() == .session(capturedSession()), "the session keeps the original capture for 1%")
     }
 
     private static func sliderRangeIsBoundedByNeighbors() {
         let fixture = Fixture()
         defer { fixture.cleanUp() }
-        fixture.curves["monitor-a"] = AmbientCurve(p25: 30, p50: nil, p75: 70, p100: nil)
+        fixture.curves["monitor-a"] = makeCurve([(25, 30), (75, 70)])
         let controller = makeController(fixture)
-        expect(controller.allowedRange(for: .p50, monitorID: "monitor-a") == 30.0...70.0,
-               "p50 is bounded by the calibrated MacBook levels of p25 and p75")
-        expect(controller.allowedRange(for: .p25, monitorID: "monitor-a") == 0.0...70.0,
-               "p25 is bounded by 0 and the next calibrated MacBook level")
-        expect(controller.allowedRange(for: .p100, monitorID: "monitor-a") == 70.0...100.0,
-               "p100 is bounded by the previous calibrated MacBook level and 100")
-        expect(controller.allowedRange(for: .p50, monitorID: "monitor-b") == 0.0...100.0,
+        expect(controller.allowedRange(for: 50, monitorID: "monitor-a") == 30.0...70.0,
+               "50 is bounded by the calibrated MacBook levels of 25 and 75")
+        expect(controller.allowedRange(for: 25, monitorID: "monitor-a") == 0.0...70.0,
+               "25 is bounded by 0 and the next calibrated MacBook level")
+        expect(controller.allowedRange(for: 100, monitorID: "monitor-a") == 70.0...100.0,
+               "100 is bounded by the previous calibrated MacBook level and 100")
+        expect(controller.allowedRange(for: 50, monitorID: "monitor-b") == 0.0...100.0,
                "an uncalibrated monitor has the full MacBook range")
-        controller.begin(monitorID: "monitor-a", point: .p50)
+        controller.begin(monitorID: "monitor-a", point: 50)
         fixture.log.events.removeAll()
         controller.setSlider(10)
         expect(controller.active?.sliderValue == 30, "slider below the range is clamped to the lower neighbor")
@@ -255,95 +270,238 @@ private struct AmbientCalibrationTests {
     private static func sliderRangeIsBoundedByLowPointNeighbors() {
         let fixture = Fixture()
         defer { fixture.cleanUp() }
-        fixture.curves["monitor-a"] = AmbientCurve(p10: 8, p20: 16)
+        fixture.curves["monitor-a"] = makeCurve([(10, 8), (20, 16)])
         let controller = makeController(fixture)
-        expect(controller.allowedRange(for: .p15, monitorID: "monitor-a") == 8.0...16.0,
-               "p15 is bounded by the calibrated MacBook levels of p10 and p20")
-        expect(controller.allowedRange(for: .p5, monitorID: "monitor-a") == 0.0...8.0,
-               "p5 is bounded by 0 and the next calibrated MacBook level, p10")
-        fixture.curves["monitor-a"] = AmbientCurve(p20: 16, p50: 45)
-        expect(controller.allowedRange(for: .p25, monitorID: "monitor-a") == 16.0...45.0,
-               "p25 is bounded by the calibrated MacBook levels of p20 and p50")
+        expect(controller.allowedRange(for: 15, monitorID: "monitor-a") == 8.0...16.0,
+               "15 is bounded by the calibrated MacBook levels of 10 and 20")
+        expect(controller.allowedRange(for: 5, monitorID: "monitor-a") == 0.0...8.0,
+               "5 is bounded by 0 and the next calibrated MacBook level, the one at 10")
+        fixture.curves["monitor-a"] = makeCurve([(20, 16), (50, 45)])
+        expect(controller.allowedRange(for: 25, monitorID: "monitor-a") == 16.0...45.0,
+               "25 is bounded by the calibrated MacBook levels of 20 and 50")
     }
 
-    private static func sliderRangeIsBoundedByP1Neighbors() {
+    private static func sliderRangeIsBoundedByMonitorOneNeighbors() {
         let fixture = Fixture()
         defer { fixture.cleanUp() }
-        fixture.curves["monitor-a"] = AmbientCurve(p1: 2, p10: 12)
+        fixture.curves["monitor-a"] = makeCurve([(1, 2), (10, 12)])
         let controller = makeController(fixture)
-        expect(controller.allowedRange(for: .p5, monitorID: "monitor-a") == 2.0...12.0,
-               "p5 is bounded by the calibrated MacBook levels of p1 and p10")
-        fixture.curves["monitor-a"] = AmbientCurve(p5: 6)
-        expect(controller.allowedRange(for: .p1, monitorID: "monitor-a") == 0.0...6.0,
-               "p1 is bounded by 0 and the next calibrated MacBook level, p5")
-        fixture.curves["monitor-a"] = AmbientCurve(p10: 9)
-        expect(controller.allowedRange(for: .p1, monitorID: "monitor-a") == 0.0...9.0,
-               "p1 is bounded by 0 and the nearest calibrated MacBook level above it when p5 is absent")
+        expect(controller.allowedRange(for: 5, monitorID: "monitor-a") == 2.0...12.0,
+               "5 is bounded by the calibrated MacBook levels of 1 and 10")
+        fixture.curves["monitor-a"] = makeCurve([(5, 6)])
+        expect(controller.allowedRange(for: 1, monitorID: "monitor-a") == 0.0...6.0,
+               "1 is bounded by 0 and the next calibrated MacBook level, the one at 5")
+        fixture.curves["monitor-a"] = makeCurve([(10, 9)])
+        expect(controller.allowedRange(for: 1, monitorID: "monitor-a") == 0.0...9.0,
+               "1 is bounded by 0 and the nearest calibrated MacBook level above it when 5 is absent")
+    }
+
+    private static func allowedRangeWithoutNeighborsIsTheFullRange() {
+        let fixture = Fixture()
+        defer { fixture.cleanUp() }
+        let controller = makeController(fixture)
+        expect(controller.allowedRange(for: 1, monitorID: "monitor-a") == 0.0...100.0,
+               "with no saved points the range at 1 is 0...100")
+        expect(controller.allowedRange(for: 100, monitorID: "monitor-a") == 0.0...100.0,
+               "with no saved points the range at 100 is 0...100")
+        fixture.curves["monitor-a"] = makeCurve([(50, 40)])
+        expect(controller.allowedRange(for: 25, monitorID: "monitor-a") == 0.0...40.0,
+               "with only a point above, the range below it starts at 0")
+        expect(controller.allowedRange(for: 60, monitorID: "monitor-a") == 40.0...100.0,
+               "with only a point below, the range above it ends at 100")
+    }
+
+    private static func allowedRangeWithEqualNeighborsIsZeroWidth() {
+        let fixture = Fixture()
+        defer { fixture.cleanUp() }
+        fixture.curves["monitor-a"] = makeCurve([(25, 40), (75, 40)])
+        let controller = makeController(fixture)
+        expect(controller.allowedRange(for: 50, monitorID: "monitor-a") == 40.0...40.0,
+               "neighbors with equal MacBook levels leave a zero-width range")
+    }
+
+    private static func curveSetKeepsAscendingOrder() {
+        var curve = AmbientCurve()
+        curve.set(monitor: 75, builtin: 70)
+        curve.set(monitor: 25, builtin: 20)
+        curve.set(monitor: 50, builtin: 40)
+        expect(curve == makeCurve([(25, 20), (50, 40), (75, 70)]),
+               "set inserts points that arrive out of order at their sorted position")
+        curve.set(monitor: 50, builtin: 45)
+        expect(curve == makeCurve([(25, 20), (50, 45), (75, 70)]),
+               "set on an existing monitor percent replaces its value without adding a point")
+        curve.remove(monitor: 25)
+        expect(curve == makeCurve([(50, 45), (75, 70)]), "remove deletes the point at that monitor percent")
+    }
+
+    private static func addKeepsAscendingOrder() {
+        let fixture = Fixture()
+        defer { fixture.cleanUp() }
+        let controller = makeController(fixture)
+        controller.begin(monitorID: "monitor-a", point: 50)
+        controller.confirm()
+        controller.begin(monitorID: "monitor-a", point: 25)
+        controller.confirm()
+        controller.begin(monitorID: "monitor-a", point: 75)
+        controller.confirm()
+        expect(fixture.curves["monitor-a"]?.points.map { $0.monitor } == [25.0, 50.0, 75.0],
+               "points added out of order are kept in ascending monitor order")
+        expect(fixture.curves["monitor-a"]?.isComplete == true, "three added points make the curve complete")
     }
 
     private static func confirmSavesOnlyTheChangedPoint() {
         let fixture = Fixture()
         defer { fixture.cleanUp() }
-        fixture.curves["monitor-a"] = AmbientCurve(p25: 20, p50: nil, p75: 70, p100: nil)
+        fixture.curves["monitor-a"] = makeCurve([(25, 20), (75, 70)])
         let controller = makeController(fixture)
-        controller.begin(monitorID: "monitor-a", point: .p50)
+        controller.begin(monitorID: "monitor-a", point: 50)
         fixture.log.events.removeAll()
         controller.setSlider(40)
         expect(fixture.log.events == ["writeLevel 40"], "the slider writes the MacBook level and not the monitor")
         fixture.log.events.removeAll()
         controller.confirm()
         let saved = fixture.curves["monitor-a"]
-        expect(saved == AmbientCurve(p25: 20, p50: 40, p75: 70, p100: nil),
+        expect(saved == makeCurve([(25, 20), (50, 40), (75, 70)]),
                "confirm stores the MacBook level for the point and preserves the others")
-        expect(saved?[.p50] == 40, "the saved curve reads the new point through the subscript")
+        expect(saved?.point(at: 50)?.builtin == 40, "the saved curve reads the new point back by monitor percent")
         expect(fixture.log.events == ["saveCurve monitor-a"], "confirm saves without touching the built-in display")
-        expect(controller.isActive && controller.active == ActiveCalibration(monitorID: "monitor-a", point: .p50, sliderValue: 40),
+        expect(controller.isActive && controller.active == ActiveCalibration(monitorID: "monitor-a", point: 50, sliderValue: 40),
                "session stays active after confirm")
         expect(fixture.store.load() == .session(capturedSession()), "session file stays until the session ends")
+    }
+
+    private static func confirmOnAnExistingPointReplacesItsValue() {
+        let fixture = Fixture()
+        defer { fixture.cleanUp() }
+        fixture.curves["monitor-a"] = makeCurve([(25, 20), (50, 40), (75, 70)])
+        let controller = makeController(fixture)
+        controller.begin(monitorID: "monitor-a", point: 50)
+        expect(controller.active?.sliderValue == 40, "an existing point starts the slider at its stored value")
+        controller.setSlider(45)
+        fixture.log.events.removeAll()
+        controller.confirm()
+        expect(fixture.curves["monitor-a"] == makeCurve([(25, 20), (50, 45), (75, 70)]),
+               "confirm on an existing point replaces its value and keeps the other points")
+        expect(fixture.curves["monitor-a"]?.points.count == 3, "confirm on an existing point adds no point")
+        expect(fixture.log.events == ["saveCurve monitor-a"], "confirm saves without touching the built-in display")
     }
 
     private static func confirmSavesALowPointOnly() {
         let fixture = Fixture()
         defer { fixture.cleanUp() }
-        // The stored p5 and p20 bound the p10 range at 2...16, and the other points must survive the save.
-        fixture.curves["monitor-a"] = AmbientCurve(p5: 2, p20: 16, p25: 20, p75: 70)
+        // The stored 5% and 20% points bound the 10% range at 2...16, and the other points must survive the save.
+        fixture.curves["monitor-a"] = makeCurve([(5, 2), (20, 16), (25, 20), (75, 70)])
         let controller = makeController(fixture)
-        controller.begin(monitorID: "monitor-a", point: .p10)
+        controller.begin(monitorID: "monitor-a", point: 10)
         fixture.log.events.removeAll()
         controller.setSlider(12)
         expect(fixture.log.events == ["writeLevel 12"], "the slider writes the MacBook level and not the monitor")
         fixture.log.events.removeAll()
         controller.confirm()
         let saved = fixture.curves["monitor-a"]
-        expect(saved == AmbientCurve(p5: 2, p10: 12, p20: 16, p25: 20, p50: nil, p75: 70, p100: nil),
-               "confirm stores the MacBook level for p10 and preserves every other point")
-        expect(saved?[.p10] == 12, "the saved curve reads the new low point through the subscript")
+        expect(saved == makeCurve([(5, 2), (10, 12), (20, 16), (25, 20), (75, 70)]),
+               "confirm stores the MacBook level for 10% and preserves every other point")
+        expect(saved?.point(at: 10)?.builtin == 12, "the saved curve reads the new low point back by monitor percent")
         expect(fixture.log.events == ["saveCurve monitor-a"], "confirm saves without touching the built-in display")
-        expect(controller.isActive && controller.active == ActiveCalibration(monitorID: "monitor-a", point: .p10, sliderValue: 12),
-               "session stays active after confirm at p10")
+        expect(controller.isActive && controller.active == ActiveCalibration(monitorID: "monitor-a", point: 10, sliderValue: 12),
+               "session stays active after confirm at 10%")
         expect(fixture.store.load() == .session(capturedSession()), "session file stays until the session ends")
     }
 
-    private static func confirmSavesOnlyTheP1Point() {
+    private static func confirmSavesOnlyTheMonitorOnePoint() {
         let fixture = Fixture()
         defer { fixture.cleanUp() }
-        // The stored p5 bounds the p1 range at 0...6, and the other points must survive the save.
-        fixture.curves["monitor-a"] = AmbientCurve(p5: 6, p10: 9, p25: 20)
+        // The stored 5% point bounds the 1% range at 0...6, and the other points must survive the save.
+        fixture.curves["monitor-a"] = makeCurve([(5, 6), (10, 9), (25, 20)])
         let controller = makeController(fixture)
-        controller.begin(monitorID: "monitor-a", point: .p1)
+        controller.begin(monitorID: "monitor-a", point: 1)
         fixture.log.events.removeAll()
         controller.setSlider(1)
         expect(fixture.log.events == ["writeLevel 1"], "the slider writes the MacBook level and not the monitor")
         fixture.log.events.removeAll()
         controller.confirm()
         let saved = fixture.curves["monitor-a"]
-        expect(saved == AmbientCurve(p1: 1, p5: 6, p10: 9, p25: 20),
-               "confirm stores the MacBook level for p1 and preserves every other point")
-        expect(saved?[.p1] == 1, "the saved curve reads the new point through the subscript")
+        expect(saved == makeCurve([(1, 1), (5, 6), (10, 9), (25, 20)]),
+               "confirm stores the MacBook level for 1% and preserves every other point")
+        expect(saved?.point(at: 1)?.builtin == 1, "the saved curve reads the new point at 1% back by monitor percent")
         expect(fixture.log.events == ["saveCurve monitor-a"], "confirm saves without touching the built-in display")
-        expect(controller.isActive && controller.active == ActiveCalibration(monitorID: "monitor-a", point: .p1, sliderValue: 1),
-               "session stays active after confirm at p1")
+        expect(controller.isActive && controller.active == ActiveCalibration(monitorID: "monitor-a", point: 1, sliderValue: 1),
+               "session stays active after confirm at 1%")
         expect(fixture.store.load() == .session(capturedSession()), "session file stays until the session ends")
+    }
+
+    private static func removePointDeletesThePoint() {
+        let fixture = Fixture()
+        defer { fixture.cleanUp() }
+        fixture.curves["monitor-a"] = makeCurve([(25, 20), (50, 40), (75, 70)])
+        let controller = makeController(fixture)
+        controller.removePoint(monitorID: "monitor-a", point: 50)
+        expect(fixture.curves["monitor-a"] == makeCurve([(25, 20), (75, 70)]),
+               "remove deletes the point and keeps the others")
+        expect(fixture.log.events == ["saveCurve monitor-a"],
+               "remove saves the curve without touching the built-in display")
+        expect(!controller.isActive, "remove without a session starts none")
+    }
+
+    private static func removePointIsRefusedForTheActivePoint() {
+        let fixture = Fixture()
+        defer { fixture.cleanUp() }
+        fixture.curves["monitor-a"] = makeCurve([(25, 20), (50, 40), (75, 70)])
+        let controller = makeController(fixture)
+        controller.begin(monitorID: "monitor-a", point: 50)
+        fixture.log.events.removeAll()
+        controller.removePoint(monitorID: "monitor-a", point: 50)
+        expect(fixture.curves["monitor-a"] == makeCurve([(25, 20), (50, 40), (75, 70)]),
+               "the point being calibrated cannot be removed")
+        expect(fixture.log.events.isEmpty, "refusing to remove the active point saves and writes nothing")
+        expect(controller.active?.point == 50, "the session stays on the active point")
+        controller.removePoint(monitorID: "monitor-a", point: 25)
+        expect(fixture.curves["monitor-a"] == makeCurve([(50, 40), (75, 70)]),
+               "another point can be removed while one is being calibrated")
+        expect(fixture.log.events == ["saveCurve monitor-a"], "removing another point saves once")
+    }
+
+    private static func removingBelowTwoPointsMakesItIncomplete() {
+        let fixture = Fixture()
+        defer { fixture.cleanUp() }
+        fixture.curves["monitor-a"] = makeCurve([(25, 20), (50, 40), (75, 70)])
+        let controller = makeController(fixture)
+        controller.removePoint(monitorID: "monitor-a", point: 75)
+        expect(fixture.curves["monitor-a"]?.isComplete == true, "two points make the curve complete")
+        controller.removePoint(monitorID: "monitor-a", point: 50)
+        expect(fixture.curves["monitor-a"]?.isComplete == false, "removing down to one point makes the curve incomplete")
+    }
+
+    private static func beginIgnoresPointsOutsideOneToHundred() {
+        for point in [0, 101] {
+            let fixture = Fixture()
+            defer { fixture.cleanUp() }
+            let controller = makeController(fixture)
+            controller.begin(monitorID: "monitor-a", point: point)
+            expect(!controller.isActive && controller.active == nil, "point \(point) starts no session")
+            expect(fixture.log.events.isEmpty, "point \(point) makes no backend, monitor or calibrating call")
+            expect(controller.notice == nil, "point \(point) reports no notice")
+            expect(fixture.store.load() == .none, "point \(point) writes no session file")
+            expect(fixture.curves["monitor-a"] == nil, "point \(point) stores no curve")
+        }
+    }
+
+    private static func beginOnANewPointIsIgnoredAtThirtyTwoPoints() {
+        let fixture = Fixture()
+        defer { fixture.cleanUp() }
+        // Thirty-two saved points at monitor percents 1...32 fill the per-monitor limit.
+        fixture.curves["monitor-a"] = AmbientCurve(points: (1...32).map {
+            AmbientCurvePoint(monitor: Double($0), builtin: Double($0))
+        })
+        let controller = makeController(fixture)
+        controller.begin(monitorID: "monitor-a", point: 50)
+        expect(!controller.isActive && controller.active == nil, "a new point at 32 points starts no session")
+        expect(fixture.log.events.isEmpty, "a new point at 32 points makes no backend, monitor or calibrating call")
+        expect(fixture.curves["monitor-a"]?.points.count == 32, "a new point at 32 points stores nothing")
+        controller.begin(monitorID: "monitor-a", point: 16)
+        expect(controller.active == ActiveCalibration(monitorID: "monitor-a", point: 16, sliderValue: 16),
+               "an existing point can still be calibrated at 32 points")
+        expect(fixture.curves["monitor-a"]?.points.count == 32, "beginning an existing point adds no point")
     }
 
     private static func anchorReachedFollowsTheMonitorLevel() {
@@ -351,7 +509,7 @@ private struct AmbientCalibrationTests {
         defer { fixture.cleanUp() }
         let controller = makeController(fixture)
         expect(!controller.anchorReached(monitorID: "monitor-a"), "no anchor is reached before a session starts")
-        controller.begin(monitorID: "monitor-a", point: .p50)
+        controller.begin(monitorID: "monitor-a", point: 50)
         expect(!controller.anchorReached(monitorID: "monitor-a"), "a monitor still at 62 has not reached 50")
         // The fake hooks only log writes, so the test moves the readouts to stand in for the monitor.
         fixture.monitors["monitor-a"] = 51
@@ -373,28 +531,28 @@ private struct AmbientCalibrationTests {
         let fixture = Fixture()
         defer { fixture.cleanUp() }
         let controller = makeController(fixture)
-        controller.begin(monitorID: "monitor-a", point: .p5)
+        controller.begin(monitorID: "monitor-a", point: 5)
         // The fake hooks only log writes, so the test moves the readouts to stand in for the monitor.
         fixture.monitors["monitor-a"] = 5
-        expect(controller.anchorReached(monitorID: "monitor-a"), "a readout at 5 reaches the p5 anchor")
+        expect(controller.anchorReached(monitorID: "monitor-a"), "a readout at 5 reaches the 5% anchor")
         fixture.monitors["monitor-a"] = 6.5
-        expect(controller.anchorReached(monitorID: "monitor-a"), "a readout 1.5 points above 5 reaches the p5 anchor")
+        expect(controller.anchorReached(monitorID: "monitor-a"), "a readout 1.5 points above 5 reaches the 5% anchor")
         fixture.monitors["monitor-a"] = 10
-        expect(!controller.anchorReached(monitorID: "monitor-a"), "a readout at 10 does not reach the p5 anchor")
+        expect(!controller.anchorReached(monitorID: "monitor-a"), "a readout at 10 does not reach the 5% anchor")
     }
 
-    private static func anchorReachedUsesTheP1Level() {
+    private static func anchorReachedUsesTheMonitorOneLevel() {
         let fixture = Fixture()
         defer { fixture.cleanUp() }
         let controller = makeController(fixture)
-        controller.begin(monitorID: "monitor-a", point: .p1)
+        controller.begin(monitorID: "monitor-a", point: 1)
         // The fake hooks only log writes, so the test moves the readouts to stand in for the monitor.
         fixture.monitors["monitor-a"] = 1
-        expect(controller.anchorReached(monitorID: "monitor-a"), "a readout at 1 reaches the p1 anchor")
+        expect(controller.anchorReached(monitorID: "monitor-a"), "a readout at 1 reaches the 1% anchor")
         fixture.monitors["monitor-a"] = 2.5
-        expect(controller.anchorReached(monitorID: "monitor-a"), "a readout 1.5 points above 1 reaches the p1 anchor")
+        expect(controller.anchorReached(monitorID: "monitor-a"), "a readout 1.5 points above 1 reaches the 1% anchor")
         fixture.monitors["monitor-a"] = 5
-        expect(!controller.anchorReached(monitorID: "monitor-a"), "a readout at 5 does not reach the p1 anchor")
+        expect(!controller.anchorReached(monitorID: "monitor-a"), "a readout at 5 does not reach the 1% anchor")
     }
 
     private static func everyEndReasonRestoresInOrder() {
@@ -402,7 +560,7 @@ private struct AmbientCalibrationTests {
             let fixture = Fixture()
             defer { fixture.cleanUp() }
             let controller = makeController(fixture)
-            controller.begin(monitorID: "monitor-a", point: .p25)
+            controller.begin(monitorID: "monitor-a", point: 25)
             fixture.log.events.removeAll()
             controller.end(reason)
             expect(fixture.log.events == ["writeLevel 44", "setAuto true", "setMonitor monitor-a 62", "setCalibrating false"],
@@ -416,7 +574,7 @@ private struct AmbientCalibrationTests {
         let fixture = Fixture(auto: false)
         defer { fixture.cleanUp() }
         let controller = makeController(fixture)
-        controller.begin(monitorID: "monitor-a", point: .p25)
+        controller.begin(monitorID: "monitor-a", point: 25)
         fixture.log.events.removeAll()
         controller.end(.done)
         expect(fixture.log.events == ["writeLevel 44", "setMonitor monitor-a 62", "setCalibrating false"],
@@ -427,9 +585,9 @@ private struct AmbientCalibrationTests {
         let fixture = Fixture()
         defer { fixture.cleanUp() }
         fixture.monitors["monitor-a"] = nil
-        fixture.curves["monitor-a"] = AmbientCurve(p25: 20, p50: nil, p75: nil, p100: nil)
+        fixture.curves["monitor-a"] = makeCurve([(25, 20)])
         let controller = makeController(fixture)
-        controller.begin(monitorID: "monitor-a", point: .p25)
+        controller.begin(monitorID: "monitor-a", point: 25)
         expect(fixture.store.load() == .session(capturedSession(monitor: nil)),
                "unknown monitor brightness is saved as nil")
         fixture.log.events.removeAll()
@@ -442,15 +600,15 @@ private struct AmbientCalibrationTests {
         let fixture = Fixture()
         defer { fixture.cleanUp() }
         let controller = makeController(fixture)
-        controller.begin(monitorID: "monitor-a", point: .p25)
+        controller.begin(monitorID: "monitor-a", point: 25)
         fixture.log.events.removeAll()
-        controller.begin(monitorID: "monitor-b", point: .p50)
+        controller.begin(monitorID: "monitor-b", point: 50)
         expect(fixture.log.events == ["writeLevel 44", "setAuto true", "setMonitor monitor-a 62", "setCalibrating false",
                                       "setCalibrating true", "setAuto false", "setMonitor monitor-b 50", "writeLevel 44"],
                "monitor A is fully restored before monitor B begins")
         expect(fixture.store.load() == .session(capturedSession(monitor: 30, id: "monitor-b")),
                "the saved session now describes monitor B")
-        expect(controller.active == ActiveCalibration(monitorID: "monitor-b", point: .p50, sliderValue: 44),
+        expect(controller.active == ActiveCalibration(monitorID: "monitor-b", point: 50, sliderValue: 44),
                "active calibration moves to monitor B")
     }
 
@@ -458,7 +616,7 @@ private struct AmbientCalibrationTests {
         let fixture = Fixture(level: nil)
         defer { fixture.cleanUp() }
         let controller = makeController(fixture)
-        controller.begin(monitorID: "monitor-a", point: .p25)
+        controller.begin(monitorID: "monitor-a", point: 25)
         expect(!controller.isActive && controller.active == nil, "an unreadable built-in level starts no session")
         expect(controller.notice == .builtInUnreadable, "the unreadable level is reported")
         expect(fixture.store.load() == .none, "no session file is written")
@@ -473,7 +631,7 @@ private struct AmbientCalibrationTests {
         defer { fixture.cleanUp() }
         fixture.backend.statusValue = BuiltInDisplayStatus(available: false, reason: .displayOffline, displayID: nil)
         let controller = makeController(fixture)
-        controller.begin(monitorID: "monitor-a", point: .p25)
+        controller.begin(monitorID: "monitor-a", point: 25)
         expect(controller.notice == .builtInUnavailable, "a begin with the built-in screen unavailable reports the notice")
         expect(!controller.isActive && controller.active == nil, "no session starts")
         expect(fixture.log.events.isEmpty, "no backend write, monitor write or setCalibrating call happens")
@@ -485,7 +643,7 @@ private struct AmbientCalibrationTests {
         defer { fixture.cleanUp() }
         fixture.backend.asleep = true
         let controller = makeController(fixture)
-        controller.begin(monitorID: "monitor-a", point: .p25)
+        controller.begin(monitorID: "monitor-a", point: 25)
         expect(controller.notice == .builtInUnavailable, "a begin with the built-in screen asleep reports the notice")
         expect(!controller.isActive && controller.active == nil, "no session starts while the screen is asleep")
         expect(fixture.log.events.isEmpty, "no backend write, monitor write or setCalibrating call happens while asleep")
@@ -496,7 +654,7 @@ private struct AmbientCalibrationTests {
         let fixture = Fixture(auto: nil)
         defer { fixture.cleanUp() }
         let controller = makeController(fixture)
-        controller.begin(monitorID: "monitor-a", point: .p25)
+        controller.begin(monitorID: "monitor-a", point: 25)
         expect(controller.isActive, "calibration starts when automatic brightness is unknown")
         expect(controller.notice == .autoBrightnessUnknown, "unknown automatic brightness is reported")
         expect(fixture.log.events.contains("writeLevel 44"), "the MacBook slider is still written")
@@ -512,7 +670,7 @@ private struct AmbientCalibrationTests {
         defer { fixture.cleanUp() }
         fixture.backend.setAutoSucceeds = false
         let controller = makeController(fixture)
-        controller.begin(monitorID: "monitor-a", point: .p25)
+        controller.begin(monitorID: "monitor-a", point: 25)
         expect(controller.isActive, "calibration starts when automatic brightness cannot be changed")
         expect(controller.notice == .autoBrightnessNotChanged, "a refused automatic brightness change is reported")
         expect(fixture.log.events.contains("writeLevel 44"), "the MacBook slider is still written")
@@ -524,10 +682,10 @@ private struct AmbientCalibrationTests {
         let fixture = Fixture()
         defer { fixture.cleanUp() }
         // A stored point makes the first MacBook write 20, so the failing write is not the captured level.
-        fixture.curves["monitor-a"] = AmbientCurve(p25: 20, p50: nil, p75: nil, p100: nil)
+        fixture.curves["monitor-a"] = makeCurve([(25, 20)])
         fixture.backend.failedLevels = [20]
         let controller = makeController(fixture)
-        controller.begin(monitorID: "monitor-a", point: .p25)
+        controller.begin(monitorID: "monitor-a", point: 25)
         expect(!controller.isActive && controller.active == nil, "a failed built-in write ends the session")
         expect(controller.notice == .builtInWriteFailed, "the failed write is reported")
         expect(fixture.store.load() == .none, "the session file is deleted")
@@ -542,7 +700,7 @@ private struct AmbientCalibrationTests {
         let fixture = Fixture()
         defer { fixture.cleanUp() }
         let controller = makeController(fixture)
-        controller.begin(monitorID: "monitor-a", point: .p50)
+        controller.begin(monitorID: "monitor-a", point: 50)
         fixture.backend.failedLevels = [30]
         fixture.log.events.removeAll()
         controller.setSlider(30)
@@ -559,7 +717,7 @@ private struct AmbientCalibrationTests {
         let fixture = Fixture()
         defer { fixture.cleanUp() }
         let controller = makeController(fixture)
-        controller.begin(monitorID: "monitor-a", point: .p25)
+        controller.begin(monitorID: "monitor-a", point: 25)
         fixture.log.events.removeAll()
         controller.end(.builtInUnavailable)
         expect(fixture.log.events == ["writeLevel 44", "setAuto true", "setMonitor monitor-a 62", "setCalibrating false"],
@@ -583,7 +741,7 @@ private struct AmbientCalibrationTests {
             let fixture = Fixture()
             defer { fixture.cleanUp() }
             let controller = makeController(fixture)
-            controller.begin(monitorID: "monitor-a", point: .p25)
+            controller.begin(monitorID: "monitor-a", point: 25)
             controller.end(reason)
             expect(controller.notice == nil, "\(reason) reports no notice")
         }

@@ -8,6 +8,8 @@ use std::{
 pub const MAX_CAMERA_HISTORY: usize = 8;
 const MAX_MONITOR_ENTRIES: usize = 128;
 const MAX_MONITOR_ID_BYTES: usize = 512;
+pub const MIN_CURVE_POINTS: usize = 2;
+pub const MAX_CURVE_POINTS: usize = 32;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -53,55 +55,116 @@ pub struct Settings {
     pub protection_disabled: std::collections::BTreeSet<String>,
 }
 
-// One monitor's calibration: the MacBook level (percent) at which the monitor looks equal to the
-// monitor at 1, 5, 10, 15, 20, 25, 50, 75 and 100 percent of its range. A curve is complete when
-// p25, p50, p75 and p100 are present; p1, p5, p10, p15 and p20 are optional refinements of the
-// low end.
+// One monitor's calibration. Each point pairs a monitor brightness percent (`monitor`) with the
+// MacBook level percent (`builtin`) at which the built-in screen looks equal to the monitor at that
+// brightness. Points are strictly ascending by `monitor` and never decrease in `builtin`. A curve is
+// complete with at least MIN_CURVE_POINTS points. Legacy p1..p100 keys are read as points.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(from = "AmbientCurveRepr")]
 pub struct AmbientCurve {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub p1: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub p5: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub p10: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub p15: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub p20: Option<f64>,
-    #[serde(default)]
-    pub p25: Option<f64>,
-    #[serde(default)]
-    pub p50: Option<f64>,
-    #[serde(default)]
-    pub p75: Option<f64>,
-    #[serde(default)]
-    pub p100: Option<f64>,
+    pub points: Vec<AmbientPoint>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AmbientPoint {
+    pub monitor: f64,
+    pub builtin: f64,
+}
+
+// Accepted input shapes. `Points` is tried first; `Legacy` reads the fixed pN keys of older files.
+#[derive(Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+enum AmbientCurveRepr {
+    Points {
+        points: Vec<AmbientPoint>,
+    },
+    Legacy {
+        #[serde(default)]
+        p1: Option<f64>,
+        #[serde(default)]
+        p5: Option<f64>,
+        #[serde(default)]
+        p10: Option<f64>,
+        #[serde(default)]
+        p15: Option<f64>,
+        #[serde(default)]
+        p20: Option<f64>,
+        #[serde(default)]
+        p25: Option<f64>,
+        #[serde(default)]
+        p50: Option<f64>,
+        #[serde(default)]
+        p75: Option<f64>,
+        #[serde(default)]
+        p100: Option<f64>,
+    },
+}
+
+impl From<AmbientCurveRepr> for AmbientCurve {
+    fn from(repr: AmbientCurveRepr) -> Self {
+        let points = match repr {
+            AmbientCurveRepr::Points { points } => points,
+            // Ascending N, so the legacy points keep the strict monitor order.
+            AmbientCurveRepr::Legacy {
+                p1,
+                p5,
+                p10,
+                p15,
+                p20,
+                p25,
+                p50,
+                p75,
+                p100,
+            } => [
+                (1.0, p1),
+                (5.0, p5),
+                (10.0, p10),
+                (15.0, p15),
+                (20.0, p20),
+                (25.0, p25),
+                (50.0, p50),
+                (75.0, p75),
+                (100.0, p100),
+            ]
+            .into_iter()
+            .filter_map(|(monitor, builtin)| {
+                builtin.map(|builtin| AmbientPoint { monitor, builtin })
+            })
+            .collect(),
+        };
+        Self { points }
+    }
 }
 
 impl AmbientCurve {
     pub fn is_complete(&self) -> bool {
-        self.p25.is_some() && self.p50.is_some() && self.p75.is_some() && self.p100.is_some()
+        self.points.len() >= MIN_CURVE_POINTS
     }
 
     fn validate(&self) -> Result<(), String> {
-        let points = [
-            self.p1, self.p5, self.p10, self.p15, self.p20, self.p25, self.p50, self.p75, self.p100,
-        ];
-        if points
-            .iter()
-            .flatten()
-            .any(|v| !v.is_finite() || !(0.0..=100.0).contains(v))
-        {
-            return Err("invalid ambient curve point".into());
+        if self.points.len() > MAX_CURVE_POINTS {
+            return Err("too many ambient curve points".into());
         }
-        let mut previous = f64::NEG_INFINITY;
-        for value in points.iter().flatten() {
-            if *value < previous {
-                return Err("ambient curve points must not decrease".into());
+        let mut previous: Option<&AmbientPoint> = None;
+        for point in &self.points {
+            if !point.monitor.is_finite()
+                || !point.builtin.is_finite()
+                || point.monitor <= 0.0
+                || point.monitor > 100.0
+                || !(0.0..=100.0).contains(&point.builtin)
+            {
+                return Err("invalid ambient curve point".into());
             }
-            previous = *value;
+            if let Some(prev) = previous {
+                if point.monitor <= prev.monitor {
+                    return Err("ambient curve points must be strictly ascending".into());
+                }
+                if point.builtin < prev.builtin {
+                    return Err("ambient curve points must not decrease".into());
+                }
+            }
+            previous = Some(point);
         }
         Ok(())
     }

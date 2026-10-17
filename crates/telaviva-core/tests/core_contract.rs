@@ -2715,15 +2715,15 @@ fn ambient_settings_default_to_follow_off_with_empty_curves_and_protection_list(
 }
 
 #[test]
-fn ambient_curve_accepts_bounds_nulls_and_non_decreasing_points() {
+fn ambient_curve_accepts_bounds_equal_builtin_levels_and_any_ascending_monitors() {
     let mut core = Core::new(CoreOptions::default()).unwrap();
     let curves = [
         // 0 and 100 are inclusive bounds.
-        json!({"p25":0.0,"p50":50.0,"p75":75.0,"p100":100.0}),
-        // Equal neighboring points are non-decreasing.
-        json!({"p25":50.0,"p50":50.0,"p75":50.0,"p100":50.0}),
-        // Null points are skipped when checking the order.
-        json!({"p25":10.0,"p50":null,"p75":30.0,"p100":null}),
+        json!({"points":[{"monitor":25.0,"builtin":0.0},{"monitor":50.0,"builtin":50.0},{"monitor":75.0,"builtin":75.0},{"monitor":100.0,"builtin":100.0}]}),
+        // Equal neighboring builtin levels are non-decreasing.
+        json!({"points":[{"monitor":25.0,"builtin":50.0},{"monitor":50.0,"builtin":50.0},{"monitor":75.0,"builtin":50.0},{"monitor":100.0,"builtin":50.0}]}),
+        // Points need not sit at the former fixed percents; any strictly ascending monitors are kept.
+        json!({"points":[{"monitor":10.0,"builtin":5.0},{"monitor":30.0,"builtin":30.0}]}),
     ];
     for curve in &curves {
         let snapshot = send(
@@ -2731,9 +2731,7 @@ fn ambient_curve_accepts_bounds_nulls_and_non_decreasing_points() {
             json!({"type":"update_settings","settings":{"ambient_curves":{"screen":curve}}}),
         );
         let stored = &snapshot["settings"]["ambient_curves"]["screen"];
-        for point in ["p25", "p50", "p75", "p100"] {
-            assert_eq!(stored[point], curve[point]);
-        }
+        assert_eq!(stored, curve);
     }
 }
 
@@ -2744,12 +2742,14 @@ fn ambient_curve_rejects_out_of_range_and_non_finite_points() {
     // merely because the field is unknown to the core.
     send(
         &mut core,
-        json!({"type":"update_settings","settings":{"ambient_curves":{"screen":{"p25":0.0,"p50":50.0,"p75":75.0,"p100":100.0}}}}),
+        json!({"type":"update_settings","settings":{"ambient_curves":{"screen":{"points":[{"monitor":25.0,"builtin":0.0},{"monitor":50.0,"builtin":50.0},{"monitor":75.0,"builtin":75.0},{"monitor":100.0,"builtin":100.0}]}}}}),
     );
     let before = core.snapshot_value().unwrap()["settings"].clone();
     for curve in [
-        json!({"p25":-1.0,"p50":50.0,"p75":75.0,"p100":100.0}),
-        json!({"p25":0.0,"p50":50.0,"p75":75.0,"p100":101.0}),
+        json!({"points":[{"monitor":25.0,"builtin":-1.0},{"monitor":50.0,"builtin":50.0},{"monitor":75.0,"builtin":75.0},{"monitor":100.0,"builtin":100.0}]}),
+        json!({"points":[{"monitor":25.0,"builtin":0.0},{"monitor":50.0,"builtin":50.0},{"monitor":75.0,"builtin":75.0},{"monitor":100.0,"builtin":101.0}]}),
+        json!({"points":[{"monitor":0.0,"builtin":0.0},{"monitor":50.0,"builtin":50.0}]}),
+        json!({"points":[{"monitor":25.0,"builtin":0.0},{"monitor":101.0,"builtin":100.0}]}),
     ] {
         let event =
             json!({"type":"update_settings","settings":{"ambient_curves":{"screen":curve}}});
@@ -2760,9 +2760,9 @@ fn ambient_curve_rejects_out_of_range_and_non_finite_points() {
     }
     // NaN and Infinity are not JSON, so these are sent as raw text the parser must reject.
     for raw in [
-        r#"{"type":"update_settings","settings":{"ambient_curves":{"screen":{"p25":NaN,"p50":50,"p75":75,"p100":100}}}}"#,
-        r#"{"type":"update_settings","settings":{"ambient_curves":{"screen":{"p25":0,"p50":Infinity,"p75":75,"p100":100}}}}"#,
-        r#"{"type":"update_settings","settings":{"ambient_curves":{"screen":{"p25":0,"p50":50,"p75":-Infinity,"p100":100}}}}"#,
+        r#"{"type":"update_settings","settings":{"ambient_curves":{"screen":{"points":[{"monitor":25,"builtin":NaN},{"monitor":50,"builtin":50},{"monitor":75,"builtin":75},{"monitor":100,"builtin":100}]}}}}"#,
+        r#"{"type":"update_settings","settings":{"ambient_curves":{"screen":{"points":[{"monitor":25,"builtin":0},{"monitor":50,"builtin":Infinity},{"monitor":75,"builtin":75},{"monitor":100,"builtin":100}]}}}}"#,
+        r#"{"type":"update_settings","settings":{"ambient_curves":{"screen":{"points":[{"monitor":25,"builtin":0},{"monitor":-Infinity,"builtin":50},{"monitor":75,"builtin":75},{"monitor":100,"builtin":100}]}}}}"#,
     ] {
         assert!(core.submit_json(raw.as_bytes()).is_err());
         assert_eq!(core.snapshot_value().unwrap()["settings"], before);
@@ -2774,14 +2774,14 @@ fn ambient_curve_rejects_decreasing_present_points_and_keeps_previous_curves() {
     let mut core = Core::new(CoreOptions::default()).unwrap();
     send(
         &mut core,
-        json!({"type":"update_settings","settings":{"ambient_curves":{"screen":{"p25":10.0,"p50":40.0,"p75":66.0,"p100":100.0}}}}),
+        json!({"type":"update_settings","settings":{"ambient_curves":{"screen":{"points":[{"monitor":25.0,"builtin":10.0},{"monitor":50.0,"builtin":40.0},{"monitor":75.0,"builtin":66.0},{"monitor":100.0,"builtin":100.0}]}}}}),
     );
     let before = core.snapshot_value().unwrap()["settings"].clone();
     for curve in [
-        json!({"p25":50.0,"p50":20.0,"p75":66.0,"p100":100.0}),
-        json!({"p25":40.0,"p50":null,"p75":30.0,"p100":null}),
-        json!({"p25":null,"p50":60.0,"p75":30.0,"p100":null}),
-        json!({"p25":10.0,"p50":60.0,"p75":50.0,"p100":40.0}),
+        json!({"points":[{"monitor":25.0,"builtin":50.0},{"monitor":50.0,"builtin":20.0},{"monitor":75.0,"builtin":66.0},{"monitor":100.0,"builtin":100.0}]}),
+        json!({"points":[{"monitor":25.0,"builtin":40.0},{"monitor":75.0,"builtin":30.0}]}),
+        json!({"points":[{"monitor":50.0,"builtin":60.0},{"monitor":75.0,"builtin":30.0}]}),
+        json!({"points":[{"monitor":25.0,"builtin":10.0},{"monitor":50.0,"builtin":60.0},{"monitor":75.0,"builtin":50.0},{"monitor":100.0,"builtin":40.0}]}),
     ] {
         let event =
             json!({"type":"update_settings","settings":{"ambient_curves":{"screen":curve}}});
@@ -2795,7 +2795,7 @@ fn ambient_curve_rejects_decreasing_present_points_and_keeps_previous_curves() {
 #[test]
 fn ambient_curve_keys_and_protection_ids_must_be_one_to_512_bytes() {
     let mut core = Core::new(CoreOptions::default()).unwrap();
-    let curve = json!({"p25":10.0,"p50":40.0,"p75":66.0,"p100":100.0});
+    let curve = json!({"points":[{"monitor":25.0,"builtin":10.0},{"monitor":50.0,"builtin":40.0},{"monitor":75.0,"builtin":66.0},{"monitor":100.0,"builtin":100.0}]});
     let longest = "x".repeat(512);
     let oversized = "x".repeat(513);
     // "é" is two bytes in UTF-8: 256 of them fill exactly 512 bytes, 257 exceed the limit.
@@ -2834,7 +2834,7 @@ fn ambient_curve_keys_and_protection_ids_must_be_one_to_512_bytes() {
 #[test]
 fn ambient_curves_and_protection_disabled_cap_at_128_entries() {
     let mut core = Core::new(CoreOptions::default()).unwrap();
-    let curve = json!({"p25":10.0,"p50":40.0,"p75":66.0,"p100":100.0});
+    let curve = json!({"points":[{"monitor":25.0,"builtin":10.0},{"monitor":50.0,"builtin":40.0},{"monitor":75.0,"builtin":66.0},{"monitor":100.0,"builtin":100.0}]});
     let mut curves = serde_json::Map::new();
     for index in 0..128 {
         curves.insert(format!("display-{index}"), curve.clone());
@@ -2888,7 +2888,7 @@ fn ambient_settings_round_trip_through_persisted_settings_file() {
         ..CoreOptions::default()
     })
     .unwrap();
-    let curve = json!({"p25":18.0,"p50":40.0,"p75":66.0,"p100":100.0});
+    let curve = json!({"points":[{"monitor":25.0,"builtin":18.0},{"monitor":50.0,"builtin":40.0},{"monitor":75.0,"builtin":66.0},{"monitor":100.0,"builtin":100.0}]});
     let saved = send(
         &mut core,
         json!({"type":"update_settings","settings":{
@@ -2921,62 +2921,65 @@ fn ambient_settings_round_trip_through_persisted_settings_file() {
 }
 
 #[test]
-fn ambient_optional_low_points_serialize_only_when_set_and_round_trip() {
-    // A curve without the optional points serializes exactly as before: no p5, p10, p15 or p20.
+fn ambient_points_serialize_only_as_points_and_round_trip() {
+    // A curve with four points serializes as a points list and never with pN keys.
     let plain = Settings::from_json(
-        r#"{"ambient_curves":{"screen":{"p25":20.0,"p50":45.0,"p75":70.0,"p100":90.0}}}"#
+        r#"{"ambient_curves":{"screen":{"points":[{"monitor":25.0,"builtin":20.0},{"monitor":50.0,"builtin":45.0},{"monitor":75.0,"builtin":70.0},{"monitor":100.0,"builtin":90.0}]}}}"#
             .as_bytes(),
     )
     .unwrap();
     let value = serde_json::to_value(&plain).unwrap();
     assert_eq!(
         value["ambient_curves"],
-        json!({"screen":{"p25":20.0,"p50":45.0,"p75":70.0,"p100":90.0}})
+        json!({"screen":{"points":[{"monitor":25.0,"builtin":20.0},{"monitor":50.0,"builtin":45.0},{"monitor":75.0,"builtin":70.0},{"monitor":100.0,"builtin":90.0}]}})
     );
-    // Set optional points are serialized and survive a round trip through from_json.
+    // Low-end points (5, 10, 15 and 20 percent) are serialized in order and survive a round trip.
     let refined = Settings::from_json(
-        r#"{"ambient_curves":{"screen":{"p5":4.0,"p10":8.0,"p15":12.0,"p20":16.0,"p25":20.0,"p50":45.0,"p75":70.0,"p100":90.0}}}"#.as_bytes(),
+        r#"{"ambient_curves":{"screen":{"points":[{"monitor":5.0,"builtin":4.0},{"monitor":10.0,"builtin":8.0},{"monitor":15.0,"builtin":12.0},{"monitor":20.0,"builtin":16.0},{"monitor":25.0,"builtin":20.0},{"monitor":50.0,"builtin":45.0},{"monitor":75.0,"builtin":70.0},{"monitor":100.0,"builtin":90.0}]}}}"#.as_bytes(),
     )
     .unwrap();
     let value = serde_json::to_value(&refined).unwrap();
     assert_eq!(
         value["ambient_curves"]["screen"],
-        json!({"p5":4.0,"p10":8.0,"p15":12.0,"p20":16.0,"p25":20.0,"p50":45.0,"p75":70.0,"p100":90.0})
+        json!({"points":[{"monitor":5.0,"builtin":4.0},{"monitor":10.0,"builtin":8.0},{"monitor":15.0,"builtin":12.0},{"monitor":20.0,"builtin":16.0},{"monitor":25.0,"builtin":20.0},{"monitor":50.0,"builtin":45.0},{"monitor":75.0,"builtin":70.0},{"monitor":100.0,"builtin":90.0}]})
     );
     let reparsed = Settings::from_json(&serde_json::to_vec(&refined).unwrap()).unwrap();
     assert_eq!(reparsed, refined);
 }
 
 #[test]
-fn ambient_p1_serializes_only_when_set_and_round_trips() {
-    // A curve without p1 has no "p1" key, even when the other optional points are set.
-    let without_p1 = Settings::from_json(
-        r#"{"ambient_curves":{"screen":{"p5":4.0,"p10":8.0,"p25":20.0,"p50":45.0,"p75":70.0,"p100":90.0}}}"#
+fn ambient_point_at_one_percent_serializes_first_and_round_trips() {
+    // Without a 1% point the list starts at 5 percent, and no point has monitor 1.
+    let without_1 = Settings::from_json(
+        r#"{"ambient_curves":{"screen":{"points":[{"monitor":5.0,"builtin":4.0},{"monitor":10.0,"builtin":8.0},{"monitor":25.0,"builtin":20.0},{"monitor":50.0,"builtin":45.0},{"monitor":75.0,"builtin":70.0},{"monitor":100.0,"builtin":90.0}]}}}"#
             .as_bytes(),
     )
     .unwrap();
-    let value = serde_json::to_value(&without_p1).unwrap();
-    assert!(value["ambient_curves"]["screen"].get("p1").is_none());
-    assert_eq!(value["ambient_curves"]["screen"]["p5"], 4.0);
-    // A set p1 is serialized and survives a round trip through from_json.
-    let with_p1 = Settings::from_json(
-        r#"{"ambient_curves":{"screen":{"p1":2.0,"p5":4.0,"p10":8.0,"p15":12.0,"p20":16.0,"p25":20.0,"p50":45.0,"p75":70.0,"p100":90.0}}}"#.as_bytes(),
+    let value = serde_json::to_value(&without_1).unwrap();
+    let points = value["ambient_curves"]["screen"]["points"]
+        .as_array()
+        .unwrap();
+    assert_eq!(points.len(), 6);
+    assert_eq!(points[0]["monitor"], 5.0);
+    // A 1 percent point is serialized as the first entry and survives a round trip.
+    let with_1 = Settings::from_json(
+        r#"{"ambient_curves":{"screen":{"points":[{"monitor":1.0,"builtin":2.0},{"monitor":5.0,"builtin":4.0},{"monitor":10.0,"builtin":8.0},{"monitor":15.0,"builtin":12.0},{"monitor":20.0,"builtin":16.0},{"monitor":25.0,"builtin":20.0},{"monitor":50.0,"builtin":45.0},{"monitor":75.0,"builtin":70.0},{"monitor":100.0,"builtin":90.0}]}}}"#.as_bytes(),
     )
     .unwrap();
-    let value = serde_json::to_value(&with_p1).unwrap();
+    let value = serde_json::to_value(&with_1).unwrap();
     assert_eq!(
-        value["ambient_curves"]["screen"],
-        json!({"p1":2.0,"p5":4.0,"p10":8.0,"p15":12.0,"p20":16.0,"p25":20.0,"p50":45.0,"p75":70.0,"p100":90.0})
+        value["ambient_curves"]["screen"]["points"][0],
+        json!({"monitor":1.0,"builtin":2.0})
     );
-    let reparsed = Settings::from_json(&serde_json::to_vec(&with_p1).unwrap()).unwrap();
-    assert_eq!(reparsed, with_p1);
+    let reparsed = Settings::from_json(&serde_json::to_vec(&with_1).unwrap()).unwrap();
+    assert_eq!(reparsed, with_1);
 }
 
 #[test]
 fn ambient_update_settings_replaces_curves_and_protection_list_whole() {
     let mut core = Core::new(CoreOptions::default()).unwrap();
-    let first_curve = json!({"p25":18.0,"p50":40.0,"p75":66.0,"p100":100.0});
-    let second_curve = json!({"p25":10.0,"p50":20.0,"p75":30.0,"p100":40.0});
+    let first_curve = json!({"points":[{"monitor":25.0,"builtin":18.0},{"monitor":50.0,"builtin":40.0},{"monitor":75.0,"builtin":66.0},{"monitor":100.0,"builtin":100.0}]});
+    let second_curve = json!({"points":[{"monitor":25.0,"builtin":10.0},{"monitor":50.0,"builtin":20.0},{"monitor":75.0,"builtin":30.0},{"monitor":100.0,"builtin":40.0}]});
     let first = send(
         &mut core,
         json!({"type":"update_settings","settings":{
@@ -3047,13 +3050,13 @@ fn ambient_invalid_curve_rejects_the_whole_update_and_keeps_previous_settings() 
     let mut core = Core::new(CoreOptions::default()).unwrap();
     send(
         &mut core,
-        json!({"type":"update_settings","settings":{"ambient_curves":{"screen":{"p25":10.0,"p50":40.0,"p75":66.0,"p100":100.0}}}}),
+        json!({"type":"update_settings","settings":{"ambient_curves":{"screen":{"points":[{"monitor":25.0,"builtin":10.0},{"monitor":50.0,"builtin":40.0},{"monitor":75.0,"builtin":66.0},{"monitor":100.0,"builtin":100.0}]}}}}),
     );
     let before = core.snapshot_value().unwrap()["settings"].clone();
     // The rejected update also carries a valid toggle; none of it may be applied.
     let invalid = json!({"type":"update_settings","settings":{
         "ambient_follow_enabled":true,
-        "ambient_curves":{"screen":{"p25":50.0,"p50":20.0,"p75":66.0,"p100":100.0}}
+        "ambient_curves":{"screen":{"points":[{"monitor":25.0,"builtin":50.0},{"monitor":50.0,"builtin":20.0},{"monitor":75.0,"builtin":66.0},{"monitor":100.0,"builtin":100.0}]}}
     }});
     let message = core
         .submit_json(&serde_json::to_vec(&invalid).unwrap())
@@ -3062,7 +3065,7 @@ fn ambient_invalid_curve_rejects_the_whole_update_and_keeps_previous_settings() 
     assert_eq!(core.snapshot_value().unwrap()["settings"], before);
     let out_of_range = json!({"type":"update_settings","settings":{
         "ambient_follow_enabled":true,
-        "ambient_curves":{"screen":{"p25":10.0,"p50":40.0,"p75":66.0,"p100":120.0}}
+        "ambient_curves":{"screen":{"points":[{"monitor":25.0,"builtin":10.0},{"monitor":50.0,"builtin":40.0},{"monitor":75.0,"builtin":66.0},{"monitor":100.0,"builtin":120.0}]}}
     }});
     assert!(core
         .submit_json(&serde_json::to_vec(&out_of_range).unwrap())
@@ -3071,18 +3074,19 @@ fn ambient_invalid_curve_rejects_the_whole_update_and_keeps_previous_settings() 
 }
 
 #[test]
-fn ambient_optional_low_points_follow_the_same_range_and_order_rules() {
+fn ambient_low_end_points_follow_the_same_range_and_order_rules() {
     let mut core = Core::new(CoreOptions::default()).unwrap();
     send(
         &mut core,
-        json!({"type":"update_settings","settings":{"ambient_curves":{"screen":{"p25":10.0,"p50":40.0,"p75":66.0,"p100":100.0}}}}),
+        json!({"type":"update_settings","settings":{"ambient_curves":{"screen":{"points":[{"monitor":25.0,"builtin":10.0},{"monitor":50.0,"builtin":40.0},{"monitor":75.0,"builtin":66.0},{"monitor":100.0,"builtin":100.0}]}}}}),
     );
     let before = core.snapshot_value().unwrap()["settings"].clone();
-    // p10 above p25 breaks the order; p5 below 0 and above 100 break the range.
+    // A 10 percent point with a higher builtin level than the 25 percent point breaks the order;
+    // a 5 percent point with a builtin level below 0 or above 100 breaks the range.
     for curve in [
-        json!({"p10":30.0,"p25":20.0,"p50":40.0,"p75":66.0,"p100":100.0}),
-        json!({"p5":-1.0,"p25":10.0,"p50":40.0,"p75":66.0,"p100":100.0}),
-        json!({"p5":101.0,"p25":10.0,"p50":40.0,"p75":66.0,"p100":100.0}),
+        json!({"points":[{"monitor":10.0,"builtin":30.0},{"monitor":25.0,"builtin":20.0},{"monitor":50.0,"builtin":40.0},{"monitor":75.0,"builtin":66.0},{"monitor":100.0,"builtin":100.0}]}),
+        json!({"points":[{"monitor":5.0,"builtin":-1.0},{"monitor":25.0,"builtin":10.0},{"monitor":50.0,"builtin":40.0},{"monitor":75.0,"builtin":66.0},{"monitor":100.0,"builtin":100.0}]}),
+        json!({"points":[{"monitor":5.0,"builtin":101.0},{"monitor":25.0,"builtin":10.0},{"monitor":50.0,"builtin":40.0},{"monitor":75.0,"builtin":66.0},{"monitor":100.0,"builtin":100.0}]}),
     ] {
         let event =
             json!({"type":"update_settings","settings":{"ambient_curves":{"screen":curve}}});
@@ -3091,8 +3095,8 @@ fn ambient_optional_low_points_follow_the_same_range_and_order_rules() {
             .is_err());
         assert_eq!(core.snapshot_value().unwrap()["settings"], before);
     }
-    // Equal neighboring optional points are non-decreasing, so the curve is stored as sent.
-    let curve = json!({"p5":4.0,"p10":8.0,"p15":8.0,"p20":16.0,"p25":20.0,"p50":45.0,"p75":70.0,"p100":90.0});
+    // Equal neighboring low-end builtin levels are non-decreasing, so the curve is stored as sent.
+    let curve = json!({"points":[{"monitor":5.0,"builtin":4.0},{"monitor":10.0,"builtin":8.0},{"monitor":15.0,"builtin":8.0},{"monitor":20.0,"builtin":16.0},{"monitor":25.0,"builtin":20.0},{"monitor":50.0,"builtin":45.0},{"monitor":75.0,"builtin":70.0},{"monitor":100.0,"builtin":90.0}]});
     let saved = send(
         &mut core,
         json!({"type":"update_settings","settings":{"ambient_curves":{"screen":curve}}}),
@@ -3101,18 +3105,19 @@ fn ambient_optional_low_points_follow_the_same_range_and_order_rules() {
 }
 
 #[test]
-fn ambient_p1_follows_the_same_range_and_order_rules() {
+fn ambient_one_percent_point_follows_the_same_range_and_order_rules() {
     let mut core = Core::new(CoreOptions::default()).unwrap();
     send(
         &mut core,
-        json!({"type":"update_settings","settings":{"ambient_curves":{"screen":{"p25":10.0,"p50":40.0,"p75":66.0,"p100":100.0}}}}),
+        json!({"type":"update_settings","settings":{"ambient_curves":{"screen":{"points":[{"monitor":25.0,"builtin":10.0},{"monitor":50.0,"builtin":40.0},{"monitor":75.0,"builtin":66.0},{"monitor":100.0,"builtin":100.0}]}}}}),
     );
     let before = core.snapshot_value().unwrap()["settings"].clone();
-    // p1 above p5 breaks the order; p1 below 0 and above 100 break the range.
+    // A 1 percent point with a builtin level above the 5 percent point's breaks the order;
+    // a 1 percent point with a builtin level below 0 or above 100 breaks the range.
     for curve in [
-        json!({"p1":5.0,"p5":4.0,"p25":10.0,"p50":40.0,"p75":66.0,"p100":100.0}),
-        json!({"p1":-1.0,"p25":10.0,"p50":40.0,"p75":66.0,"p100":100.0}),
-        json!({"p1":101.0,"p25":10.0,"p50":40.0,"p75":66.0,"p100":100.0}),
+        json!({"points":[{"monitor":1.0,"builtin":5.0},{"monitor":5.0,"builtin":4.0},{"monitor":25.0,"builtin":10.0},{"monitor":50.0,"builtin":40.0},{"monitor":75.0,"builtin":66.0},{"monitor":100.0,"builtin":100.0}]}),
+        json!({"points":[{"monitor":1.0,"builtin":-1.0},{"monitor":25.0,"builtin":10.0},{"monitor":50.0,"builtin":40.0},{"monitor":75.0,"builtin":66.0},{"monitor":100.0,"builtin":100.0}]}),
+        json!({"points":[{"monitor":1.0,"builtin":101.0},{"monitor":25.0,"builtin":10.0},{"monitor":50.0,"builtin":40.0},{"monitor":75.0,"builtin":66.0},{"monitor":100.0,"builtin":100.0}]}),
     ] {
         let event =
             json!({"type":"update_settings","settings":{"ambient_curves":{"screen":curve}}});
@@ -3121,13 +3126,133 @@ fn ambient_p1_follows_the_same_range_and_order_rules() {
             .is_err());
         assert_eq!(core.snapshot_value().unwrap()["settings"], before);
     }
-    // An equal p1 and p5 are non-decreasing, so the curve is stored as sent.
-    let curve = json!({"p1":4.0,"p5":4.0,"p10":8.0,"p15":12.0,"p20":16.0,"p25":20.0,"p50":45.0,"p75":70.0,"p100":90.0});
+    // An equal 1 and 5 percent builtin level is non-decreasing, so the curve is stored as sent.
+    let curve = json!({"points":[{"monitor":1.0,"builtin":4.0},{"monitor":5.0,"builtin":4.0},{"monitor":10.0,"builtin":8.0},{"monitor":15.0,"builtin":12.0},{"monitor":20.0,"builtin":16.0},{"monitor":25.0,"builtin":20.0},{"monitor":50.0,"builtin":45.0},{"monitor":75.0,"builtin":70.0},{"monitor":100.0,"builtin":90.0}]});
     let saved = send(
         &mut core,
         json!({"type":"update_settings","settings":{"ambient_curves":{"screen":curve}}}),
     );
     assert_eq!(saved["settings"]["ambient_curves"]["screen"], curve);
+}
+
+#[test]
+fn ambient_legacy_point_keys_are_imported_as_ascending_points() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    // Each non-null pN becomes the point { monitor: N, builtin: pN }; nulls and omitted keys are skipped.
+    let expected = json!({"points":[{"monitor":1.0,"builtin":2.0},{"monitor":5.0,"builtin":4.0},{"monitor":25.0,"builtin":20.0},{"monitor":50.0,"builtin":45.0},{"monitor":100.0,"builtin":90.0}]});
+    let saved = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"ambient_curves":{"screen":{"p50":45.0,"p1":2.0,"p100":90.0,"p25":20.0,"p75":null,"p5":4.0}}}}),
+    );
+    assert_eq!(saved["settings"]["ambient_curves"]["screen"], expected);
+    // The same legacy payload read from Settings::from_json is written back as points only.
+    let settings = Settings::from_json(
+        br#"{"ambient_curves":{"screen":{"p50":45.0,"p1":2.0,"p100":90.0,"p25":20.0,"p75":null,"p5":4.0}}}"#,
+    )
+    .unwrap();
+    let value = serde_json::to_value(&settings).unwrap();
+    assert_eq!(value["ambient_curves"]["screen"], expected);
+    assert!(value["ambient_curves"]["screen"].get("p25").is_none());
+    let reparsed = Settings::from_json(&serde_json::to_vec(&settings).unwrap()).unwrap();
+    assert_eq!(reparsed, settings);
+}
+
+#[test]
+fn ambient_legacy_points_in_a_settings_file_are_rewritten_as_points_on_the_next_store() {
+    let root = std::env::temp_dir().join(format!("telaviva-ambient-legacy-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::create_dir_all(&root);
+    let path = root.join("settings.json");
+    std::fs::write(
+        &path,
+        r#"{"ambient_curves":{"screen":{"p25":20.0,"p50":45.0,"p75":70.0,"p100":90.0}}}"#,
+    )
+    .unwrap();
+    let mut core = Core::new(CoreOptions {
+        config_path: Some(path.clone()),
+        ..CoreOptions::default()
+    })
+    .unwrap();
+    let expected = json!({"points":[{"monitor":25.0,"builtin":20.0},{"monitor":50.0,"builtin":45.0},{"monitor":75.0,"builtin":70.0},{"monitor":100.0,"builtin":90.0}]});
+    let loaded = core.snapshot_value().unwrap();
+    assert_eq!(loaded["settings"]["ambient_curves"]["screen"], expected);
+    // The next store writes the points form, and no pN key is ever written.
+    send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"ambient_follow_enabled":true}}),
+    );
+    let persisted: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(persisted["ambient_curves"], json!({"screen": expected}));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn ambient_legacy_curve_with_one_non_null_point_is_incomplete() {
+    let one = Settings::from_json(
+        br#"{"ambient_curves":{"screen":{"p25":20.0,"p50":null,"p75":null,"p100":null}}}"#,
+    )
+    .unwrap();
+    assert!(!one.ambient_curves["screen"].is_complete());
+    let two = Settings::from_json(
+        br#"{"ambient_curves":{"screen":{"p25":20.0,"p50":null,"p75":null,"p100":90.0}}}"#,
+    )
+    .unwrap();
+    assert!(two.ambient_curves["screen"].is_complete());
+}
+
+#[test]
+fn ambient_curve_rejects_unsorted_and_duplicate_monitor_percents() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"ambient_curves":{"screen":{"points":[{"monitor":25.0,"builtin":10.0},{"monitor":50.0,"builtin":40.0},{"monitor":75.0,"builtin":66.0},{"monitor":100.0,"builtin":100.0}]}}}}),
+    );
+    let before = core.snapshot_value().unwrap()["settings"].clone();
+    for curve in [
+        // Monitor percents must be strictly ascending in the stored list.
+        json!({"points":[{"monitor":50.0,"builtin":40.0},{"monitor":25.0,"builtin":10.0}]}),
+        // A repeated monitor percent is not strictly ascending.
+        json!({"points":[{"monitor":25.0,"builtin":10.0},{"monitor":25.0,"builtin":20.0}]}),
+    ] {
+        let event =
+            json!({"type":"update_settings","settings":{"ambient_curves":{"screen":curve}}});
+        assert!(core
+            .submit_json(&serde_json::to_vec(&event).unwrap())
+            .is_err());
+        assert_eq!(core.snapshot_value().unwrap()["settings"], before);
+    }
+}
+
+#[test]
+fn ambient_curve_accepts_exactly_32_points_and_rejects_33() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    // Monitor percents 1, 4, ..., 94 and builtin levels 0, 3, ..., 93 are ascending and in range.
+    let points = |count: usize| -> Value {
+        Value::Array(
+            (0..count)
+                .map(|index| {
+                    json!({"monitor": 1.0 + 3.0 * index as f64, "builtin": 3.0 * index as f64})
+                })
+                .collect(),
+        )
+    };
+    let full = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"ambient_curves":{"screen":{"points":points(32)}}}}),
+    );
+    assert_eq!(
+        full["settings"]["ambient_curves"]["screen"]["points"]
+            .as_array()
+            .unwrap()
+            .len(),
+        32
+    );
+    let before = core.snapshot_value().unwrap()["settings"].clone();
+    let too_many = json!({"type":"update_settings","settings":{"ambient_curves":{"screen":{"points":points(33)}}}});
+    assert!(core
+        .submit_json(&serde_json::to_vec(&too_many).unwrap())
+        .is_err());
+    assert_eq!(core.snapshot_value().unwrap()["settings"], before);
 }
 
 #[test]
@@ -3167,12 +3292,12 @@ fn ambient_follow_state_is_uncalibrated_until_a_complete_curve_exists() {
     assert_eq!(discovered["monitors"][0]["follow"], "uncalibrated");
     let partial = send(
         &mut core,
-        json!({"type":"update_settings","settings":{"ambient_curves":{"screen":{"p25":10.0,"p50":40.0,"p75":66.0,"p100":null}}}}),
+        json!({"type":"update_settings","settings":{"ambient_curves":{"screen":{"points":[{"monitor":25.0,"builtin":10.0}]}}}}),
     );
     assert_eq!(partial["monitors"][0]["follow"], "uncalibrated");
     let complete = send(
         &mut core,
-        json!({"type":"update_settings","settings":{"ambient_curves":{"screen":{"p25":18.0,"p50":40.0,"p75":66.0,"p100":100.0}}}}),
+        json!({"type":"update_settings","settings":{"ambient_curves":{"screen":{"points":[{"monitor":25.0,"builtin":18.0},{"monitor":50.0,"builtin":40.0},{"monitor":75.0,"builtin":66.0},{"monitor":100.0,"builtin":100.0}]}}}}),
     );
     assert_eq!(complete["monitors"][0]["follow"], "eligible");
     // Eligibility is reported whether or not follow is switched on.
@@ -3184,49 +3309,55 @@ fn ambient_follow_state_is_uncalibrated_until_a_complete_curve_exists() {
 }
 
 #[test]
-fn ambient_curve_with_only_optional_low_points_is_uncalibrated() {
+fn ambient_curve_with_fewer_than_two_points_is_uncalibrated() {
     let mut core = Core::new(CoreOptions::default()).unwrap();
     send(&mut core, follow_discovery("screen", 0.0, 100.0, 50.0));
-    let partial = json!({"p5":4.0,"p10":8.0,"p15":12.0,"p20":16.0});
+    let partial = json!({"points":[{"monitor":5.0,"builtin":4.0}]});
     let snapshot = send(
         &mut core,
         json!({"type":"update_settings","settings":{"ambient_follow_enabled":true,"ambient_curves":{"screen":partial.clone()}}}),
     );
     assert_eq!(snapshot["monitors"][0]["follow"], "uncalibrated");
-    // Without p25, p50, p75 and p100 the curve maps no level, so a built-in change writes nothing.
+    // With one point the curve maps no level, so a built-in change writes nothing.
     assert_eq!(follow_first_write_for(partial, 0.0, 100.0, 90.0, 6.0), None);
 }
 
 #[test]
-fn ambient_p1_is_optional_and_completeness_still_needs_the_required_four() {
-    // Completeness depends only on p25, p50, p75 and p100, with or without p1.
-    let complete = Settings::from_json(
-        br#"{"ambient_curves":{"screen":{"p1":2.0,"p25":20.0,"p50":45.0,"p75":70.0,"p100":90.0}}}"#,
+fn ambient_completeness_needs_two_points_and_no_fixed_percent() {
+    // A curve is complete with any two points; one point or none is not.
+    let two = Settings::from_json(
+        br#"{"ambient_curves":{"screen":{"points":[{"monitor":25.0,"builtin":20.0},{"monitor":100.0,"builtin":90.0}]}}}"#,
     )
     .unwrap();
-    assert!(complete.ambient_curves["screen"].is_complete());
-    let missing_p25 = Settings::from_json(
-        br#"{"ambient_curves":{"screen":{"p1":2.0,"p50":45.0,"p75":70.0,"p100":90.0}}}"#,
+    assert!(two.ambient_curves["screen"].is_complete());
+    let one = Settings::from_json(
+        br#"{"ambient_curves":{"screen":{"points":[{"monitor":25.0,"builtin":20.0}]}}}"#,
     )
     .unwrap();
-    assert!(!missing_p25.ambient_curves["screen"].is_complete());
-    let only_p1 = Settings::from_json(br#"{"ambient_curves":{"screen":{"p1":2.0}}}"#).unwrap();
-    assert!(!only_p1.ambient_curves["screen"].is_complete());
-    // Through the core: p1 with the required four makes the monitor eligible; p1 alone does not.
+    assert!(!one.ambient_curves["screen"].is_complete());
+    let none = Settings::from_json(br#"{"ambient_curves":{"screen":{"points":[]}}}"#).unwrap();
+    assert!(!none.ambient_curves["screen"].is_complete());
+    // Through the core: a one-percent point alone does not make the monitor eligible.
     let mut core = Core::new(CoreOptions::default()).unwrap();
     send(&mut core, follow_discovery("screen", 0.0, 100.0, 50.0));
     let snapshot = send(
         &mut core,
-        json!({"type":"update_settings","settings":{"ambient_follow_enabled":true,"ambient_curves":{"screen":{"p1":2.0,"p25":20.0,"p50":45.0,"p75":70.0,"p100":90.0}}}}),
+        json!({"type":"update_settings","settings":{"ambient_follow_enabled":true,"ambient_curves":{"screen":{"points":[{"monitor":1.0,"builtin":2.0},{"monitor":25.0,"builtin":20.0},{"monitor":50.0,"builtin":45.0},{"monitor":75.0,"builtin":70.0},{"monitor":100.0,"builtin":90.0}]}}}}),
     );
     assert_eq!(snapshot["monitors"][0]["follow"], "eligible");
     let snapshot = send(
         &mut core,
-        json!({"type":"update_settings","settings":{"ambient_curves":{"screen":{"p1":2.0}}}}),
+        json!({"type":"update_settings","settings":{"ambient_curves":{"screen":{"points":[{"monitor":1.0,"builtin":2.0}]}}}}),
     );
     assert_eq!(snapshot["monitors"][0]["follow"], "uncalibrated");
     assert_eq!(
-        follow_first_write_for(json!({"p1":2.0}), 0.0, 100.0, 90.0, 6.0),
+        follow_first_write_for(
+            json!({"points":[{"monitor":1.0,"builtin":2.0}]}),
+            0.0,
+            100.0,
+            90.0,
+            6.0
+        ),
         None
     );
 }
@@ -3245,7 +3376,7 @@ fn ambient_follow_state_is_unsupported_without_ddc_brightness() {
     // A complete curve cannot make a monitor without DDC brightness eligible.
     let snapshot = send(
         &mut core,
-        json!({"type":"update_settings","settings":{"ambient_curves":{"screen":{"p25":18.0,"p50":40.0,"p75":66.0,"p100":100.0}}}}),
+        json!({"type":"update_settings","settings":{"ambient_curves":{"screen":{"points":[{"monitor":25.0,"builtin":18.0},{"monitor":50.0,"builtin":40.0},{"monitor":75.0,"builtin":66.0},{"monitor":100.0,"builtin":100.0}]}}}}),
     );
     assert_eq!(snapshot["monitors"][0]["follow"], "unsupported");
 }
@@ -3264,7 +3395,7 @@ fn ambient_follow_state_is_unstable_for_ambiguous_identity() {
     assert_eq!(discovered["monitors"][0]["follow"], "unstable");
     let complete = send(
         &mut core,
-        json!({"type":"update_settings","settings":{"ambient_curves":{"ambiguous":{"p25":18.0,"p50":40.0,"p75":66.0,"p100":100.0}}}}),
+        json!({"type":"update_settings","settings":{"ambient_curves":{"ambiguous":{"points":[{"monitor":25.0,"builtin":18.0},{"monitor":50.0,"builtin":40.0},{"monitor":75.0,"builtin":66.0},{"monitor":100.0,"builtin":100.0}]}}}}),
     );
     // A complete curve does not make a monitor with ambiguous identity eligible.
     assert_eq!(complete["monitors"][0]["follow"], "unstable");
@@ -3618,7 +3749,7 @@ fn protection_monitor_unprotected_only_camera_matches_no_monitor_state() {
 }
 
 fn follow_curve() -> Value {
-    json!({"p25":20.0,"p50":45.0,"p75":70.0,"p100":90.0})
+    json!({"points":[{"monitor":25.0,"builtin":20.0},{"monitor":50.0,"builtin":45.0},{"monitor":75.0,"builtin":70.0},{"monitor":100.0,"builtin":90.0}]})
 }
 
 fn follow_discovery(id: &str, min: f64, max: f64, raw: f64) -> Value {
@@ -3716,7 +3847,7 @@ fn follow_first_write_for(
 #[test]
 fn follow_curve_maps_anchor_percents_to_exact_raw_targets() {
     // The monitor starts at 90, so no anchor target equals its current raw value.
-    // MacBook levels 20, 45, 70 and 90 are the p25, p50, p75 and p100 points of the fixture.
+    // MacBook levels 20, 45, 70 and 90 are the 25, 50, 75 and 100 percent points of the fixture.
     assert_eq!(follow_first_write(0.0, 100.0, 90.0, 20.0), Some(25.0));
     assert_eq!(follow_first_write(0.0, 100.0, 90.0, 45.0), Some(50.0));
     assert_eq!(follow_first_write(0.0, 100.0, 90.0, 70.0), Some(75.0));
@@ -3726,12 +3857,12 @@ fn follow_curve_maps_anchor_percents_to_exact_raw_targets() {
 
 #[test]
 fn follow_curve_interpolates_linearly_between_anchors_and_from_origin() {
-    // Between the origin and p25: MacBook 4 and 8 are monitor 5 and 10 percent.
+    // Between the origin and the 25 percent point: MacBook 4 and 8 are monitor 5 and 10 percent.
     assert_eq!(follow_first_write(0.0, 100.0, 90.0, 4.0), Some(5.0));
     assert_eq!(follow_first_write(0.0, 100.0, 90.0, 8.0), Some(10.0));
     // MacBook 10 is 12.5 percent: raw 25 on a 0..200 range.
     assert_eq!(follow_first_write(0.0, 200.0, 90.0, 10.0), Some(25.0));
-    // Between p25 and p50, p50 and p75, and p75 and p100.
+    // Between the 25 and 50, 50 and 75, and 75 and 100 percent points.
     assert_eq!(follow_first_write(0.0, 100.0, 90.0, 30.0), Some(35.0));
     assert_eq!(follow_first_write(0.0, 100.0, 90.0, 60.0), Some(65.0));
     assert_eq!(follow_first_write(0.0, 100.0, 90.0, 78.0), Some(85.0));
@@ -3739,10 +3870,10 @@ fn follow_curve_interpolates_linearly_between_anchors_and_from_origin() {
 }
 
 #[test]
-fn follow_curve_without_optional_low_points_keeps_the_origin_segment() {
-    // Null optional points are the same as absent ones, so the origin segment is unchanged:
+fn follow_curve_without_low_end_points_keeps_the_origin_segment() {
+    // Without points below 25 percent the origin segment is unchanged:
     // MacBook 4 and 8 are monitor 5 and 10 percent.
-    let curve = json!({"p5":null,"p10":null,"p15":null,"p20":null,"p25":20.0,"p50":45.0,"p75":70.0,"p100":90.0});
+    let curve = json!({"points":[{"monitor":25.0,"builtin":20.0},{"monitor":50.0,"builtin":45.0},{"monitor":75.0,"builtin":70.0},{"monitor":100.0,"builtin":90.0}]});
     assert_eq!(
         follow_first_write_for(curve.clone(), 0.0, 100.0, 90.0, 4.0),
         Some(5.0)
@@ -3755,10 +3886,10 @@ fn follow_curve_without_optional_low_points_keeps_the_origin_segment() {
 
 #[test]
 fn follow_curve_optional_low_points_refine_the_low_end() {
-    // With p5=4, p10=8, p15=12 and p20=16 added to the fixture, the low end is piecewise linear
+    // With 5, 10, 15 and 20 percent points added to the fixture, the low end is piecewise linear
     // through (0, 0), (4, 5), (8, 10), (12, 15), (16, 20) and (20, 25).
     // A 0..200 raw range makes every target exact: raw is twice the monitor percent.
-    let curve = json!({"p5":4.0,"p10":8.0,"p15":12.0,"p20":16.0,"p25":20.0,"p50":45.0,"p75":70.0,"p100":90.0});
+    let curve = json!({"points":[{"monitor":5.0,"builtin":4.0},{"monitor":10.0,"builtin":8.0},{"monitor":15.0,"builtin":12.0},{"monitor":20.0,"builtin":16.0},{"monitor":25.0,"builtin":20.0},{"monitor":50.0,"builtin":45.0},{"monitor":75.0,"builtin":70.0},{"monitor":100.0,"builtin":90.0}]});
     // MacBook 6 is monitor 7.5 percent: raw 15.
     assert_eq!(
         follow_first_write_for(curve.clone(), 0.0, 200.0, 90.0, 6.0),
@@ -3787,10 +3918,11 @@ fn follow_curve_optional_low_points_refine_the_low_end() {
 }
 
 #[test]
-fn follow_curve_optional_p1_refines_the_origin_segment() {
-    // With p1=2 added to the refined fixture, the origin segment runs through (0, 0), (2, 1) and
-    // (4, 5). A 0..200 raw range makes every target exact: raw is twice the monitor percent.
-    let curve = json!({"p1":2.0,"p5":4.0,"p10":8.0,"p15":12.0,"p20":16.0,"p25":20.0,"p50":45.0,"p75":70.0,"p100":90.0});
+fn follow_curve_one_percent_point_refines_the_origin_segment() {
+    // With a 1 percent point at MacBook 2 added to the refined fixture, the origin segment runs
+    // through (0, 0), (2, 1) and (4, 5). A 0..200 raw range makes every target exact: raw is
+    // twice the monitor percent.
+    let curve = json!({"points":[{"monitor":1.0,"builtin":2.0},{"monitor":5.0,"builtin":4.0},{"monitor":10.0,"builtin":8.0},{"monitor":15.0,"builtin":12.0},{"monitor":20.0,"builtin":16.0},{"monitor":25.0,"builtin":20.0},{"monitor":50.0,"builtin":45.0},{"monitor":75.0,"builtin":70.0},{"monitor":100.0,"builtin":90.0}]});
     // MacBook 1 is monitor 0.5 percent, linear from the origin to (2, 1): raw 1.
     assert_eq!(
         follow_first_write_for(curve.clone(), 0.0, 200.0, 90.0, 1.0),
@@ -3837,9 +3969,10 @@ fn follow_curve_maps_through_a_monitor_minimum_above_zero() {
 }
 
 #[test]
-fn follow_curve_with_zero_p25_returns_25_percent_at_level_zero_without_nan() {
-    // p25 == 0 makes the first segment zero-width: level 0 returns its upper point, 25 percent.
-    let curve = json!({"p25":0.0,"p50":50.0,"p75":75.0,"p100":100.0});
+fn follow_curve_with_zero_builtin_first_point_returns_25_percent_at_level_zero_without_nan() {
+    // A first point with builtin 0 makes the first segment zero-width: level 0 returns its upper
+    // point, 25 percent.
+    let curve = json!({"points":[{"monitor":25.0,"builtin":0.0},{"monitor":50.0,"builtin":50.0},{"monitor":75.0,"builtin":75.0},{"monitor":100.0,"builtin":100.0}]});
     assert_eq!(
         follow_first_write_for(curve.clone(), 0.0, 100.0, 90.0, 0.0),
         Some(25.0)
@@ -3853,9 +3986,10 @@ fn follow_curve_with_zero_p25_returns_25_percent_at_level_zero_without_nan() {
 
 #[test]
 fn follow_curve_with_equal_consecutive_points_is_finite_and_non_decreasing() {
-    // p50 == p75 makes the segment at level 60 zero-width. The monitor starts at raw 62, which no
-    // target reaches on this curve, so every level produces a write.
-    let curve = json!({"p25":20.0,"p50":60.0,"p75":60.0,"p100":100.0});
+    // The 50 and 75 percent points share builtin 60, which makes the segment at level 60
+    // zero-width. The monitor starts at raw 62, which no target reaches on this curve, so every
+    // level produces a write.
+    let curve = json!({"points":[{"monitor":25.0,"builtin":20.0},{"monitor":50.0,"builtin":60.0},{"monitor":75.0,"builtin":60.0},{"monitor":100.0,"builtin":100.0}]});
     let mut previous = f64::NEG_INFINITY;
     for level in 0..=100_u32 {
         let level = f64::from(level);
@@ -3871,10 +4005,10 @@ fn follow_curve_with_equal_consecutive_points_is_finite_and_non_decreasing() {
 }
 
 #[test]
-fn follow_curve_clamps_to_exactly_100_percent_above_a_p100_below_100() {
-    // p100 is 80: MacBook level 80 already reaches monitor 100 percent, which is raw 255 on
-    // 0..255, and levels above it clamp to the same value.
-    let curve = json!({"p25":20.0,"p50":45.0,"p75":70.0,"p100":80.0});
+fn follow_curve_reaches_100_percent_at_a_last_point_below_100_builtin_and_holds_it() {
+    // The 100 percent point is at MacBook 80: that level already reaches monitor 100 percent,
+    // which is raw 255 on 0..255, and levels above it hold the same value.
+    let curve = json!({"points":[{"monitor":25.0,"builtin":20.0},{"monitor":50.0,"builtin":45.0},{"monitor":75.0,"builtin":70.0},{"monitor":100.0,"builtin":80.0}]});
     assert_eq!(
         follow_first_write_for(curve.clone(), 0.0, 255.0, 100.0, 80.0),
         Some(255.0)
@@ -3886,6 +4020,48 @@ fn follow_curve_clamps_to_exactly_100_percent_above_a_p100_below_100() {
     assert_eq!(
         follow_first_write_for(curve, 0.0, 255.0, 100.0, 100.0),
         Some(255.0)
+    );
+}
+
+#[test]
+fn follow_curve_above_a_last_point_below_100_stays_at_its_monitor_percent() {
+    // The last point is monitor 80 at MacBook 90. Above it the monitor holds 80 percent, which is
+    // raw 204 on 0..255, instead of jumping to 100 percent.
+    let curve = json!({"points":[{"monitor":25.0,"builtin":20.0},{"monitor":50.0,"builtin":45.0},{"monitor":75.0,"builtin":70.0},{"monitor":80.0,"builtin":90.0}]});
+    assert_eq!(
+        follow_first_write_for(curve.clone(), 0.0, 255.0, 100.0, 90.0),
+        Some(204.0)
+    );
+    assert_eq!(
+        follow_first_write_for(curve.clone(), 0.0, 255.0, 100.0, 95.0),
+        Some(204.0)
+    );
+    assert_eq!(
+        follow_first_write_for(curve, 0.0, 255.0, 100.0, 100.0),
+        Some(204.0)
+    );
+}
+
+#[test]
+fn follow_curve_with_exactly_two_points_is_eligible_and_maps_through_both() {
+    // Two points, 25 percent at MacBook 20 and 100 percent at MacBook 90, are a complete curve.
+    // A 0..200 raw range makes every target exact: raw is twice the monitor percent.
+    let curve =
+        json!({"points":[{"monitor":25.0,"builtin":20.0},{"monitor":100.0,"builtin":90.0}]});
+    // MacBook 20 is monitor 25 percent: raw 50.
+    assert_eq!(
+        follow_first_write_for(curve.clone(), 0.0, 200.0, 90.0, 20.0),
+        Some(50.0)
+    );
+    // MacBook 55 is between the points, monitor 62.5 percent: raw 125.
+    assert_eq!(
+        follow_first_write_for(curve.clone(), 0.0, 200.0, 90.0, 55.0),
+        Some(125.0)
+    );
+    // MacBook 90 is monitor 100 percent: raw 200, and levels above it hold there.
+    assert_eq!(
+        follow_first_write_for(curve, 0.0, 200.0, 90.0, 100.0),
+        Some(200.0)
     );
 }
 

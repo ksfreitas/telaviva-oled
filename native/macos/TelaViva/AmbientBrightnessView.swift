@@ -83,58 +83,139 @@ struct AmbientBrightnessView: View {
     }
 }
 
-/// Calibration controls under one monitor: the four points, and the slider and actions while one is active.
+/// Calibration controls under one monitor: the saved points and the add row. The active calibration runs in a dialog sheet.
 private struct CalibrationPanel: View {
     @ObservedObject var calibration: AmbientCalibrationController
-    let core: CoreBridge
+    /// Observed so the saved points refresh when the core snapshot changes.
+    @ObservedObject var core: CoreBridge
     let monitor: CoreMonitor
     let locale: String?
+    /// The monitor percent the add row will calibrate next.
+    @State var addPercent = 25
+
+    /// The monitor's saved curve; nil when it has no points yet.
+    private var savedCurve: AmbientCurve? { core.snapshot.settings?.ambientCurves?[monitor.id] }
+    /// Saved points in ascending monitor order, as the core keeps them.
+    private var points: [AmbientCurvePoint] { savedCurve?.points ?? [] }
+    /// Add is refused for a percent that is already saved and once the curve is full.
+    private var canAddPoint: Bool {
+        savedCurve?.point(at: addPercent) == nil && points.count < AmbientCurve.maxPoints
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(AppText.string("calibration.points.title", locale: locale))
                 .font(.caption).foregroundStyle(.secondary)
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 64), spacing: 8)], alignment: .leading, spacing: 8) {
-                ForEach(CalibrationPoint.allCases, id: \.self) { point in
-                    pointButton(point)
-                }
+            ForEach(points, id: \.monitor) { point in
+                pointRow(point)
             }
-            if calibration.active?.monitorID == monitor.id, let active = calibration.active {
-                Text(AppText.string("calibration.help", locale: locale))
+            addRow
+            if points.count < AmbientCurve.minPoints {
+                Text(AppText.string("calibration.minPoints", locale: locale))
                     .font(.caption).foregroundStyle(.secondary)
-                if !calibration.anchorReached(monitorID: monitor.id) {
-                    Text(AppText.string("calibration.waiting", locale: locale))
+            }
+        }
+        .onAppear { addPercent = defaultAddPercent() }
+        .onChange(of: points.count) { _, _ in
+            // A saved point can take the value the add row shows; move to the next free default.
+            if savedCurve?.point(at: addPercent) != nil { addPercent = defaultAddPercent() }
+        }
+        .sheet(isPresented: Binding(
+            get: { calibration.active?.monitorID == monitor.id },
+            set: { shown in
+                // Escape or a close from the system cancels the active calibration.
+                if !shown { calibration.end(.cancelled) }
+            }
+        )) {
+            calibrationDialog
+        }
+    }
+
+    /// The dialog for the active calibration: the target percent, the help, the slider, and Done or Cancel.
+    /// It reads the controller state directly, so it renders nothing once the calibration ends.
+    private var calibrationDialog: some View {
+        Group {
+            if let active = calibration.active {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(String(format: AppText.string("calibration.dialog.title", locale: locale), active.point))
+                        .font(.headline)
+                    Text(AppText.string("calibration.help", locale: locale))
                         .font(.caption).foregroundStyle(.secondary)
-                }
-                sliderRow(active)
-                HStack {
-                    Button(AppText.string("calibration.confirm", locale: locale)) { calibration.confirm() }
+                    if !calibration.anchorReached(monitorID: monitor.id) {
+                        Text(AppText.string("calibration.waiting", locale: locale))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    sliderRow(active)
+                    HStack {
+                        Spacer()
+                        Button(AppText.string("calibration.cancel", locale: locale)) { calibration.end(.cancelled) }
+                            .keyboardShortcut(.cancelAction)
+                        Button(AppText.string("calibration.done", locale: locale)) {
+                            calibration.confirm()
+                            calibration.end(.done)
+                        }
+                        .keyboardShortcut(.defaultAction)
                         .disabled(!calibration.anchorReached(monitorID: monitor.id))
-                    Button(AppText.string("calibration.done", locale: locale)) { calibration.end(.done) }
-                    Button(AppText.string("calibration.cancel", locale: locale)) { calibration.end(.cancelled) }
+                    }
                 }
+                .padding(24)
+                .frame(width: 420)
+            } else {
+                EmptyView()
             }
         }
     }
 
-    private func pointButton(_ point: CalibrationPoint) -> some View {
-        let title = "\(point.rawValue)%"
-        let calibrated = core.snapshot.settings?.ambientCurves?[monitor.id]?[point] != nil
-        let selected = calibration.active?.monitorID == monitor.id && calibration.active?.point == point
-        let status = AppText.string(calibrated ? "calibration.point.calibrated" : "calibration.point.pending", locale: locale)
-        return Button {
-            calibration.begin(monitorID: monitor.id, point: point)
-        } label: {
-            HStack(spacing: 4) {
-                if calibrated {
-                    Image(systemName: "checkmark.circle.fill")
-                }
-                Text(title)
+    /// One saved point: its monitor and MacBook percents, then Calibrate (re-measure) and Remove.
+    private func pointRow(_ point: AmbientCurvePoint) -> some View {
+        let monitorPercent = Int(point.monitor.rounded())
+        let builtinPercent = Int(point.builtin.rounded())
+        let selected = calibration.active?.monitorID == monitor.id && calibration.active?.point == monitorPercent
+        let rowText = String(format: AppText.string("calibration.point.row", locale: locale), monitorPercent, builtinPercent)
+        let recalibrateTitle = AppText.string("calibration.recalibrate", locale: locale)
+        let removeTitle = AppText.string("calibration.remove", locale: locale)
+        return HStack {
+            Text(rowText)
+                .foregroundStyle(selected ? Color.accentColor : Color.primary)
+                .accessibilityLabel(rowText)
+            Spacer()
+            Button(recalibrateTitle) {
+                calibration.begin(monitorID: monitor.id, point: monitorPercent)
             }
+            .accessibilityLabel("\(recalibrateTitle) \(monitorPercent)%")
+            Button(removeTitle) {
+                calibration.removePoint(monitorID: monitor.id, point: monitorPercent)
+            }
+            .disabled(selected)
+            .accessibilityLabel("\(removeTitle) \(monitorPercent)%")
         }
-        .buttonStyle(.bordered)
         .tint(selected ? Color.accentColor : nil)
-        .accessibilityLabel("\(title), \(status)")
+    }
+
+    /// The add row: a stepper for the monitor percent and the Add button.
+    private var addRow: some View {
+        let addTitle = AppText.string("calibration.add.button", locale: locale)
+        return HStack {
+            Stepper(value: $addPercent, in: 1...100) {
+                Text(AppText.string("calibration.add.label", locale: locale))
+            }
+            Text("\(addPercent)%")
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+            Button(addTitle) {
+                calibration.begin(monitorID: monitor.id, point: addPercent)
+            }
+            .disabled(!canAddPoint)
+            .accessibilityLabel("\(addTitle) \(addPercent)%")
+        }
+    }
+
+    /// The first of 25, 50, 75 and 100 not saved yet, else the first whole percent not saved.
+    private func defaultAddPercent() -> Int {
+        if let preferred = [25, 50, 75, 100].first(where: { savedCurve?.point(at: $0) == nil }) {
+            return preferred
+        }
+        return (1...100).first(where: { savedCurve?.point(at: $0) == nil }) ?? 25
     }
 
     private func sliderRow(_ active: ActiveCalibration) -> some View {

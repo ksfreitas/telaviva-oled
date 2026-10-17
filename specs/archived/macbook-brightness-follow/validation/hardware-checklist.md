@@ -312,7 +312,7 @@ Preconditions: one calibrated monitor, with a complete curve. Either finish sect
 
 ```json
 "ambient_follow_enabled": true,
-"ambient_curves": { "<monitor-id>": { "p25": 18, "p50": 40, "p75": 66, "p100": 100 } }
+"ambient_curves": { "<monitor-id>": { "points": [ { "monitor": 25, "builtin": 18 }, { "monitor": 50, "builtin": 40 }, { "monitor": 75, "builtin": 66 }, { "monitor": 100, "builtin": 100 } ] } }
 ```
 
 4. Start the app. If the app reports that the settings file is corrupt, quit it and restore the backup.
@@ -348,7 +348,7 @@ Notes:
 
 ---
 
-## F. Calibration: four monitor points, optional low-end points, cancel, done, switch, window close, force quit and relaunch, screen off or lid closed (SC-004, SC-006; plan T053)
+## F. Calibration: add, re-measure and remove user-managed points, two-point minimum, cancel, done, switch, window close, force quit and relaunch, screen off or lid closed (SC-004, SC-006; plan T053)
 
 Status: Not run
 
@@ -358,26 +358,26 @@ Preconditions: one external monitor to calibrate. Before starting, record:
 - automatic brightness, state A, from System Settings > Displays;
 - the monitor's brightness, from its on-screen menu.
 
-Direction: each point is a **monitor** brightness (25%, 50%, 75% or 100% of the monitor's range, or an optional low-end point at 1%, 5%, 10%, 15% or 20%). Choosing a point sets the monitor to that brightness and shows a MacBook brightness slider. Moving that slider sets the built-in display. The value saved for a point is the MacBook level at which the two screens look the same.
+Direction: each point is a **monitor** brightness (any whole percentage from 1 to 100% of the monitor's range, up to 32 points). Adding a point or choosing a saved point sets the monitor to that brightness and shows a MacBook brightness slider. Moving that slider sets the built-in display. The value saved for a point is the MacBook level at which the two screens look the same.
 
-Steps, recalibration and all four points:
+Steps, add, re-measure and remove points:
 
-1. If the monitor was calibrated with an earlier development build, recalibrate it in this section before relying on follow. The points saved by that build are MacBook levels, so they give wrong monitor levels until all four points are saved again. Record in Notes whether a recalibration was needed.
-2. Open Settings > Automatic brightness. Select the monitor. Record the state of its four points before you start.
-3. Select the 25% point. Check that the monitor moves to 25% of its brightness, read from its on-screen menu, that the MacBook brightness slider appears, and that automatic brightness is off in System Settings. The built-in display moves to the slider's starting value: the saved level for that point, or the level when the session started if the point is not calibrated. If automatic brightness cannot be turned off, check that the notice says the level may drift.
-4. Move the MacBook brightness slider until the MacBook screen looks the same as the monitor at 25%. Check that Save stays disabled, with a waiting hint, until the monitor has reached 25%, and is enabled after that. Press Save. Check that the point shows as calibrated.
-5. Repeat steps 3 and 4 for 50%, 75% and 100%.
-6. Monotonic check. Select the 50% point and try to move the MacBook brightness slider below the saved 25% value. Check that the slider stops at the 25% value. Check the same lower bound at 75% (against the saved 50% value) and at 100% (against the saved 75% value).
+1. Open Settings > Automatic brightness and select the monitor. If the monitor was calibrated with an earlier development build, recalibrate it in this section before relying on follow. The points saved by that build are MacBook levels, so they give wrong monitor levels until the monitor is calibrated again. Record in Notes whether a recalibration was needed. Record the saved points before you start. Check that each saved point, including points saved in the previous fixed-key format, appears as a row in ascending order of monitor percentage, with its MacBook percentage.
+2. Add a point. In the Add point row, set the stepper to a whole percentage that is not saved yet; by default it is the first unused of 25, 50, 75 and 100%. Check that Add is disabled when the chosen percentage is already saved. Press Add. Check that the monitor moves to that percentage of its brightness, read from its on-screen menu, that the calibration dialog opens with the MacBook brightness slider, and that automatic brightness is off in System Settings. The built-in display moves to the slider's starting value: the saved level for a saved point, or the level when the session started for a new point. If automatic brightness cannot be turned off, check that the notice says the level may drift. Move the MacBook brightness slider until the MacBook screen looks the same as the monitor. Check that Done stays disabled, with a waiting hint, until the monitor has reached the chosen percentage, and is enabled after that. Press Done. Check that the dialog closes, that the monitor, the built-in display and automatic brightness return to their starting values, and that a row shows the new point with the MacBook percentage set on the slider.
+3. Out of order, re-measure and existing points. Add a percentage lower than an existing row and save it. Check that the new row is inserted at its sorted position and that the MacBook percentages do not decrease down the list. Press Calibrate on a saved row, move the slider in the dialog, and press Done. Check that only that row's MacBook percentage changes and that the number of rows stays the same. Close Settings and reopen it. Check that all saved points are still listed in ascending order with the same values.
+4. Remove and the two-point minimum. Press Remove on a saved row that is not open in the dialog. Check that the row disappears and the other rows are unchanged. Open a saved point in the dialog and check that Remove is disabled for that row. Start a point on a monitor with one saved point. Check that the hint that at least two points are needed is shown in the list, and that Done is enabled once the monitor has reached the point's brightness, without a second saved point. Press Done and check that the point is saved and the hint is no longer shown.
+5. Removing down to one point stops following. With follow on and exactly two saved points, remove one. Check that the Automatic brightness tab reports the monitor as not calibrated, that the popup shows its brightness slider again, and that the monitor stops following the MacBook brightness. Add the point back and check that the monitor is eligible again.
+6. Neighbor bounds and the cap above the last point. Select a point that has a saved neighbor below it, and move the MacBook brightness slider below that neighbor's MacBook level. Check that the slider stops at that level. Repeat at the upper neighbor if there is one. With follow on and the last point below 100%, set the MacBook brightness above that point's MacBook level. Check that the monitor stays at that point's percentage, read from its on-screen menu, and does not go to 100%. Add a 100% point and check that the monitor reaches 100% when the MacBook level is at its maximum.
 
 Steps, cancel:
 
-7. Select a point that is not yet calibrated, or a calibrated point. Move the MacBook brightness slider. Press Cancel.
+7. Select a point that is not yet calibrated, or a calibrated point. Move the MacBook brightness slider. Press Cancel. Then repeat the steps on another point and press Escape instead of Cancel.
 8. Check that the point is unchanged. Check that the monitor returns to its starting brightness, that the built-in display returns to L, and that automatic brightness returns to state A.
 
 Steps, done:
 
-9. Select a point, move the MacBook brightness slider to a new value and press Done without Save.
-10. Check that the previously saved value is kept (Done does not save a slider change that was not confirmed with Save), and that the monitor, the built-in display and automatic brightness return to their starting values.
+9. Select a saved point, move the MacBook brightness slider to a new value and press Done.
+10. Check that the point now shows the MacBook percentage of the slider value, and that the monitor, the built-in display and automatic brightness return to their starting values.
 
 Steps, switch monitor:
 
@@ -399,8 +399,8 @@ Steps, force quit and relaunch:
 
 Steps, MacBook screen off or lid closed:
 
-20. Turn the MacBook screen off (display sleep, with your usual method or `pmset displaysleepnow`), or close the lid, with the external monitor still connected. Open Settings > Automatic brightness and select the monitor. Check that the calibration controls (the point buttons, the MacBook brightness slider, and Save, Done and Cancel) are hidden, and that the reason for the built-in display being unavailable is shown.
-21. With the screen still off or the lid still closed, try to start a point. Check that no point can be started. If a point button is still visible because the app has not yet noticed the change, press it. Check that the notice "Calibration is not possible while the MacBook screen is off or the lid is closed." is shown, and that the monitor, the built-in display and automatic brightness do not change.
+20. Turn the MacBook screen off (display sleep, with your usual method or `pmset displaysleepnow`), or close the lid, with the external monitor still connected. Open Settings > Automatic brightness and select the monitor. Check that the calibration controls (the point rows, the Add point row, and the calibration dialog with its MacBook brightness slider, Done and Cancel) are hidden, and that the reason for the built-in display being unavailable is shown.
+21. With the screen still off or the lid still closed, try to start a point. Check that no point can be started. If a Calibrate or Add button is still visible because the app has not yet noticed the change, press it. Check that the notice "Calibration is not possible while the MacBook screen is off or the lid is closed." is shown, and that the monitor, the built-in display and automatic brightness do not change.
 22. Turn the MacBook screen on or open the lid. Check that the calibration controls appear again.
 
 Steps, MacBook screen off or lid closed during a calibration:
@@ -409,33 +409,23 @@ Steps, MacBook screen off or lid closed during a calibration:
 24. Check that the calibration ends and that the Automatic brightness tab shows the notice "Calibration is not possible while the MacBook screen is off or the lid is closed." Check that the point is unchanged (not saved).
 25. Check that the monitor returns to its starting brightness. Once the screen is back or the lid is open, check that the built-in display returns to L, that automatic brightness returns to state A, and that `calibration-session.json` no longer exists. Record in Notes whether the built-in display returned to L. The restore write to the built-in display can fail while the screen is off; if the level did not return, record the level it is at and do not count the other restores as failed.
 
-Steps, optional low-end points (1, 5, 10, 15 and 20%):
+Expected for the user-managed points (no SC criterion yet; pending hardware acceptance):
 
-Precondition: the four required points are saved and no low-end point is saved. Record in Notes the state of the five low-end points before step 26. If any was already saved, record that steps 27 and 30 did not start from a clean state. Clearing is not offered (step 31).
-
-26. Point grid. Open Settings > Automatic brightness and select the monitor. Check that the point grid shows nine buttons, labelled 1%, 5%, 10%, 15%, 20%, 25%, 50%, 75% and 100%, in that order. Shrink the Settings window to its minimum width and check that the buttons wrap onto more rows without clipping. Return the window to its default size.
-27. Required points only. With follow on in the Automatic brightness tab, check that the monitor is listed as eligible and moves with the MacBook brightness as in section E. At a dim MacBook level (for example 5 to 20%), record in Notes how closely the monitor matches the MacBook screen. This is the baseline for step 30.
-28. Low-end point at 1%. Select the 1% point. Check that the monitor moves to 1% of its brightness, read from its on-screen menu, that the MacBook brightness slider appears and that automatic brightness is off. At this level the monitor may look almost black or sit at its minimum; record in Notes what it shows. Check that the monitor does not switch off or lose its signal. Move the MacBook brightness slider until the MacBook screen looks the same as the monitor at 1%. Check that the slider stays within the range set by the neighboring saved points, as in step 6. Check that Save stays disabled until the monitor has reached 1%, and is enabled after that. Press Save and check that the 1% point shows as calibrated.
-29. Other low-end points. Repeat step 28 for 5%, 10%, 15% and 20%. The Notes entry about how the monitor looks at very dim levels applies only to 1%.
-30. Dim levels after the low-end points. With follow on, set the MacBook brightness to the same dim levels as in step 27 and compare the monitor with the MacBook screen by eye. Check that the match is better than in step 27. Record the comparison in Notes.
-31. Clearing. The UI does not offer a way to clear a saved low-end point, so no clearing check is run. Record "Not checked: clearing a low-end point" in Notes.
-
-Expected for the optional low-end points (no SC criterion yet; pending hardware acceptance):
-
-- The point grid shows nine buttons and wraps without clipping.
-- With only the four required points saved, the monitor follows the MacBook brightness.
-- Each low-end point sets the monitor to its level, the MacBook brightness slider stays within its neighbor-bounded range, and Save works once the monitor has reached the level.
-- At 1%, the monitor does not switch off or lose its signal.
-- With the low-end points saved, the follow curve matches the MacBook screen better at dim levels than with the four required points alone.
-- Clearing a low-end point is not checked, because the UI does not offer it.
+- A monitor with fewer than two saved points does not follow the MacBook brightness, and the list shows the hint that at least two points are needed.
+- Points are listed in ascending order of monitor percentage, and a point added out of order is inserted at its sorted position.
+- Re-measuring a point replaces only its MacBook percentage. Removing a point deletes only that point.
+- Removing points down to one stops following, and the monitor reports as not calibrated.
+- Each chosen percentage sets the monitor to that percentage of its brightness, and Done is enabled only after the monitor has reached it.
+- Above the last saved point, the monitor stays at that point's percentage.
+- Points saved in the previous fixed-key format are listed and kept, without recalibration.
 
 Steps, final check:
 
-32. Check the built-in display level, automatic brightness state and monitor brightness against the values recorded before the section started.
+26. Check the built-in display level, automatic brightness state and monitor brightness against the values recorded before the section started.
 
 Expected (per SC-004 and SC-006):
 
-- At each of the four points, the monitor is set to 25%, 50%, 75% or 100% of its brightness, and the saved MacBook levels are monotonic: each point is at or above the point below it.
+- At each saved point, the monitor is set to that point's percentage of its brightness, and the saved MacBook levels are monotonic: each point is at or above the point below it.
 - Save is enabled only after the monitor has reached the point's level.
 - After each of done, cancel, window close, switch and force quit, the built-in display, automatic brightness and monitor return to their starting values.
 - No calibration leaves the monitor at an unintended level after cancel.

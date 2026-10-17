@@ -1,43 +1,6 @@
 import Foundation
 import Combine
 
-/// Calibration points on the monitor brightness axis, as percents. The five lowest are optional refinements.
-enum CalibrationPoint: Int, CaseIterable {
-    case p1 = 1, p5 = 5, p10 = 10, p15 = 15, p20 = 20, p25 = 25, p50 = 50, p75 = 75, p100 = 100
-}
-
-extension AmbientCurve {
-    /// The stored values are MacBook levels (percent), not monitor brightness.
-    subscript(point: CalibrationPoint) -> Double? {
-        get {
-            switch point {
-            case .p1: return p1
-            case .p5: return p5
-            case .p10: return p10
-            case .p15: return p15
-            case .p20: return p20
-            case .p25: return p25
-            case .p50: return p50
-            case .p75: return p75
-            case .p100: return p100
-            }
-        }
-        set {
-            switch point {
-            case .p1: p1 = newValue
-            case .p5: p5 = newValue
-            case .p10: p10 = newValue
-            case .p15: p15 = newValue
-            case .p20: p20 = newValue
-            case .p25: p25 = newValue
-            case .p50: p50 = newValue
-            case .p75: p75 = newValue
-            case .p100: p100 = newValue
-            }
-        }
-    }
-}
-
 /// Captured state written to `calibration-session.json` for crash recovery (contracts.md).
 struct CalibrationSession: Codable, Equatable {
     var version: Int
@@ -133,7 +96,8 @@ enum CalibrationEndReason: CaseIterable {
 
 struct ActiveCalibration: Equatable {
     var monitorID: String
-    var point: CalibrationPoint
+    /// Monitor brightness percent (1...100) being calibrated.
+    var point: Int
     var sliderValue: Double
 }
 
@@ -157,8 +121,13 @@ final class AmbientCalibrationController: ObservableObject {
         self.hooks = hooks
     }
 
-    func begin(monitorID: String, point: CalibrationPoint) {
+    /// Starts a session for the monitor percent `point` (1...100), or re-measures it when already saved. Ignored,
+    /// without a notice, when the point is out of range or would be a new point on a curve that is already full.
+    func begin(monitorID: String, point: Int) {
         dispatchPrecondition(condition: .onQueue(.main))
+        guard (1...100).contains(point) else { return }
+        let curve = hooks.curve(monitorID)
+        guard curve.point(at: point) != nil || curve.points.count < AmbientCurve.maxPoints else { return }
         notice = nil
         // Checked live: the core snapshot can lag a display sleep or a closed lid.
         guard backend.status().available, !backend.isAsleep() else {
@@ -190,9 +159,9 @@ final class AmbientCalibrationController: ObservableObject {
             }
         }
         // The point is a monitor level: move the monitor first, then set the MacBook slider.
-        hooks.setMonitorBrightness(monitorID, Double(point.rawValue))
+        hooks.setMonitorBrightness(monitorID, Double(point))
         let range = allowedRange(for: point, monitorID: monitorID)
-        let initial = hooks.curve(monitorID)[point] ?? captured!.builtinLevelPercent
+        let initial = hooks.curve(monitorID).point(at: point)?.builtin ?? captured!.builtinLevelPercent
         let slider = clamp(initial, to: range)
         guard backend.writeLevel(slider) else {
             notice = .builtInWriteFailed
@@ -203,14 +172,14 @@ final class AmbientCalibrationController: ObservableObject {
         active = ActiveCalibration(monitorID: monitorID, point: point, sliderValue: slider)
     }
 
-    /// Range of MacBook levels bounded by the nearest calibrated neighbors: 0 below and 100 above when none exist.
-    func allowedRange(for point: CalibrationPoint, monitorID: String) -> ClosedRange<Double> {
+    /// Range of MacBook levels bounded by the nearest saved neighbors of `point` (monitor percent): the nearest point
+    /// below gives the lower bound and the nearest point above gives the upper bound, 0 and 100 when none exist.
+    func allowedRange(for point: Int, monitorID: String) -> ClosedRange<Double> {
         dispatchPrecondition(condition: .onQueue(.main))
-        let curve = hooks.curve(monitorID)
-        let lowerPoints = CalibrationPoint.allCases.filter { $0.rawValue < point.rawValue }
-        let upperPoints = CalibrationPoint.allCases.filter { $0.rawValue > point.rawValue }
-        let lower = lowerPoints.reversed().compactMap { curve[$0] }.first ?? 0
-        let upper = upperPoints.compactMap { curve[$0] }.first ?? 100
+        // The stored points are sorted ascending by monitor percent.
+        let points = hooks.curve(monitorID).points
+        let lower = points.last { $0.monitor < Double(point) }?.builtin ?? 0
+        let upper = points.first { $0.monitor > Double(point) }?.builtin ?? 100
         return min(lower, upper)...upper
     }
 
@@ -234,16 +203,26 @@ final class AmbientCalibrationController: ObservableObject {
               let observed = hooks.monitorBrightness(monitorID) else {
             return false
         }
-        return abs(observed - Double(current.point.rawValue)) <= 2
+        return abs(observed - Double(current.point)) <= 2
     }
 
-    /// Stores the slider value for the active point only. The session stays active.
+    /// Stores the slider value for the active point only, inserting it or replacing the saved point with the same
+    /// monitor percent. The session stays active.
     func confirm() {
         dispatchPrecondition(condition: .onQueue(.main))
         guard let current = active else { return }
         var curve = hooks.curve(current.monitorID)
-        curve[current.point] = current.sliderValue
+        curve.set(monitor: current.point, builtin: current.sliderValue)
         hooks.saveCurve(current.monitorID, curve)
+    }
+
+    /// Removes a saved point of the monitor without starting a session. Refused for the point being calibrated now.
+    func removePoint(monitorID: String, point: Int) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard !(active?.monitorID == monitorID && active?.point == point) else { return }
+        var curve = hooks.curve(monitorID)
+        curve.remove(monitor: point)
+        hooks.saveCurve(monitorID, curve)
     }
 
     func end(_ reason: CalibrationEndReason) {
