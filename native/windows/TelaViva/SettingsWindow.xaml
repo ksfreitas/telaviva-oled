@@ -1,0 +1,44 @@
+<!-- Copyright (c) Microsoft Corporation.
+     Licensed under the MIT License. -->
+<Window
+    x:Class="TelaViva.SettingsWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <!-- Text is set in code from Str(key) (ADR 0015). The pages are shown as the NavigationView content. -->
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <TitleBar x:Name="AppTitleBar" Grid.Row="0" />
+
+        <NavigationView x:Name="Nav" Grid.Row="1"
+                        PaneDisplayMode="Left"
+                        IsSettingsVisible="False"
+                        IsBackButtonVisible="Collapsed"
+                        XYFocusKeyboardNavigation="Enabled">
+            <NavigationView.MenuItems>
+                <NavigationViewItem x:Name="GeneralItem">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE713;" FontFamily="Segoe Fluent Icons" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem x:Name="KeyboardItem">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE765;" FontFamily="Segoe Fluent Icons" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem x:Name="AmbientItem">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE706;" FontFamily="Segoe Fluent Icons" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+            </NavigationView.MenuItems>
+        </NavigationView>
+    </Grid>
+</Window>

@@ -1,0 +1,83 @@
+<!-- Copyright (c) Microsoft Corporation.
+     Licensed under the MIT License. -->
+<Window
+    x:Class="TelaViva.TrayMenuWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <!-- Labels and automation names are set in code from Str(key) (ADR 0015). -->
+    <StackPanel x:Name="MenuPanel" Padding="4" MinWidth="220">
+        <StackPanel.Resources>
+            <!-- Row look of the Windows 11 menus: 36 DIP tall, 12 DIP side padding, 8 DIP hover corners. -->
+            <Style x:Key="TrayMenuItemStyle" TargetType="Button">
+                <Setter Property="Background" Value="Transparent" />
+                <Setter Property="BorderBrush" Value="Transparent" />
+                <Setter Property="BorderThickness" Value="0" />
+                <Setter Property="HorizontalAlignment" Value="Stretch" />
+                <Setter Property="HorizontalContentAlignment" Value="Left" />
+                <Setter Property="VerticalContentAlignment" Value="Center" />
+                <Setter Property="Padding" Value="12,0" />
+                <Setter Property="MinHeight" Value="36" />
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="ItemBorder"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="8">
+                                <VisualStateManager.VisualStateGroups>
+                                    <VisualStateGroup x:Name="CommonStates">
+                                        <VisualState x:Name="Normal" />
+                                        <VisualState x:Name="PointerOver">
+                                            <VisualState.Setters>
+                                                <Setter Target="ItemBorder.Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}" />
+                                            </VisualState.Setters>
+                                        </VisualState>
+                                        <VisualState x:Name="Pressed">
+                                            <VisualState.Setters>
+                                                <Setter Target="ItemBorder.Background" Value="{ThemeResource SubtleFillColorTertiaryBrush}" />
+                                            </VisualState.Setters>
+                                        </VisualState>
+                                    </VisualStateGroup>
+                                    <!-- Keyboard focus uses the same fill as hover; no ring, so mouse focus stays quiet. -->
+                                    <VisualStateGroup x:Name="FocusStates">
+                                        <VisualState x:Name="Unfocused" />
+                                        <VisualState x:Name="Focused">
+                                            <VisualState.Setters>
+                                                <Setter Target="ItemBorder.Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}" />
+                                            </VisualState.Setters>
+                                        </VisualState>
+                                    </VisualStateGroup>
+                                </VisualStateManager.VisualStateGroups>
+                                <ContentPresenter Content="{TemplateBinding Content}"
+                                                  ContentTemplate="{TemplateBinding ContentTemplate}"
+                                                  Padding="{TemplateBinding Padding}"
+                                                  HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                  VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
+                            </Border>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+        </StackPanel.Resources>
+
+        <Button x:Name="SettingsItem" Style="{StaticResource TrayMenuItemStyle}">
+            <StackPanel Orientation="Horizontal" Spacing="12">
+                <FontIcon Glyph="&#xE713;" FontFamily="Segoe Fluent Icons" FontSize="16"
+                          VerticalAlignment="Center" AutomationProperties.AccessibilityView="Raw" />
+                <TextBlock x:Name="SettingsText" VerticalAlignment="Center" />
+            </StackPanel>
+        </Button>
+        <Button x:Name="QuitItem" Style="{StaticResource TrayMenuItemStyle}">
+            <StackPanel Orientation="Horizontal" Spacing="12">
+                <FontIcon Glyph="&#xE711;" FontFamily="Segoe Fluent Icons" FontSize="16"
+                          VerticalAlignment="Center" AutomationProperties.AccessibilityView="Raw" />
+                <TextBlock x:Name="QuitText" VerticalAlignment="Center" />
+            </StackPanel>
+        </Button>
+    </StackPanel>
+</Window>

@@ -1,0 +1,442 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <xsd:schema id="root" xmlns="" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:msdata="urn:schemas-microsoft-com:xml-msdata">
+    <xsd:import namespace="http://www.w3.org/XML/1998/namespace" />
+    <xsd:element name="root" msdata:IsDataSet="true">
+      <xsd:complexType>
+        <xsd:choice maxOccurs="unbounded">
+          <xsd:element name="metadata">
+            <xsd:complexType>
+              <xsd:sequence>
+                <xsd:element name="value" type="xsd:string" minOccurs="0" />
+              </xsd:sequence>
+              <xsd:attribute name="name" use="required" type="xsd:string" />
+              <xsd:attribute name="type" type="xsd:string" />
+              <xsd:attribute name="mimetype" type="xsd:string" />
+              <xsd:attribute ref="xml:space" />
+            </xsd:complexType>
+          </xsd:element>
+          <xsd:element name="assembly">
+            <xsd:complexType>
+              <xsd:attribute name="alias" type="xsd:string" />
+              <xsd:attribute name="name" type="xsd:string" />
+            </xsd:complexType>
+          </xsd:element>
+          <xsd:element name="data">
+            <xsd:complexType>
+              <xsd:sequence>
+                <xsd:element name="value" type="xsd:string" minOccurs="0" msdata:Ordinal="1" />
+                <xsd:element name="comment" type="xsd:string" minOccurs="0" msdata:Ordinal="2" />
+              </xsd:sequence>
+              <xsd:attribute name="name" type="xsd:string" use="required" msdata:Ordinal="1" />
+              <xsd:attribute name="type" type="xsd:string" msdata:Ordinal="3" />
+              <xsd:attribute name="mimetype" type="xsd:string" msdata:Ordinal="4" />
+              <xsd:attribute ref="xml:space" />
+            </xsd:complexType>
+          </xsd:element>
+          <xsd:element name="resheader">
+            <xsd:complexType>
+              <xsd:sequence>
+                <xsd:element name="value" type="xsd:string" minOccurs="0" msdata:Ordinal="1" />
+              </xsd:sequence>
+              <xsd:attribute name="name" type="xsd:string" use="required" />
+            </xsd:complexType>
+          </xsd:element>
+        </xsd:choice>
+      </xsd:complexType>
+    </xsd:element>
+  </xsd:schema>
+  <resheader name="resmimetype">
+    <value>text/microsoft-resx</value>
+  </resheader>
+  <resheader name="version">
+    <value>2.0</value>
+  </resheader>
+  <resheader name="reader">
+    <value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <resheader name="writer">
+    <value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <data name="tray.menu.settings" xml:space="preserve">
+    <value>Configurações</value>
+  </data>
+  <data name="tray.menu.quit" xml:space="preserve">
+    <value>Sair</value>
+  </data>
+  <data name="tray.tooltip.detected" xml:space="preserve">
+    <value>TelaViva OLED: rosto detectado</value>
+  </data>
+  <data name="tray.tooltip.absent" xml:space="preserve">
+    <value>TelaViva OLED: nenhum rosto detectado</value>
+  </data>
+  <data name="tray.tooltip.lowlight" xml:space="preserve">
+    <value>TelaViva OLED: pouca iluminação</value>
+  </data>
+  <data name="flyout.status.ready" xml:space="preserve">
+    <value>DDC pronto</value>
+  </data>
+  <data name="flyout.status.asleep" xml:space="preserve">
+    <value>Monitor em repouso</value>
+  </data>
+  <data name="flyout.status.ambiguous" xml:space="preserve">
+    <value>Monitores idênticos não podem ser distinguidos</value>
+  </data>
+  <data name="flyout.status.unsupported" xml:space="preserve">
+    <value>Controles não suportados</value>
+  </data>
+  <data name="flyout.status.unavailable" xml:space="preserve">
+    <value>Sem resposta</value>
+  </data>
+  <data name="flyout.reason.brightness_unavailable" xml:space="preserve">
+    <value>O brilho não está disponível neste monitor</value>
+  </data>
+  <data name="flyout.reason.volume_unavailable" xml:space="preserve">
+    <value>O volume não está disponível neste monitor</value>
+  </data>
+  <data name="flyout.brightness" xml:space="preserve">
+    <value>Brilho</value>
+  </data>
+  <data name="flyout.volume" xml:space="preserve">
+    <value>Volume</value>
+  </data>
+  <data name="flyout.button.settings" xml:space="preserve">
+    <value>Configurações</value>
+  </data>
+  <data name="flyout.button.quit" xml:space="preserve">
+    <value>Sair</value>
+  </data>
+  <data name="flyout.presence.detected" xml:space="preserve">
+    <value>Rosto detectado</value>
+  </data>
+  <data name="flyout.presence.absent" xml:space="preserve">
+    <value>Nenhum rosto detectado</value>
+  </data>
+  <data name="flyout.presence.lowlight" xml:space="preserve">
+    <value>Pouca luz</value>
+  </data>
+  <data name="flyout.presence.off" xml:space="preserve">
+    <value>A proteção por presença está desligada</value>
+  </data>
+  <data name="app" xml:space="preserve">
+    <value>TelaViva OLED</value>
+  </data>
+  <data name="flyout.failed" xml:space="preserve">
+    <value>Não foi possível aplicar; exibindo valor confirmado</value>
+  </data>
+  <data name="flyout.refresh" xml:space="preserve">
+    <value>Atualizar estado</value>
+  </data>
+  <data name="flyout.coreunavailable" xml:space="preserve">
+    <value>Serviço principal não conectado</value>
+  </data>
+  <data name="refresh" xml:space="preserve">
+    <value>Atualizar estado</value>
+  </data>
+  <data name="noDisplays" xml:space="preserve">
+    <value>Nenhum monitor controlável</value>
+  </data>
+  <data name="ddcUnavailable" xml:space="preserve">
+    <value>Controle externo indisponível até detectar uma conexão DDC compatível.</value>
+  </data>
+  <data name="coreUnavailable" xml:space="preserve">
+    <value>Serviço principal não conectado</value>
+  </data>
+  <data name="settings.title" xml:space="preserve">
+    <value>Configurações</value>
+  </data>
+  <data name="quit" xml:space="preserve">
+    <value>Sair</value>
+  </data>
+  <data name="brightness" xml:space="preserve">
+    <value>Brilho</value>
+  </data>
+  <data name="volume" xml:space="preserve">
+    <value>Volume</value>
+  </data>
+  <data name="unavailable" xml:space="preserve">
+    <value>indisponível</value>
+  </data>
+  <data name="controlFailed" xml:space="preserve">
+    <value>Não foi possível aplicar; exibindo valor confirmado</value>
+  </data>
+  <data name="general" xml:space="preserve">
+    <value>Geral</value>
+  </data>
+  <data name="language" xml:space="preserve">
+    <value>Idioma</value>
+  </data>
+  <data name="launch" xml:space="preserve">
+    <value>Iniciar ao entrar no Windows</value>
+  </data>
+  <data name="protection.title" xml:space="preserve">
+    <value>Proteção OLED</value>
+  </data>
+  <data name="presence" xml:space="preserve">
+    <value>Reduzir brilho quando não houver rosto</value>
+  </data>
+  <data name="presenceHelp" xml:space="preserve">
+    <value>A detecção facial só é ativada quando o detector local está disponível.</value>
+  </data>
+  <data name="presenceMinBrightness" xml:space="preserve">
+    <value>Verificar presença só acima do brilho</value>
+  </data>
+  <data name="presenceMinBrightnessHelp" xml:space="preserve">
+    <value>A câmera fica desligada enquanto todos os monitores estiverem neste brilho ou abaixo.</value>
+  </data>
+  <data name="alwaysOnCamera" xml:space="preserve">
+    <value>Manter a câmera ligada</value>
+  </data>
+  <data name="alwaysOnCameraHelp" xml:space="preserve">
+    <value>Mantém a câmera ligada entre as verificações, respeitando as pausas por bateria e tela desligada.</value>
+  </data>
+  <data name="saver" xml:space="preserve">
+    <value>Reduzir durante o protetor de tela</value>
+  </data>
+  <data name="protectionBrightness" xml:space="preserve">
+    <value>Brilho na proteção</value>
+  </data>
+  <data name="protection.monitor.toggle" xml:space="preserve">
+    <value>Proteger este monitor</value>
+  </data>
+  <data name="protection.monitors.title" xml:space="preserve">
+    <value>Monitores na proteção</value>
+  </data>
+  <data name="protection.monitors.none" xml:space="preserve">
+    <value>Nenhum monitor conectado</value>
+  </data>
+  <data name="protection.monitors.help" xml:space="preserve">
+    <value>Monitores desativados nunca são escurecidos pela proteção por presença ou protetor de tela.</value>
+  </data>
+  <data name="battery" xml:space="preserve">
+    <value>Suspender verificações na bateria</value>
+  </data>
+  <data name="check" xml:space="preserve">
+    <value>Intervalo de verificação</value>
+  </data>
+  <data name="return" xml:space="preserve">
+    <value>Intervalo para retorno</value>
+  </data>
+  <data name="availability" xml:space="preserve">
+    <value>Disponibilidade</value>
+  </data>
+  <data name="camera" xml:space="preserve">
+    <value>Câmera</value>
+  </data>
+  <data name="cameraPicker" xml:space="preserve">
+    <value>Usar câmera padrão</value>
+  </data>
+  <data name="cameraHelp" xml:space="preserve">
+    <value>A câmera só será solicitada quando houver um detector local validado e a proteção estiver ativa.</value>
+  </data>
+  <data name="displayHelp" xml:space="preserve">
+    <value>O suporte depende do monitor, cabo, dock, hub, adaptador e caminho de conexão.</value>
+  </data>
+  <data name="hardwareKeys.title" xml:space="preserve">
+    <value>Controles pelo teclado</value>
+  </data>
+  <data name="hardwareKeys.toggle" xml:space="preserve">
+    <value>Direcionar teclas de volume e mudo a monitores externos</value>
+  </data>
+  <data name="hardwareKeys.help" xml:space="preserve">
+    <value>As teclas de volume e de mudo só ajustam um monitor externo enquanto ele for a saída de som padrão; caso contrário, o Windows controla o som, por exemplo com fones. O mudo zera o volume e o próximo toque o restaura. O passo é definido abaixo (1 a 15 pontos por toque); Shift: 1 ponto.</value>
+  </data>
+  <data name="hardwareKeys.volumeStep" xml:space="preserve">
+    <value>Passo da tecla de volume</value>
+  </data>
+  <data name="hardwareKeys.status.disabled" xml:space="preserve">
+    <value>Direcionamento pelo teclado desativado</value>
+  </data>
+  <data name="hardwareKeys.status.enabled" xml:space="preserve">
+    <value>Direcionamento pelo teclado ativo</value>
+  </data>
+  <data name="hardwareKeys.status.listenerUnavailable" xml:space="preserve">
+    <value>O controle pelo teclado está indisponível; o Windows continua tratando as teclas.</value>
+  </data>
+  <data name="settings.tab.general" xml:space="preserve">
+    <value>Geral</value>
+  </data>
+  <data name="settings.tab.keyboard" xml:space="preserve">
+    <value>Teclado</value>
+  </data>
+  <data name="settings.tab.ambient" xml:space="preserve">
+    <value>Brilho automático</value>
+  </data>
+  <data name="ambient.toggle" xml:space="preserve">
+    <value>Seguir o brilho da tela do notebook</value>
+  </data>
+  <data name="ambient.help" xml:space="preserve">
+    <value>Os monitores externos calibrados acompanham o brilho da tela do notebook, inclusive o brilho adaptável.</value>
+  </data>
+  <data name="ambient.unavailable.noBuiltInDisplay" xml:space="preserve">
+    <value>Este computador não tem tela de notebook integrada.</value>
+  </data>
+  <data name="ambient.unavailable.brightnessNotAdjustable" xml:space="preserve">
+    <value>Este computador não tem tela de notebook integrada com brilho ajustável.</value>
+  </data>
+  <data name="ambient.unavailable.apiUnavailable" xml:space="preserve">
+    <value>A interface de brilho do Windows não está disponível neste sistema.</value>
+  </data>
+  <data name="ambient.unavailable.displayOffline" xml:space="preserve">
+    <value>A tela de notebook está desligada, em suspensão, espelhada ou com a tampa fechada. O recurso volta sozinho.</value>
+  </data>
+  <data name="ambient.unavailable.unknown" xml:space="preserve">
+    <value>Seguir o brilho do notebook não está disponível agora.</value>
+  </data>
+  <data name="ambient.monitors.title" xml:space="preserve">
+    <value>Monitores externos</value>
+  </data>
+  <data name="ambient.monitors.none" xml:space="preserve">
+    <value>Nenhum monitor externo conectado</value>
+  </data>
+  <data name="ambient.status.eligible" xml:space="preserve">
+    <value>Calibrado</value>
+  </data>
+  <data name="ambient.status.uncalibrated" xml:space="preserve">
+    <value>Não calibrado</value>
+  </data>
+  <data name="ambient.status.unsupported" xml:space="preserve">
+    <value>Controle de brilho não suportado</value>
+  </data>
+  <data name="ambient.status.unstable" xml:space="preserve">
+    <value>Identidade do monitor instável</value>
+  </data>
+  <data name="calibration.points.title" xml:space="preserve">
+    <value>Pontos de calibração</value>
+  </data>
+  <data name="calibration.dialog.title" xml:space="preserve">
+    <value>Calibrar o monitor em %d%%</value>
+  </data>
+  <data name="calibration.help" xml:space="preserve">
+    <value>O monitor está neste brilho. Ajuste a tela do notebook até as duas telas ficarem iguais e selecione Concluir para salvar o ponto.</value>
+  </data>
+  <data name="calibration.slider" xml:space="preserve">
+    <value>Brilho do notebook</value>
+  </data>
+  <data name="calibration.waiting" xml:space="preserve">
+    <value>Aguardando o monitor atingir este brilho…</value>
+  </data>
+  <data name="calibration.cancel" xml:space="preserve">
+    <value>Cancelar</value>
+  </data>
+  <data name="calibration.done" xml:space="preserve">
+    <value>Concluir</value>
+  </data>
+  <data name="calibration.add.label" xml:space="preserve">
+    <value>Brilho do monitor para um novo ponto</value>
+  </data>
+  <data name="calibration.add.button" xml:space="preserve">
+    <value>Adicionar ponto</value>
+  </data>
+  <data name="calibration.recalibrate" xml:space="preserve">
+    <value>Calibrar</value>
+  </data>
+  <data name="calibration.remove" xml:space="preserve">
+    <value>Remover</value>
+  </data>
+  <data name="calibration.minPoints" xml:space="preserve">
+    <value>São necessários pelo menos dois pontos para concluir a calibração.</value>
+  </data>
+  <data name="calibration.point.row" xml:space="preserve">
+    <value>Monitor %d%% → Notebook %d%%</value>
+  </data>
+  <data name="calibration.notice.autoUnknown" xml:space="preserve">
+    <value>Não foi possível verificar o brilho adaptável; o brilho do notebook pode variar durante a calibração.</value>
+  </data>
+  <data name="calibration.notice.autoNotChanged" xml:space="preserve">
+    <value>Não foi possível desativar o brilho adaptável; o brilho do notebook pode variar durante a calibração.</value>
+  </data>
+  <data name="calibration.notice.builtInUnreadable" xml:space="preserve">
+    <value>Não foi possível ler o brilho do notebook; a calibração não foi iniciada.</value>
+  </data>
+  <data name="calibration.notice.builtInWriteFailed" xml:space="preserve">
+    <value>Não foi possível alterar o brilho do notebook; a calibração foi interrompida.</value>
+  </data>
+  <data name="calibration.notice.builtInUnavailable" xml:space="preserve">
+    <value>A calibração não pode ser feita com a tela do notebook desligada ou fechada.</value>
+  </data>
+  <data name="calibration.notice.recoveryFailed" xml:space="preserve">
+    <value>A calibração anterior não pôde ser totalmente restaurada. Verifique o brilho do notebook e o ajuste de brilho adaptável.</value>
+  </data>
+  <data name="systemLanguage" xml:space="preserve">
+    <value>Usar idioma do sistema</value>
+  </data>
+  <data name="english" xml:space="preserve">
+    <value>Inglês (EUA)</value>
+  </data>
+  <data name="portuguese" xml:space="preserve">
+    <value>Português (Brasil)</value>
+  </data>
+  <data name="loginItemFailureTitle" xml:space="preserve">
+    <value>Não foi possível alterar a inicialização</value>
+  </data>
+  <data name="loginItemFailure" xml:space="preserve">
+    <value>A configuração anterior foi restaurada. Detalhes:</value>
+  </data>
+  <data name="ok" xml:space="preserve">
+    <value>OK</value>
+  </data>
+  <data name="cameraStatus.ready" xml:space="preserve">
+    <value>funcionando</value>
+  </data>
+  <data name="cameraStatus.unavailable" xml:space="preserve">
+    <value>indisponível</value>
+  </data>
+  <data name="cameraStatus.busy" xml:space="preserve">
+    <value>ocupada</value>
+  </data>
+  <data name="cameraStatus.permission" xml:space="preserve">
+    <value>permissão necessária</value>
+  </data>
+  <data name="cameraStatus.error" xml:space="preserve">
+    <value>erro</value>
+  </data>
+  <data name="cameraStatus.unknown" xml:space="preserve">
+    <value>desconhecido</value>
+  </data>
+  <data name="cameraStatus.disabled" xml:space="preserve">
+    <value>desativada</value>
+  </data>
+  <data name="cameraStatus.suspended" xml:space="preserve">
+    <value>suspensa</value>
+  </data>
+  <data name="cameraStatus.suspended_battery" xml:space="preserve">
+    <value>suspensa na bateria</value>
+  </data>
+  <data name="cameraStatus.suspended_power_unknown" xml:space="preserve">
+    <value>aguardando estado de energia</value>
+  </data>
+  <data name="cameraStatus.suspended_no_monitor" xml:space="preserve">
+    <value>sem monitor compatível</value>
+  </data>
+  <data name="cameraStatus.suspended_display_sleep" xml:space="preserve">
+    <value>suspensa enquanto os monitores dormem</value>
+  </data>
+  <data name="cameraStatus.suspended_low_brightness" xml:space="preserve">
+    <value>suspensa com brilho baixo</value>
+  </data>
+  <data name="cameraStatus.checking" xml:space="preserve">
+    <value>aguardando primeira imagem</value>
+  </data>
+  <data name="cameraStatus.present" xml:space="preserve">
+    <value>rosto detectado</value>
+  </data>
+  <data name="cameraStatus.absent" xml:space="preserve">
+    <value>nenhum rosto detectado</value>
+  </data>
+  <data name="cameraStatus.insufficient_light" xml:space="preserve">
+    <value>pouca iluminação</value>
+  </data>
+  <data name="cameraPrivacyLink" xml:space="preserve">
+    <value>Abrir configurações de privacidade</value>
+  </data>
+  <data name="statusItem.presence.detected" xml:space="preserve">
+    <value>TelaViva OLED: rosto detectado</value>
+  </data>
+  <data name="statusItem.presence.absent" xml:space="preserve">
+    <value>TelaViva OLED: nenhum rosto detectado</value>
+  </data>
+  <data name="statusItem.presence.dark" xml:space="preserve">
+    <value>TelaViva OLED: pouca iluminação</value>
+  </data>
+</root>

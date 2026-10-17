@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup Label="NuGet">
+    <!-- Tell NuGet this is PackageReference style -->
+    <RestoreProjectStyle>PackageReference</RestoreProjectStyle>
+
+    <!-- Tell NuGet we're a native project -->
+    <NuGetTargetMoniker>native,Version=v0.0</NuGetTargetMoniker>
+
+    <!-- Tell NuGet we target Windows (use the WindowsTargetPlatformVersion below) -->
+    <NuGetTargetPlatformIdentifier>Windows</NuGetTargetPlatformIdentifier>
+    <NuGetTargetPlatformVersion>$(WindowsTargetPlatformVersion)</NuGetTargetPlatformVersion>
+  </PropertyGroup>
+  <!-- Platform uses the Microsoft.Windows.CppWinRT package only to generate WinRT projection headers
+       (no XAML, no Windows App SDK). -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Windows.CppWinRT" Version="3.0.260818.1" />
+  </ItemGroup>
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <ProjectGuid>{A19A3EAA-A6BF-43A1-8B44-AACE79FF3C16}</ProjectGuid>
+    <RootNamespace>Platform</RootNamespace>
+    <!-- Same target platform and runtime identifier as TelaViva; NuGet restore of the CppWinRT package needs both. -->
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <!-- Static library: no winmd is produced, only the projection headers are generated. -->
+    <CppWinRTGenerateWindowsMetadata>false</CppWinRTGenerateWindowsMetadata>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="Shared" />
+  <ImportGroup Label="PropertySheets" />
+  <PropertyGroup Label="UserMacros" />
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <!-- Platform is the warning-clean core of the Windows shell, so warnings fail its build. -->
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <!-- C++/WinRT projection headers (winrt/*.h) are generated into GeneratedFilesDir at build time and are not in the Windows SDK. -->
+      <AdditionalIncludeDirectories>$(GeneratedFilesDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClInclude Include="*.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="*.cpp" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

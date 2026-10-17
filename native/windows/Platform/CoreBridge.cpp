@@ -1,0 +1,247 @@
+#include "CoreBridge.h"
+
+#include <windows.h>
+
+#include <telaviva_core.h>
+
+#include <condition_variable>
+#include <cstddef>
+#include <mutex>
+#include <optional>
+#include <stdexcept>
+#include <thread>
+#include <utility>
+#include <vector>
+
+namespace telaviva {
+namespace {
+
+// Shared with the core callback, which only records the revision and wakes the worker.
+struct WorkerSignal {
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool revisionPending = false;
+    bool stopping = false;
+    uint64_t latestRevision = 0;
+};
+
+// The core calls this inside tv_submit, under the core mutex. It must not call
+// back into the core, so it only touches the signal's own mutex.
+extern "C" void onSnapshotReady(uint64_t revision, void* userdata)
+{
+    auto* state = static_cast<WorkerSignal*>(userdata);
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->latestRevision = revision;
+        state->revisionPending = true;
+    }
+    state->changed.notify_one();
+}
+
+// Frees the core buffer on every exit path, including a throwing copy.
+struct SnapshotBuffer {
+    TvBuffer buffer{nullptr, 0};
+
+    ~SnapshotBuffer()
+    {
+        if (buffer.data != nullptr) {
+            tv_buffer_free(&buffer);
+        }
+    }
+};
+
+std::optional<std::string> toUtf8(const std::wstring& text)
+{
+    if (text.empty()) {
+        return std::string{};
+    }
+    const int length = static_cast<int>(text.size());
+    const int size = WideCharToMultiByte(CP_UTF8, 0, text.data(), length, nullptr, 0, nullptr, nullptr);
+    if (size <= 0) {
+        return std::nullopt;
+    }
+    std::string out(static_cast<std::size_t>(size), '\0');
+    if (WideCharToMultiByte(CP_UTF8, 0, text.data(), length, out.data(), size, nullptr, nullptr) <= 0) {
+        return std::nullopt;
+    }
+    return out;
+}
+
+std::optional<std::string> optionsJson(const CoreBridgeOptions& options)
+{
+    const std::optional<std::string> path = toUtf8(options.configPath);
+    if (!path) {
+        return std::nullopt;
+    }
+    return "{\"config_path\":" + jsonQuote(*path) + ",\"os_locale\":" + jsonQuote(options.osLocale) + "}";
+}
+
+}  // namespace
+
+struct CoreBridge::Impl {
+    WorkerSignal wake;
+    // Serializes every tv_* call and guards core. Declared before core so core is
+    // destroyed while the mutex is still alive.
+    std::mutex coreMutex;
+    std::unique_ptr<TvCore, decltype(&tv_destroy)> core{nullptr, &tv_destroy};
+
+    std::mutex sinkMutex;
+    std::vector<SnapshotSink> sinks;
+
+    std::thread worker;
+};
+
+CoreBridge::CoreBridge(const CoreBridgeOptions& options) : impl_(std::make_unique<Impl>())
+{
+    // A mismatched ABI leaves the bridge closed, so the shell can show an error instead of crashing.
+    if (tv_abi_version() != TV_CORE_ABI_VERSION) {
+        return;
+    }
+    const std::optional<std::string> json = optionsJson(options);
+    if (!json) {
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(impl_->coreMutex);
+        TvCore* created = nullptr;
+        const int32_t status = tv_create(TV_CORE_ABI_VERSION, reinterpret_cast<const uint8_t*>(json->data()),
+                                         json->size(), &onSnapshotReady, &impl_->wake, &created);
+        if (status == TV_OK && created != nullptr) {
+            impl_->core.reset(created);
+        }
+    }
+    if (!impl_->core) {
+        return;
+    }
+
+    impl_->worker = std::thread([this] { runWorker(); });
+}
+
+CoreBridge::~CoreBridge()
+{
+    {
+        std::lock_guard<std::mutex> lock(impl_->wake.mutex);
+        impl_->wake.stopping = true;
+    }
+    impl_->wake.changed.notify_all();
+    if (impl_->worker.joinable()) {
+        impl_->worker.join();
+    }
+
+    // Destroys the core. Safe after shutdown() or without it.
+    std::lock_guard<std::mutex> lock(impl_->coreMutex);
+    impl_->core.reset();
+}
+
+uint32_t CoreBridge::abiVersion()
+{
+    return tv_abi_version();
+}
+
+bool CoreBridge::isOpen() const
+{
+    std::lock_guard<std::mutex> lock(impl_->coreMutex);
+    return static_cast<bool>(impl_->core);
+}
+
+int32_t CoreBridge::submit(const std::string& json)
+{
+    std::lock_guard<std::mutex> lock(impl_->coreMutex);
+    if (!impl_->core) {
+        return TV_CLOSED;
+    }
+    return tv_submit(impl_->core.get(), reinterpret_cast<const uint8_t*>(json.data()), json.size());
+}
+
+Snapshot CoreBridge::snapshot()
+{
+    std::string text;
+    {
+        std::lock_guard<std::mutex> lock(impl_->coreMutex);
+        if (!impl_->core) {
+            throw std::runtime_error("core is not open");
+        }
+        SnapshotBuffer owned;
+        if (tv_snapshot(impl_->core.get(), &owned.buffer) != TV_OK) {
+            throw std::runtime_error("tv_snapshot failed");
+        }
+        if (owned.buffer.data != nullptr) {
+            text.assign(reinterpret_cast<const char*>(owned.buffer.data), owned.buffer.len);
+        }
+    }
+    // Parsing runs outside the core mutex so it never delays other tv_* calls.
+    return parseSnapshot(text);
+}
+
+void CoreBridge::addSink(SnapshotSink sink)
+{
+    std::lock_guard<std::mutex> lock(impl_->sinkMutex);
+    impl_->sinks.push_back(std::move(sink));
+}
+
+void CoreBridge::shutdown(std::chrono::milliseconds drainDeadline)
+{
+    {
+        std::lock_guard<std::mutex> lock(impl_->coreMutex);
+        if (!impl_->core) {
+            return;
+        }
+        tv_shutdown(impl_->core.get());
+    }
+
+    // Restore actions may still be pending on the hardware side; give them a bounded window.
+    const auto deadline = std::chrono::steady_clock::now() + drainDeadline;
+    for (;;) {
+        try {
+            if (snapshot().pendingActions.empty()) {
+                return;
+            }
+        } catch (const std::exception&) {
+            return;
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+}
+
+void CoreBridge::runWorker()
+{
+    for (;;) {
+        {
+            std::unique_lock<std::mutex> lock(impl_->wake.mutex);
+            impl_->wake.changed.wait(lock, [this] {
+                return impl_->wake.stopping || impl_->wake.revisionPending;
+            });
+            if (impl_->wake.stopping) {
+                return;
+            }
+            impl_->wake.revisionPending = false;
+        }
+
+        Snapshot next;
+        try {
+            next = snapshot();
+        } catch (const std::exception&) {
+            // The next revision signal retries; a single failed read must not stop the worker.
+            continue;
+        }
+
+        std::vector<SnapshotSink> sinks;
+        {
+            std::lock_guard<std::mutex> lock(impl_->sinkMutex);
+            sinks = impl_->sinks;
+        }
+        for (const SnapshotSink& sink : sinks) {
+            try {
+                sink(next);
+            } catch (...) {
+                // A throwing sink must not terminate the worker thread.
+            }
+        }
+    }
+}
+
+}  // namespace telaviva

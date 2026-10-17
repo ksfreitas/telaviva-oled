@@ -1,0 +1,257 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup Label="NuGet">
+    <!-- Tell NuGet this is PackageReference style -->
+    <RestoreProjectStyle>PackageReference</RestoreProjectStyle>
+
+    <!-- Tell NuGet we're a native project -->
+    <NuGetTargetMoniker>native,Version=v0.0</NuGetTargetMoniker>
+
+    <!-- Tell NuGet we target Windows (use your existing WindowsTargetPlatformVersion) -->
+    <NuGetTargetPlatformIdentifier>Windows</NuGetTargetPlatformIdentifier>
+    <NuGetTargetPlatformVersion>$(WindowsTargetPlatformVersion)</NuGetTargetPlatformVersion>
+  </PropertyGroup>
+  <PropertyGroup Label="Globals">
+    <CppWinRTOptimized>true</CppWinRTOptimized>
+    <CppWinRTRootNamespaceAutoMerge>true</CppWinRTRootNamespaceAutoMerge>
+    <MinimalCoreWin>true</MinimalCoreWin>
+    <ProjectGuid>{0B3C9808-8DA0-46F5-A675-AE5A88486EF0}</ProjectGuid>
+    <ProjectName>TelaViva</ProjectName>
+    <RootNamespace>TelaViva</RootNamespace>
+    <!--
+      $(TargetName) should be same as $(RootNamespace) so that the produced binaries (.exe/.pri/etc.)
+      have a name that matches the .winmd
+    -->
+    <TargetName>$(RootNamespace)</TargetName>
+    <DefaultLanguage>en-US</DefaultLanguage>
+    <!-- Keep the Windows Store application type: it wires the XAML compile passes into the C++ build. Needs the VS "C++ WinUI app development tools" component. -->
+    <ApplicationType>Windows Store</ApplicationType>
+    <ApplicationTypeRevision>10.0</ApplicationTypeRevision>
+    <MinimumVisualStudioVersion>16.0</MinimumVisualStudioVersion>
+    <AppContainerApplication>false</AppContainerApplication>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformMinVersion>10.0.22000.0</WindowsTargetPlatformMinVersion>
+    <UseWinUI>true</UseWinUI>
+    <!-- NuGet restore asks for win10-x64 with the Windows Store application type and win-x64 otherwise, so both are listed; ARM64 is a later feature. -->
+    <RuntimeIdentifiers>win10-x64;win-x64</RuntimeIdentifiers>
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <AppxPackage>false</AppxPackage>
+    <WindowsPackageType>None</WindowsPackageType>
+    <!-- The check applies only to packages.config projects; its task does not load under this MSBuild (MSB4036).
+         Microsoft.WindowsAppSDK has the same packages.config-only check, whose inline task cannot compile without a .NET SDK;
+         PackageReference restore already pulls in transitive dependencies. -->
+    <WindowsAppSDKMLVerifyTransitiveDependencies>false</WindowsAppSDKMLVerifyTransitiveDependencies>
+    <WindowsAppSDKVerifyTransitiveDependencies>false</WindowsAppSDKVerifyTransitiveDependencies>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.5.1" />
+    <PackageReference Include="Microsoft.Windows.CppWinRT" Version="3.0.260818.1" />
+  </ItemGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <DesktopCompatible>true</DesktopCompatible>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration">
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <LinkIncremental>true</LinkIncremental>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <LinkIncremental>false</LinkIncremental>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <AppxPriInitialPath>
+    </AppxPriInitialPath>
+  </PropertyGroup>
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <PrecompiledHeader>Use</PrecompiledHeader>
+      <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <PrecompiledHeaderOutputFile>$(IntDir)pch.pch</PrecompiledHeaderOutputFile>
+      <WarningLevel>Level4</WarningLevel>
+      <AdditionalOptions>%(AdditionalOptions) /bigobj</AdditionalOptions>
+      <!-- Removes the XAML-generated wWinMain so main.cpp can run the smoke test before XAML starts. -->
+      <PreprocessorDefinitions>DISABLE_XAML_GENERATED_MAIN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <!-- pch.h is found from this folder; Platform headers are included as "Platform/...". -->
+      <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory);$(MSBuildThisFileDirectory)..;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>shell32.lib;user32.lib;advapi32.lib;dwmapi.lib;telaviva_core.lib;telaviva_inference.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(MSBuildThisFileDirectory)..\build\rust;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+    </Link>
+    <PostBuildEvent>
+      <!-- The Rust DLLs are loaded at run time, so they must sit next to TelaViva.exe. -->
+      <Command>copy /Y "$(MSBuildThisFileDirectory)..\build\rust\telaviva_core.dll" "$(OutDir)"
+copy /Y "$(MSBuildThisFileDirectory)..\build\rust\telaviva_inference.dll" "$(OutDir)"
+if not exist "$(OutDir)Assets" mkdir "$(OutDir)Assets"
+if exist "$(MSBuildThisFileDirectory)Assets\*.ico" copy /Y "$(MSBuildThisFileDirectory)Assets\*.ico" "$(OutDir)Assets\"</Command>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
+    <ClCompile>
+      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
+    <ClCompile>
+      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <Manifest Include="app.manifest" />
+  </ItemGroup>
+  <!-- Embeds the application icon; the path is relative to TelaViva.rc. -->
+  <ItemGroup>
+    <ResourceCompile Include="TelaViva.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="pch.h" />
+    <ClInclude Include="App.xaml.h">
+      <DependentUpon>App.xaml</DependentUpon>
+    </ClInclude>
+    <ClInclude Include="PopupWindow.xaml.h">
+      <DependentUpon>PopupWindow.xaml</DependentUpon>
+    </ClInclude>
+    <ClInclude Include="TrayMenuWindow.xaml.h">
+      <DependentUpon>TrayMenuWindow.xaml</DependentUpon>
+    </ClInclude>
+    <ClInclude Include="MonitorCard.xaml.h">
+      <DependentUpon>MonitorCard.xaml</DependentUpon>
+    </ClInclude>
+    <ClInclude Include="SettingsWindow.xaml.h">
+      <DependentUpon>SettingsWindow.xaml</DependentUpon>
+    </ClInclude>
+    <ClInclude Include="GeneralPage.xaml.h">
+      <DependentUpon>GeneralPage.xaml</DependentUpon>
+    </ClInclude>
+    <ClInclude Include="KeyboardPage.xaml.h">
+      <DependentUpon>KeyboardPage.xaml</DependentUpon>
+    </ClInclude>
+    <ClInclude Include="AutomaticBrightnessPage.xaml.h">
+      <DependentUpon>AutomaticBrightnessPage.xaml</DependentUpon>
+    </ClInclude>
+    <ClInclude Include="CalibrationDialog.xaml.h">
+      <DependentUpon>CalibrationDialog.xaml</DependentUpon>
+    </ClInclude>
+    <ClInclude Include="Host\*.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ApplicationDefinition Include="App.xaml" />
+    <Page Include="PopupWindow.xaml">
+      <SubType>Designer</SubType>
+    </Page>
+    <Page Include="TrayMenuWindow.xaml">
+      <SubType>Designer</SubType>
+    </Page>
+    <Page Include="MonitorCard.xaml">
+      <SubType>Designer</SubType>
+    </Page>
+    <Page Include="SettingsWindow.xaml">
+      <SubType>Designer</SubType>
+    </Page>
+    <Page Include="GeneralPage.xaml">
+      <SubType>Designer</SubType>
+    </Page>
+    <Page Include="KeyboardPage.xaml">
+      <SubType>Designer</SubType>
+    </Page>
+    <Page Include="AutomaticBrightnessPage.xaml">
+      <SubType>Designer</SubType>
+    </Page>
+    <Page Include="CalibrationDialog.xaml">
+      <SubType>Designer</SubType>
+    </Page>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="pch.cpp">
+      <PrecompiledHeader>Create</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="App.xaml.cpp">
+      <DependentUpon>App.xaml</DependentUpon>
+    </ClCompile>
+    <ClCompile Include="PopupWindow.xaml.cpp">
+      <DependentUpon>PopupWindow.xaml</DependentUpon>
+    </ClCompile>
+    <ClCompile Include="TrayMenuWindow.xaml.cpp">
+      <DependentUpon>TrayMenuWindow.xaml</DependentUpon>
+    </ClCompile>
+    <ClCompile Include="MonitorCard.xaml.cpp">
+      <DependentUpon>MonitorCard.xaml</DependentUpon>
+    </ClCompile>
+    <ClCompile Include="SettingsWindow.xaml.cpp">
+      <DependentUpon>SettingsWindow.xaml</DependentUpon>
+    </ClCompile>
+    <ClCompile Include="GeneralPage.xaml.cpp">
+      <DependentUpon>GeneralPage.xaml</DependentUpon>
+    </ClCompile>
+    <ClCompile Include="KeyboardPage.xaml.cpp">
+      <DependentUpon>KeyboardPage.xaml</DependentUpon>
+    </ClCompile>
+    <ClCompile Include="AutomaticBrightnessPage.xaml.cpp">
+      <DependentUpon>AutomaticBrightnessPage.xaml</DependentUpon>
+    </ClCompile>
+    <ClCompile Include="CalibrationDialog.xaml.cpp">
+      <DependentUpon>CalibrationDialog.xaml</DependentUpon>
+    </ClCompile>
+    <ClCompile Include="$(GeneratedFilesDir)module.g.cpp" />
+    <ClCompile Include="main.cpp" />
+    <ClCompile Include="Host\*.cpp" />
+  </ItemGroup>
+  <!-- Strings are optional until the first .resw lands, so the build does not fail on a missing folder. -->
+  <ItemGroup Condition="Exists('Strings')">
+    <PRIResource Include="Strings\**\*.resw" />
+  </ItemGroup>
+  <ItemGroup>
+    <Midl Include="Project.idl">
+      <SubType>Code</SubType>
+    </Midl>
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Platform\Platform.vcxproj">
+      <Project>{A19A3EAA-A6BF-43A1-8B44-AACE79FF3C16}</Project>
+    </ProjectReference>
+  </ItemGroup>
+  <!-- Defining the "Msix" ProjectCapability here allows the Single-project MSIX Packaging
+       Tools extension to be activated for this project even if the Windows App SDK Nuget
+       package has not yet been restored -->
+  <ItemGroup Condition="'$(DisableMsixProjectCapabilityAddedByProject)'!='true' and '$(EnablePreviewMsixTooling)'=='true'">
+    <ProjectCapability Include="Msix" />
+  </ItemGroup>
+  <!-- Tray icons are loaded from Assets\ beside TelaViva.exe at run time; the post-build copy places them there. -->
+  <ItemGroup>
+    <None Include="Assets\*.ico">
+      <DeploymentContent>false</DeploymentContent>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\Directory.Build.props" />
+    <None Include="..\HybridCRT.props" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

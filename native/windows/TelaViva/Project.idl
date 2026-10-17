@@ -1,0 +1,60 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+namespace TelaViva
+{
+    // Runtime classes are added by later phases. The App class is generated from App.xaml.
+
+    // Tray flyout (Decision 15). Driven by FlyoutState through implementation-only methods.
+    [default_interface]
+    runtimeclass PopupWindow : Microsoft.UI.Xaml.Window
+    {
+        PopupWindow();
+    }
+
+    // Tray context menu (Windows 11 style). Driven by the controller through implementation-only methods.
+    [default_interface]
+    runtimeclass TrayMenuWindow : Microsoft.UI.Xaml.Window
+    {
+        TrayMenuWindow();
+    }
+
+    // One monitor card in the flyout (T048). Bind and Update are implementation-only.
+    [default_interface]
+    runtimeclass MonitorCard : Microsoft.UI.Xaml.Controls.UserControl
+    {
+        MonitorCard();
+    }
+
+    // Settings window (T057) and its three pages (T058). Implementation-only methods are not in the IDL.
+    [default_interface]
+    runtimeclass SettingsWindow : Microsoft.UI.Xaml.Window
+    {
+        SettingsWindow();
+    }
+
+    [default_interface]
+    runtimeclass GeneralPage : Microsoft.UI.Xaml.Controls.UserControl
+    {
+        GeneralPage();
+    }
+
+    [default_interface]
+    runtimeclass KeyboardPage : Microsoft.UI.Xaml.Controls.UserControl
+    {
+        KeyboardPage();
+    }
+
+    [default_interface]
+    runtimeclass AutomaticBrightnessPage : Microsoft.UI.Xaml.Controls.UserControl
+    {
+        AutomaticBrightnessPage();
+    }
+
+    // Calibration dialog (T128). Start and the refresh are implementation-only, reached through get_self.
+    [default_interface]
+    runtimeclass CalibrationDialog : Microsoft.UI.Xaml.Controls.ContentDialog
+    {
+        CalibrationDialog();
+    }
+}

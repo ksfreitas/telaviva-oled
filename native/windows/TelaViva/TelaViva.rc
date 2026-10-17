@@ -1,0 +1,5 @@
+// Application icon. AppIcon.ico is generated from the branding artwork by
+// tools/windows/make-app-icon.ps1. The ID is 1, the lowest numeric ID, so
+// Windows uses this icon as the TelaViva.exe file icon. Forward slashes are
+// used because backslashes are escape characters inside rc strings.
+1 ICON "../../../packaging/windows/Resources/AppIcon.ico"
