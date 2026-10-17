@@ -8,6 +8,7 @@ camera-always-on = Manter a câmera ligada
 camera-always-on-help = Mantém a câmera ligada entre as verificações, respeitando as pausas por bateria e tela desligada.
 camera-functioning = funcionando
 camera-suspended-display-sleep = suspensa enquanto os monitores dormem
+camera-suspended-low-brightness = suspensa com brilho baixo
 presence-disabled = A proteção por presença está desativada
 presence-suspended = O monitoramento de presença está suspenso
 presence-active = A proteção por presença está ativa

@@ -20,6 +20,7 @@ struct SettingsView: View {
     @State private var hardwareKeys = false
     @State private var brightnessKeyStep = 5.0
     @State private var volumeKeyStep = 5.0
+    @State private var presenceMinBrightness = 20.0
     @State private var presentInterval = 10.0
     @State private var returnInterval = 1.0
     @State private var cameras: [AVCaptureDevice] = []
@@ -65,6 +66,7 @@ struct SettingsView: View {
         .onChange(of: returnInterval) { _, _ in save() }
         .onChange(of: brightnessKeyStep) { _, _ in save() }
         .onChange(of: volumeKeyStep) { _, _ in save() }
+        .onChange(of: presenceMinBrightness) { _, _ in save() }
         .alert(AppText.string("loginItemFailureTitle", locale: locale), isPresented: $showLoginItemError) {
             Button(AppText.string("ok", locale: locale), role: .cancel) { }
         } message: {
@@ -98,6 +100,15 @@ struct SettingsView: View {
             Section(AppText.string("protection", locale: locale)) {
                 Toggle(AppText.string("presence", locale: locale), isOn: $presence)
                     .help(AppText.string("presenceHelp", locale: locale))
+                // Threshold below which the camera stays off; editable only while presence protection is on.
+                VStack(alignment: .leading, spacing: 4) {
+                    LabeledContent(AppText.string("presenceMinBrightness", locale: locale)) {
+                        HStack { Slider(value: $presenceMinBrightness, in: 10...90, step: 1); Text("\(Int(presenceMinBrightness)) %").monospacedDigit() }
+                    }
+                    Text(AppText.string("presenceMinBrightnessHelp", locale: locale))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .disabled(!presence)
                 Toggle(AppText.string("alwaysOnCamera", locale: locale), isOn: $alwaysOnCamera)
                     .help(AppText.string("alwaysOnCameraHelp", locale: locale))
                 Toggle(AppText.string("saver", locale: locale), isOn: $screensaver)
@@ -217,6 +228,7 @@ struct SettingsView: View {
         hardwareKeys = value.hardware_keys_enabled ?? false
         brightnessKeyStep = Double(value.brightness_key_step ?? 5)
         volumeKeyStep = Double(value.volume_key_step ?? 5)
+        presenceMinBrightness = value.presence_min_brightness_percent ?? 20
         returnInterval = Double(value.return_sampling_interval_s)
     }
 
@@ -231,6 +243,7 @@ struct SettingsView: View {
         settings.hardware_keys_enabled = hardwareKeys
         settings.brightness_key_step = Int(brightnessKeyStep.rounded())
         settings.volume_key_step = Int(volumeKeyStep.rounded())
+        settings.presence_min_brightness_percent = presenceMinBrightness
         core.updateSettings(settings)
     }
 

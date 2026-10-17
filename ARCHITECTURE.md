@@ -128,6 +128,14 @@ Low-light recovery uses the existing 10-second retry delay, then a five-second m
 
 This macOS extension adds opt-in continuous camera capture, per-display sleep policy, and exposure-settling behavior for low-light recovery, while retaining existing eligibility and brightness-ownership rules. The accepted decision is in [ADR 0003](adr/0003-camera-lifecycle-and-display-suspension.md); the standalone plan and unrun physical acceptance checklist are preserved in the [feature archive](specs/archived/camera-lifecycle-and-display-suspension/). Hardware behavior remains unverified, and Windows remains deferred.
 
+## camera-brightness-activation-threshold — 2026-10-17
+
+The shared core gates presence checking on a brightness threshold, `presence_min_brightness_percent` (default 20, range 10 to 90, strict "above" comparison). Presence checking runs only while at least one eligible monitor is awake and above the threshold; otherwise the camera is suspended with display status `suspended_low_brightness`, or `suspended_no_monitor` when no eligible monitor exists. The core compares the monitor's baseline while the app owns or dims its brightness, so the app's own presence or screensaver dimming does not stop the camera, and the observed level otherwise. The setting is additive to schema 1 and does not change ABI 1.
+
+The macOS shell does not poll monitor brightness. Levels refresh on discovery, display change, wake, the popup refresh button and the app's own writes, so a change made with the monitor's own buttons is noticed only at the next refresh. Periodic DDC reads were not added because they add bus traffic and can disturb some monitors. Hardware behavior remains unverified, and hardware acceptance is pending.
+
+The decision is recorded in [ADR 0011](adr/0011-camera-brightness-activation-threshold.md), and the archived plan is at [specs/archived/camera-brightness-activation-threshold/spec.md](specs/archived/camera-brightness-activation-threshold/spec.md).
+
 ## External monitor hardware keys and fluid controls — 2026-10-16
 
 Opt-in macOS keyboard routing adjusts an external monitor's brightness by pointer (key codes 144 and 145), and its volume and mute only while that monitor is the Mac's default sound output, matched by CoreAudio device UID against the display EDID UUID; other targets pass through to macOS. Menu bar sliders use bounded draft coalescing, and DDC writes are serialized through a transaction that verifies readback. The accepted decision is in [ADR 0004](adr/0004-external-monitor-hardware-keys-and-fluid-controls.md), and the feature records are in the [archive](specs/archived/external-monitor-hardware-keys-and-fluid-controls/).

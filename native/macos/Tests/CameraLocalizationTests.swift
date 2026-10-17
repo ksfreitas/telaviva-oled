@@ -11,6 +11,14 @@ enum CameraLocalizationTests {
             AppText.cameraInlineStatus(status: "ready", locale: "en-US"),
             equals: "Camera: functioning"
         )
+        expect(
+            AppText.cameraInlineStatus(status: "suspended_low_brightness", locale: "pt-BR"),
+            equals: "Câmera: suspensa com brilho baixo"
+        )
+        expect(
+            AppText.cameraInlineStatus(status: "suspended_low_brightness", locale: "en-US"),
+            equals: "Camera: suspended at low brightness"
+        )
         expectMatchingMessageKeys()
     }
 

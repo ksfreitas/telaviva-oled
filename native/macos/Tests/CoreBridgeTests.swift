@@ -13,6 +13,7 @@ private struct CoreBridgeTests {
         refreshBurstsAreConflated()
         hardwareBrightnessKeyDuringProtections()
         coreSettingsKeyStepJSON()
+        coreSettingsPresenceThresholdJSON()
         keyStepSettingsReachRouterThroughCore()
         cameraHistoryDecodesAndStaysOutOfSaves()
         cameraSelectionRoundTripsThroughCore()
@@ -268,6 +269,21 @@ private struct CoreBridgeTests {
                "absent key steps decode as nil")
         expect((withoutKeys.json["brightness_key_step"] as? Int) == 5 && (withoutKeys.json["volume_key_step"] as? Int) == 5,
                "absent key steps are emitted as the default of 5")
+    }
+
+    private static func coreSettingsPresenceThresholdJSON() {
+        // The threshold is optional on decode, and always emitted so an unrelated save keeps the core's value.
+        let withThreshold = decodeSettings(["presence_min_brightness_percent": 35])
+        expect(withThreshold.presence_min_brightness_percent == 35,
+               "presence brightness threshold decodes from a snapshot that carries it")
+        expect((withThreshold.json["presence_min_brightness_percent"] as? Double) == 35,
+               "presence brightness threshold is emitted as the stored value when set")
+
+        let withoutThreshold = decodeSettings([:])
+        expect(withoutThreshold.presence_min_brightness_percent == nil,
+               "absent presence brightness threshold decodes as nil")
+        expect((withoutThreshold.json["presence_min_brightness_percent"] as? Double) == 20,
+               "absent presence brightness threshold is emitted as the default of 20")
     }
 
     private static func keyStepSettingsReachRouterThroughCore() {

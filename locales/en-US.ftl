@@ -8,6 +8,7 @@ camera-always-on = Keep camera on
 camera-always-on-help = Keeps the camera on between checks while respecting battery and display sleep pauses.
 camera-functioning = functioning
 camera-suspended-display-sleep = suspended while displays sleep
+camera-suspended-low-brightness = suspended at low brightness
 presence-disabled = Presence protection is off
 presence-suspended = Presence monitoring is suspended
 presence-active = Presence protection is active

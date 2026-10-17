@@ -269,6 +269,76 @@ fn key_step_settings_are_optional_default_five_persisted_and_range_checked() {
 }
 
 #[test]
+fn presence_min_brightness_defaults_to_20_is_range_checked_and_persisted() {
+    assert_eq!(Settings::default().presence_min_brightness_percent, 20.0);
+    assert_eq!(
+        Settings::from_json(br#"{"schema_version":1}"#)
+            .unwrap()
+            .presence_min_brightness_percent,
+        20.0
+    );
+    assert_eq!(
+        Settings::from_json(br#"{"schema_version":1,"presence_min_brightness_percent":35}"#)
+            .unwrap()
+            .presence_min_brightness_percent,
+        35.0
+    );
+    let root = std::env::temp_dir().join(format!("telaviva-min-brightness-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&root);
+    let path = root.join("settings.json");
+    std::fs::write(
+        &path,
+        br#"{"schema_version":1,"presence_protection_enabled":true}"#,
+    )
+    .unwrap();
+    let mut core = Core::new(CoreOptions {
+        config_path: Some(path.clone()),
+        ..CoreOptions::default()
+    })
+    .unwrap();
+    assert_eq!(
+        core.settings().unwrap().presence_min_brightness_percent,
+        20.0
+    );
+    let before = core.settings().unwrap();
+    let before_file = std::fs::read(&path).unwrap();
+    for invalid in [
+        json!(9.9),
+        json!(90.1),
+        json!(0),
+        json!(100),
+        json!(-1),
+        json!("20"),
+    ] {
+        let event = json!({"type":"update_settings","settings":{"presence_min_brightness_percent":invalid}});
+        assert!(core
+            .submit_json(&serde_json::to_vec(&event).unwrap())
+            .is_err());
+        assert_eq!(core.settings().unwrap(), before);
+    }
+    assert_eq!(std::fs::read(&path).unwrap(), before_file);
+    for accepted in [10.0, 90.0] {
+        let event = json!({"type":"update_settings","settings":{"presence_min_brightness_percent":accepted}});
+        assert!(core
+            .submit_json(&serde_json::to_vec(&event).unwrap())
+            .is_ok());
+        assert_eq!(
+            core.settings().unwrap().presence_min_brightness_percent,
+            accepted
+        );
+    }
+    let persisted: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(persisted["presence_min_brightness_percent"], 90.0);
+    let reloaded = Core::new(CoreOptions {
+        config_path: Some(path.clone()),
+        ..CoreOptions::default()
+    })
+    .unwrap();
+    assert_eq!(reloaded.settings().unwrap(), core.settings().unwrap());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn manual_commands_reject_stale_or_invalid_connection_generation_without_mutation() {
     let mut core = Core::new(CoreOptions::default()).unwrap();
     let discovered = json!({"type":"monitor_discovered","monitor":{
@@ -770,7 +840,7 @@ fn display_sleep_handles_unknown_zero_brightness_and_no_eligible_monitor() {
         &mut core,
         json!({"type":"monitor_discovered","monitor":{
             "id":"zero","name":"Zero","identity_status":"stable","connection_path":"usb",
-            "brightness":{"supported":true,"value":0,"raw":0,"min":0,"max":100},
+            "brightness":{"supported":true,"value":30,"raw":30,"min":0,"max":100},
             "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}
         }}),
     );
@@ -801,6 +871,298 @@ fn display_sleep_handles_unknown_zero_brightness_and_no_eligible_monitor() {
         json!({"type":"update_settings","settings":{"presence_protection_enabled":true}}),
     );
     assert_eq!(empty["camera"]["display_status"], "suspended_no_monitor");
+}
+
+fn discover_monitor(core: &mut Core, id: &str, raw: Value) -> Value {
+    send(
+        core,
+        json!({"type":"monitor_discovered","monitor":{
+            "id":id,"name":id,"identity_status":"stable","connection_path":"usb",
+            "brightness":{"supported":true,"value":raw,"raw":raw,"min":0,"max":100},
+            "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}
+        }}),
+    )
+}
+
+fn enable_presence(core: &mut Core) -> Value {
+    send(core, json!({"type":"power","on_battery":false}));
+    send(
+        core,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true}}),
+    )
+}
+
+fn monitor_generation(snapshot: &Value, id: &str) -> Value {
+    snapshot["monitors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == id)
+        .unwrap()["generation"]
+        .clone()
+}
+
+fn pending_action(snapshot: &Value, kind: &str) -> Value {
+    snapshot["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["kind"] == kind)
+        .unwrap_or_else(|| panic!("missing pending {kind} action"))
+        .clone()
+}
+
+fn hardware_ok(core: &mut Core, action: &Value, value: f64) -> Value {
+    send(
+        core,
+        json!({"type":"hardware_result","action_id":action["id"],"generation":action["generation"],"ok":true,"value":value}),
+    )
+}
+
+// Sends a presence sample tagged with the current camera generation.
+fn presence_sample(core: &mut Core, status: &str, offset_ms: u64) -> Value {
+    let generation = core.snapshot_value().unwrap()["camera"]["generation"].clone();
+    send(
+        core,
+        json!({"type":"presence_observation","status":status,"captured_at_ms":capture_time(offset_ms),"camera_generation":generation}),
+    )
+}
+
+#[test]
+fn zero_brightness_suspends_as_low_brightness_not_display_sleep() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    discover_monitor(&mut core, "zero", json!(0));
+    let s = enable_presence(&mut core);
+    assert_eq!(s["camera"]["mode"], "suspended");
+    assert_eq!(s["camera"]["display_status"], "suspended_low_brightness");
+    assert!(s["camera"]["next_sample_in_ms"].is_null());
+}
+
+#[test]
+fn threshold_suspends_camera_until_observed_brightness_rises_above_it() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    discover_monitor(&mut core, "screen", json!(20));
+    let s = enable_presence(&mut core);
+    assert_eq!(s["camera"]["mode"], "suspended");
+    assert_eq!(s["camera"]["capture_mode"], "stopped");
+    assert_eq!(s["camera"]["display_status"], "suspended_low_brightness");
+    assert!(s["camera"]["next_sample_in_ms"].is_null());
+    let before = s["camera"]["generation"].as_u64().unwrap();
+    let s = send(
+        &mut core,
+        json!({"type":"monitor_observed","monitor_id":"screen","generation":monitor_generation(&s,"screen"),"brightness":{"raw":21}}),
+    );
+    assert_eq!(s["camera"]["mode"], "face");
+    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(1000.0));
+    assert!(s["camera"]["generation"].as_u64().unwrap() > before);
+}
+
+#[test]
+fn lowering_threshold_to_minimum_resumes_monitor_at_20() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    discover_monitor(&mut core, "screen", json!(20));
+    let s = enable_presence(&mut core);
+    assert_eq!(s["camera"]["mode"], "suspended");
+    let s = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"presence_min_brightness_percent":10}}),
+    );
+    assert_eq!(s["camera"]["mode"], "face");
+    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(1000.0));
+}
+
+#[test]
+fn raising_threshold_to_maximum_suspends_monitor_at_21_again() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    discover_monitor(&mut core, "screen", json!(21));
+    let s = enable_presence(&mut core);
+    assert_eq!(s["camera"]["mode"], "face");
+    let s = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"presence_min_brightness_percent":90}}),
+    );
+    assert_eq!(s["camera"]["mode"], "suspended");
+    assert_eq!(s["camera"]["capture_mode"], "stopped");
+    assert_eq!(s["camera"]["display_status"], "suspended_low_brightness");
+}
+
+#[test]
+fn threshold_comparison_is_strict_at_the_exact_value() {
+    let mut at_threshold = Core::new(CoreOptions::default()).unwrap();
+    discover_monitor(&mut at_threshold, "screen", json!(20));
+    let s = enable_presence(&mut at_threshold);
+    assert_eq!(s["camera"]["mode"], "suspended");
+    let mut just_above = Core::new(CoreOptions::default()).unwrap();
+    discover_monitor(&mut just_above, "screen", json!(21));
+    let s = enable_presence(&mut just_above);
+    assert_eq!(s["camera"]["mode"], "face");
+    let mut max_threshold = Core::new(CoreOptions::default()).unwrap();
+    discover_monitor(&mut max_threshold, "screen", json!(90));
+    send(
+        &mut max_threshold,
+        json!({"type":"power","on_battery":false}),
+    );
+    let s = send(
+        &mut max_threshold,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true,"presence_min_brightness_percent":90}}),
+    );
+    assert_eq!(s["camera"]["mode"], "suspended");
+    let mut max_above = Core::new(CoreOptions::default()).unwrap();
+    discover_monitor(&mut max_above, "screen", json!(91));
+    send(&mut max_above, json!({"type":"power","on_battery":false}));
+    let s = send(
+        &mut max_above,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true,"presence_min_brightness_percent":90}}),
+    );
+    assert_eq!(s["camera"]["mode"], "face");
+}
+
+#[test]
+fn multiple_monitors_keep_camera_on_while_one_awake_protected_monitor_is_above() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    discover_monitor(&mut core, "one", json!(10));
+    discover_monitor(&mut core, "two", json!(50));
+    let s = enable_presence(&mut core);
+    assert_eq!(s["camera"]["mode"], "face");
+    let s = send(
+        &mut core,
+        json!({"type":"monitor_observed","monitor_id":"two","generation":monitor_generation(&s,"two"),"brightness":{"raw":10}}),
+    );
+    assert_eq!(s["camera"]["mode"], "suspended");
+    assert_eq!(s["camera"]["display_status"], "suspended_low_brightness");
+}
+
+#[test]
+fn bright_asleep_or_protection_disabled_monitor_does_not_count_toward_the_camera() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    discover_monitor(&mut core, "low", json!(10));
+    discover_monitor(&mut core, "bright", json!(70));
+    let s = enable_presence(&mut core);
+    assert_eq!(s["camera"]["mode"], "face");
+    let s = send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"bright","generation":monitor_generation(&s,"bright"),"state":"asleep"}),
+    );
+    assert_eq!(s["camera"]["mode"], "suspended");
+    assert_eq!(s["camera"]["display_status"], "suspended_low_brightness");
+    let s = send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"bright","generation":monitor_generation(&s,"bright"),"state":"awake"}),
+    );
+    assert_eq!(s["camera"]["mode"], "face");
+    let s = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"protection_disabled":["bright"]}}),
+    );
+    assert_eq!(s["camera"]["mode"], "suspended");
+    let s = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"protection_disabled":[]}}),
+    );
+    assert_eq!(s["camera"]["mode"], "face");
+}
+
+#[test]
+fn presence_dim_keeps_camera_running_and_restore_never_suspends() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    discover_monitor(&mut core, "screen", json!(70));
+    enable_presence(&mut core);
+    presence_sample(&mut core, "absent", 10_000);
+    let s = presence_sample(&mut core, "absent", 20_000);
+    let dim = pending_action(&s, "set_brightness");
+    assert_eq!(dim["value"].as_f64(), Some(0.0));
+    let s = hardware_ok(&mut core, &dim, 0.0);
+    assert_eq!(s["monitors"][0]["presence_dimmed"], true);
+    assert_eq!(s["camera"]["mode"], "face");
+    assert_eq!(s["camera"]["capture_mode"], "continuous_return");
+    let mut modes = Vec::new();
+    let s = presence_sample(&mut core, "present", 30_000);
+    modes.push(s["camera"]["mode"].clone());
+    let read = pending_action(&s, "read_brightness");
+    let s = hardware_ok(&mut core, &read, 0.0);
+    modes.push(s["camera"]["mode"].clone());
+    let restore = pending_action(&s, "set_brightness");
+    assert_eq!(restore["value"].as_f64(), Some(70.0));
+    let s = hardware_ok(&mut core, &restore, 70.0);
+    modes.push(s["camera"]["mode"].clone());
+    assert_eq!(s["monitors"][0]["presence_dimmed"], false);
+    assert!(modes.iter().all(|mode| *mode == "face"));
+}
+
+#[test]
+fn screensaver_dim_keeps_camera_running() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    discover_monitor(&mut core, "screen", json!(70));
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    let s = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true,"screensaver_protection_enabled":true,"screensaver_targets":{"screen":5.0}}}),
+    );
+    assert_eq!(s["camera"]["mode"], "face");
+    let s = send(&mut core, json!({"type":"screensaver","state":"active"}));
+    let dim = pending_action(&s, "set_brightness");
+    assert_eq!(dim["value"].as_f64(), Some(5.0));
+    let s = hardware_ok(&mut core, &dim, 5.0);
+    assert_eq!(s["camera"]["mode"], "face");
+    assert_eq!(s["monitors"][0]["presence_dimmed"], false);
+}
+
+#[test]
+fn manual_brightness_below_threshold_suspends_after_write_result_and_resumes_above() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    discover_monitor(&mut core, "screen", json!(70));
+    enable_presence(&mut core);
+    let s = send(
+        &mut core,
+        json!({"type":"set_brightness","monitor_id":"screen","value":10}),
+    );
+    assert_eq!(s["camera"]["mode"], "face");
+    let write = pending_action(&s, "set_brightness");
+    let s = hardware_ok(&mut core, &write, 10.0);
+    assert_eq!(s["camera"]["mode"], "suspended");
+    assert_eq!(s["camera"]["display_status"], "suspended_low_brightness");
+    let s = send(
+        &mut core,
+        json!({"type":"set_brightness","monitor_id":"screen","value":70}),
+    );
+    // The app owns the value after its own write, so the requested baseline counts at once.
+    assert_eq!(s["camera"]["mode"], "face");
+    let write = pending_action(&s, "set_brightness");
+    let s = hardware_ok(&mut core, &write, 70.0);
+    assert_eq!(s["camera"]["mode"], "face");
+}
+
+#[test]
+fn entering_below_threshold_restarts_the_absence_count() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    discover_monitor(&mut core, "screen", json!(70));
+    enable_presence(&mut core);
+    presence_sample(&mut core, "absent", 10_000);
+    let s = send(
+        &mut core,
+        json!({"type":"set_brightness","monitor_id":"screen","value":10}),
+    );
+    let write = pending_action(&s, "set_brightness");
+    let s = hardware_ok(&mut core, &write, 10.0);
+    assert_eq!(s["camera"]["mode"], "suspended");
+    let s = send(
+        &mut core,
+        json!({"type":"set_brightness","monitor_id":"screen","value":70}),
+    );
+    let write = pending_action(&s, "set_brightness");
+    let s = hardware_ok(&mut core, &write, 70.0);
+    assert_eq!(s["camera"]["mode"], "face");
+    let s = presence_sample(&mut core, "absent", 20_000);
+    assert_eq!(s["monitors"][0]["presence_dimmed"], false);
+}
+
+#[test]
+fn unknown_brightness_monitor_does_not_suspend_while_another_monitor_is_above() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    discover_monitor(&mut core, "unknown", json!(null));
+    discover_monitor(&mut core, "bright", json!(70));
+    let s = enable_presence(&mut core);
+    assert_eq!(s["camera"]["mode"], "face");
 }
 
 #[test]

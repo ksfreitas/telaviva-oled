@@ -22,6 +22,7 @@
 - Dark frames in single-frame face checks on macOS now keep the camera on for five seconds and report only the settled sample, so a dark frame taken during auto-exposure no longer starts the low-light cycle. In dark rooms the camera stays on about five seconds longer per single-frame face check. Continuous capture modes keep reporting an insufficient-light frame immediately. Hardware acceptance is pending.
 - Default hardware-key step is now 5 points (was 6.25) and Shift+Option moves 1 point (was 1.5625).
 - Following the MacBook screen brightness now pauses while the MacBook lid is closed or its built-in screen is off, and resumes by itself when the lid opens or the screen turns on; manual brightness control of the external monitors returns during the pause. The Settings message for an offline built-in display now also covers a switched-off screen. Hardware checks are pending acceptance.
+- Presence checking on macOS now stays off while every eligible monitor is at or below the brightness threshold, which defaults to 20%; lower the slider to 10% to keep protection at low brightness. Hardware acceptance is pending.
 
 ### Added
 
@@ -40,6 +41,7 @@
 - One-command Apple Silicon macOS build through `scripts/build-macos.sh`, compatible with Sh, Bash, and Zsh.
 - Finalized the camera lifecycle decision in ADR 0003 and archived its standalone plan and unrun macOS hardware acceptance checklist.
 - Corrected the macOS CI `lipo` invocation to verify the packaged arm64 executable.
+- Configurable presence brightness threshold on macOS: a Settings slider (10 to 90%, default 20%) sets the brightness an eligible monitor must be above for presence checking to run; hardware acceptance is pending.
 
 - Baseline project documentation and CodeAdvisor conventions for the planned Rust application on macOS and Windows.
 

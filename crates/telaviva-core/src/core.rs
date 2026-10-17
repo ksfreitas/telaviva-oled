@@ -5,7 +5,7 @@ use serde::{
 };
 use serde_json::{json, Map, Number, Value};
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -92,6 +92,8 @@ pub struct Core {
     builtin_available: bool,
     builtin_percent: Option<f64>,
     calibrating: bool,
+    // Monitors at or below the presence brightness threshold. Runtime only, never persisted.
+    below_threshold: BTreeSet<String>,
 }
 
 impl Core {
@@ -124,6 +126,7 @@ impl Core {
             builtin_available: false,
             builtin_percent: None,
             calibrating: false,
+            below_threshold: BTreeSet::new(),
         })
     }
 
@@ -257,6 +260,7 @@ impl Core {
             "shutdown" => self.shutdown_policy()?,
             _ => return Err(format!("unknown command type: {kind}")),
         }
+        self.sync_brightness_gate();
         self.revision = self.revision.saturating_add(1);
         Ok(())
     }
@@ -513,6 +517,10 @@ impl Core {
                 "presence_protection_enabled" => {
                     next.presence_protection_enabled =
                         val.as_bool().ok_or("setting must be boolean")?
+                }
+                "presence_min_brightness_percent" => {
+                    next.presence_min_brightness_percent =
+                        val.as_f64().ok_or("threshold must be number")?
                 }
                 "always_on_camera" => {
                     next.always_on_camera = val.as_bool().ok_or("setting must be boolean")?
@@ -772,8 +780,7 @@ impl Core {
             || !self
                 .monitors
                 .values()
-                .any(|m| Self::monitor_is_camera_eligible(m, self.is_protected(&m.id)))
-            || self.all_eligible_displays_asleep()
+                .any(|m| self.monitor_is_camera_active(m))
             || (self.camera_status != "unknown"
                 && ["unavailable", "busy", "permission", "error"]
                     .contains(&self.camera_status.as_str()))
@@ -793,6 +800,65 @@ impl Core {
 
     fn monitor_is_camera_eligible(m: &Monitor, protected: bool) -> bool {
         protected && m.identity == "stable" && m.brightness.supported && m.baseline.is_some()
+    }
+
+    // Brightness used for the threshold. The baseline is the user's intended level while the app
+    // owns the value or has protection reasons, so its own dims do not stop the camera.
+    fn monitor_level_percent(m: &Monitor) -> Option<f64> {
+        let raw = if m.brightness.owned || !m.brightness.reasons.is_empty() {
+            m.baseline
+        } else {
+            m.brightness.observed
+        }?;
+        Some(normalized(raw, m.brightness.min, m.brightness.max))
+    }
+
+    // A dimmed monitor counts as above: it was dimmed only because it was above, and its return
+    // check must keep running. An unknown level is not below, so protection stays on.
+    fn monitor_below_threshold(&self, m: &Monitor) -> bool {
+        Self::monitor_is_camera_eligible(m, self.is_protected(&m.id))
+            && !m.presence_dimmed
+            && Self::monitor_level_percent(m)
+                .is_some_and(|level| level <= self.settings.presence_min_brightness_percent)
+    }
+
+    fn monitor_is_camera_active(&self, m: &Monitor) -> bool {
+        Self::monitor_is_camera_eligible(m, self.is_protected(&m.id))
+            && m.display_state != "asleep"
+            && !self.monitor_below_threshold(m)
+    }
+
+    // Runs after each accepted command. Entering the below-threshold set resets that monitor's
+    // miss count; a still-connected monitor leaving it starts a clean camera resume.
+    fn sync_brightness_gate(&mut self) {
+        let below: BTreeSet<String> = self
+            .monitors
+            .values()
+            .filter(|m| self.monitor_below_threshold(m))
+            .map(|m| m.id.clone())
+            .collect();
+        let entered: Vec<String> = below.difference(&self.below_threshold).cloned().collect();
+        let left: Vec<String> = self
+            .below_threshold
+            .difference(&below)
+            .filter(|id| self.monitors.contains_key(id.as_str()))
+            .cloned()
+            .collect();
+        self.below_threshold = below;
+        if entered.is_empty() && left.is_empty() {
+            return;
+        }
+        self.camera_generation = self.camera_generation.saturating_add(1);
+        self.last_presence = None;
+        for id in &entered {
+            if let Some(monitor) = self.monitors.get_mut(id) {
+                monitor.misses = 0;
+            }
+        }
+        if !left.is_empty() {
+            self.begin_camera_resume();
+        }
+        self.reconcile_camera();
     }
 
     fn all_eligible_displays_asleep(&self) -> bool {
@@ -821,6 +887,13 @@ impl Core {
                     "suspended_power_unknown"
                 }
                 _ if self.all_eligible_displays_asleep() => "suspended_display_sleep",
+                _ if self
+                    .monitors
+                    .values()
+                    .any(|m| Self::monitor_is_camera_eligible(m, self.is_protected(&m.id))) =>
+                {
+                    "suspended_low_brightness"
+                }
                 _ => "suspended_no_monitor",
             },
             "light_only" => "insufficient_light",
@@ -1518,6 +1591,14 @@ fn curve_percent(curve: &AmbientCurve, level: f64) -> Option<f64> {
 fn map_normalized(v: f64, min: f64, max: f64) -> f64 {
     min + (v / 100.0) * (max - min)
 }
+// Inverse of map_normalized: a raw device value as a percentage of its range.
+fn normalized(raw: f64, min: f64, max: f64) -> f64 {
+    if max > min {
+        (raw - min) * 100.0 / (max - min)
+    } else {
+        0.0
+    }
+}
 fn feature_json(f: &Feature) -> Value {
-    json!({"supported":f.supported,"normalized":f.observed.map(|v|if f.max>f.min{(v-f.min)*100.0/(f.max-f.min)}else{0.0}),"raw":f.raw,"min":f.min,"max":f.max,"observed":f.observed,"desired":f.desired,"status":f.status,"owned":f.owned,"reasons":f.reasons})
+    json!({"supported":f.supported,"normalized":f.observed.map(|v|normalized(v,f.min,f.max)),"raw":f.raw,"min":f.min,"max":f.max,"observed":f.observed,"desired":f.desired,"status":f.status,"owned":f.owned,"reasons":f.reasons})
 }

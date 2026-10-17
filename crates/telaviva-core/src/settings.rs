@@ -24,6 +24,8 @@ pub struct Settings {
     pub suspend_presence_on_battery: bool,
     #[serde(default)]
     pub presence_protection_enabled: bool,
+    #[serde(default = "default_presence_min_brightness")]
+    pub presence_min_brightness_percent: f64,
     #[serde(default)]
     pub always_on_camera: bool,
     #[serde(default)]
@@ -109,6 +111,9 @@ fn yes() -> bool {
 fn default_key_step() -> u8 {
     5
 }
+fn default_presence_min_brightness() -> f64 {
+    20.0
+}
 
 impl Default for Settings {
     fn default() -> Self {
@@ -119,6 +124,7 @@ impl Default for Settings {
             return_sampling_interval_s: 1.0,
             suspend_presence_on_battery: true,
             presence_protection_enabled: false,
+            presence_min_brightness_percent: 20.0,
             always_on_camera: false,
             screensaver_protection_enabled: false,
             launch_at_login: false,
@@ -186,6 +192,11 @@ impl Settings {
         }
         if !(1..=15).contains(&self.volume_key_step) {
             return Err("volume key step out of range".into());
+        }
+        if !self.presence_min_brightness_percent.is_finite()
+            || !(10.0..=90.0).contains(&self.presence_min_brightness_percent)
+        {
+            return Err("presence brightness threshold out of range".into());
         }
         if self
             .screensaver_targets
