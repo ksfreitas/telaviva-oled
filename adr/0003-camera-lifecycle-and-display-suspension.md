@@ -59,3 +59,25 @@ This dated amendment adds decisions to the camera lifecycle contract above. The 
 - The runtime fallback must never be written into `selected_camera_id` or `camera_history`.
 - The 1 s first sample applies only to a resume trigger. It does not change `presence_sampling_interval_s` or its 5–300 second range.
 - The single-frame face-mode settle is bounded by its 5 s deadline. A stalled stream during the settle remains bounded by the existing frame timeout and is not extended.
+
+## Amendment 2026-10-16: capture frame rate and queue priority
+
+This dated amendment adds decisions to the camera lifecycle contract above. The accepted decisions in this record remain in force.
+
+**Feature:** always-on-camera-resource-optimization
+**Plan:** [Archived chore plan](../specs/archived/always-on-camera-resource-optimization/plan.md)
+
+### Decision
+
+- A retained capture session (always-on, or a dimmed return session) is set once, right after the session starts, to a low frame rate: the target is 2 fps, snapped to the nearest rate the camera supports (the built-in camera has a 15 fps floor, the external Lenovo camera 5 fps). The rate is never changed while the session runs, because changing it restarts the camera stream and makes the LED blink. Single-frame sessions are not capped: they last about one frame and a cap would only flicker the LED at start.
+- The target rate is matched to the frame-rate ranges of the format that is active after the session starts, because the preset only selects that format at `startRunning`. Cameras expose continuous ranges (15...30) or discrete rates (15.000015), and AVFoundation raises an uncatchable Objective-C exception for any duration outside them. At a range edge the app therefore uses the device's own duration value, and it never writes a duration it has not checked against the range. Cameras with a floor above the target (the built-in camera starts at 15 fps) simply run at that floor.
+- The durations the device reported before the first cap are restored, by value, before the session stops. Setting `disableCaptureRateControl` to true in the app's user defaults turns frame-rate control off.
+- Sampling cadence and the modes that keep a session open are unchanged.
+- The camera queue (`com.telaviva.camera`) runs at background QoS. The 5 s acquisition watchdog and the settle deadlines run on `com.telaviva.camera.deadlines` at utility QoS and hop back to the camera queue.
+- `cameraQueueQoS` is the single constant to change back to utility if hardware runs show deferred watchdogs.
+- Resolution stays VGA because the detector input is a fixed 640x640; cameras without VGA use fallback presets.
+
+### Consequences
+
+- Status: implemented. Hardware CPU, energy, and frame-rate measurements are pending, so this amendment does not change the acceptance matrix.
+- The C ABI is unchanged.

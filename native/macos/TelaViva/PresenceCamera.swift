@@ -9,10 +9,15 @@ private let wakeLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "br.com.
 /// Wall-clock milliseconds for wake timing logs, on the same clock as `captured_at_ms`.
 private func wakeMilliseconds() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
 
+/// Camera queue QoS. Background keeps frame callbacks and inference on the efficiency cores; revert to .utility here if hardware runs show deferred watchdogs.
+private let cameraQueueQoS: DispatchQoS = .background
+
 /// Uses one-frame sessions by default and can retain a healthy session in opt-in always-on mode.
 /// Return frames are discarded between deadlines; frame bytes never enter the ABI.
 final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
-    private let queue = DispatchQueue(label: "com.telaviva.camera", qos: .utility)
+    private let queue = DispatchQueue(label: "com.telaviva.camera", qos: cameraQueueQoS)
+    /// Times the watchdog and settle deadlines on the utility queue, so a deferred background queue cannot delay them.
+    private let deadlineQueue = DispatchQueue(label: "com.telaviva.camera.deadlines", qos: .utility)
     private var session: AVCaptureSession?
     private var output: AVCaptureVideoDataOutput?
     private weak var core: CoreBridge?
@@ -24,7 +29,7 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var inferenceRequested = false
     private var receivedFirstFrame = false
     private var stopped = false
-    private var sampleTimer: DispatchWorkItem?
+    private var sampleTimer: DispatchSourceTimer?
     private var timeoutTimer: DispatchWorkItem?
     private var settleTimer: DispatchWorkItem?
     private var detectorReleaseTimer: DispatchWorkItem?
@@ -38,6 +43,7 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var latestSnapshotRevision: UInt64?
     private var cameraHistory: [String] = []
     private var activeCameraID: String?
+    private var activeDevice: AVCaptureDevice?
     private var lastReportedCameraStatus: String?
     private var deviceObservers: [NSObjectProtocol] = []
 
@@ -133,17 +139,22 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     }
 
     /// Replaces the pending sample timer. A newer schedule or a generation change drops the older timer.
+    /// Leeway is 10% of the delay, at most one second, so wakeups can coalesce; the 5 s deadlines stay precise.
     private func scheduleSample(after delay: TimeInterval) {
         sampleTimerEpoch &+= 1
         let expectedTimerEpoch = sampleTimerEpoch
         let expectedGeneration = generation
-        let work = DispatchWorkItem { [weak self] in
+        sampleTimer?.cancel()
+        let clamped = max(0, delay)
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + clamped, leeway: .milliseconds(Int(min(0.1 * clamped, 1.0) * 1000)))
+        timer.setEventHandler { [weak self] in
             guard let self, !self.stopped, self.sampleTimerEpoch == expectedTimerEpoch,
                   self.generation == expectedGeneration else { return }
             self.requestSample()
         }
-        sampleTimer = work
-        queue.asyncAfter(deadline: .now() + max(0, delay), execute: work)
+        sampleTimer = timer
+        timer.resume()
     }
 
     private func requestSample() {
@@ -170,7 +181,7 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                 self.armCaptureTimeout(assessmentToken: assessmentToken)
             }
             settleTimer = settle
-            queue.asyncAfter(deadline: .now() + 5, execute: settle)
+            scheduleDeadline(after: 5, settle)
             return
         }
         sampleGeneration = generation
@@ -195,7 +206,6 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         guard !sampling else { return }
         let capture = AVCaptureSession()
         capture.beginConfiguration()
-        capture.sessionPreset = .vga640x480
         // Enumerated on every sample, so a reconnected camera is used without a settings change.
         let devices = AVCaptureDevice.DiscoverySession(deviceTypes: [.builtInWideAngleCamera, .external], mediaType: .video, position: .unspecified).devices
         let resolvedID = resolveCamera(history: selectionHistory, connected: Set(devices.map(\.uniqueID)))
@@ -205,6 +215,10 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             capture.commitConfiguration(); report(status: "unavailable", cameraStatus: "unavailable"); return
         }
         capture.addInput(input)
+        // The detector input is 640x640, so VGA is all the model can use. Fall back for cameras that lack it.
+        if let preset = [AVCaptureSession.Preset.vga640x480, .medium, .low].first(where: { capture.canSetSessionPreset($0) }) {
+            capture.sessionPreset = preset
+        }
         let frames = AVCaptureVideoDataOutput()
         frames.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
         frames.alwaysDiscardsLateVideoFrames = true
@@ -216,11 +230,102 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         capture.commitConfiguration()
         session = capture; output = frames; sampling = true; receivedFirstFrame = false
         activeCameraID = camera.uniqueID
+        activeDevice = camera
         if captureMode == "continuous_return" || captureMode == "continuous_monitoring" { inferenceRequested = true }
         lifecycle.beginAcquisition(now: cameraClockNow())
         armCaptureTimeout()
-        wakeLog.debug("start_running at_ms=\(wakeMilliseconds(), privacy: .public)")
+        wakeLog.debug("start_running preset=\(capture.sessionPreset.rawValue, privacy: .public) at_ms=\(wakeMilliseconds(), privacy: .public)")
         capture.startRunning()
+        // The preset selects the active format only once the session runs, so the rate is matched to that format.
+        // Retained sessions only: a single-frame session is too short to benefit, and the cap would just make the LED flicker at start.
+        if captureMode == "continuous_return" || captureMode == "continuous_monitoring" { setCaptureRate() }
+    }
+
+    /// Escape hatch if a camera misbehaves with frame-rate control: `defaults write <bundle id> disableCaptureRateControl -bool true`.
+    private var captureRateControlDisabled: Bool { UserDefaults.standard.bool(forKey: "disableCaptureRateControl") }
+
+    /// Frame durations the device reported before the first cap of this session, restored when capture stops.
+    private var originalFrameDurations: (minimum: CMTime, maximum: CMTime)?
+
+    /// Caps the delivered frame rate of the open session. Best effort: it only ever writes a duration taken from,
+    /// or strictly inside, a range the active format reports, because AVFoundation raises an Objective-C
+    /// exception, which Swift cannot catch, for anything else. Must run after `startRunning`, when the session
+    /// preset has selected the active format. Called once per session: changing the rate of a running camera
+    /// restarts its stream and blinks the LED.
+    private func setCaptureRate() {
+        guard let device = activeDevice, !captureRateControlDisabled else { return }
+        let supportedRanges = device.activeFormat.videoSupportedFrameRateRanges
+        let ranges = supportedRanges.map { FrameRateRange(minimum: $0.minFrameRate, maximum: $0.maxFrameRate) }
+        guard let choice = chooseFrameRate(ranges: ranges),
+              supportedRanges.indices.contains(choice.rangeIndex) else { return }
+        let supported = supportedRanges[choice.rangeIndex]
+        let target: CMTime
+        switch choice.edge {
+        case .minimum: target = supported.maxFrameDuration   // lowest rate is the longest duration
+        case .maximum: target = supported.minFrameDuration
+        case .inside:
+            let duration = frameDuration(forRate: choice.rate)
+            target = CMTime(value: duration.value, timescale: duration.timescale)
+        }
+        guard CMTimeCompare(target, supported.minFrameDuration) >= 0,
+              CMTimeCompare(target, supported.maxFrameDuration) <= 0 else {
+            wakeLog.debug("capture_rate_skipped at_ms=\(wakeMilliseconds(), privacy: .public)")
+            return
+        }
+        if originalFrameDurations == nil {
+            originalFrameDurations = (device.activeVideoMinFrameDuration, device.activeVideoMaxFrameDuration)
+        }
+        if applyFrameDurations(minimum: target, maximum: target, to: device) {
+            wakeLog.debug("capture_rate fps=\(choice.rate, privacy: .public) at_ms=\(wakeMilliseconds(), privacy: .public)")
+        }
+    }
+
+    /// Restores the durations the device had before the first cap, so a cap never outlives the session or leaks
+    /// into other apps. Runs before `stopRunning`, while the same format is still active. Best effort.
+    private func resetCaptureRate() {
+        defer { originalFrameDurations = nil }
+        guard let device = activeDevice, let original = originalFrameDurations, !captureRateControlDisabled else { return }
+        let supportedRanges = device.activeFormat.videoSupportedFrameRateRanges
+        guard let shortest = supportedRanges.map(\.minFrameDuration).min(by: { CMTimeCompare($0, $1) < 0 }),
+              let longest = supportedRanges.map(\.maxFrameDuration).max(by: { CMTimeCompare($0, $1) < 0 }),
+              original.minimum.isValid, original.maximum.isValid,
+              CMTimeCompare(original.minimum, shortest) >= 0,
+              CMTimeCompare(original.maximum, longest) <= 0 else { return }
+        applyFrameDurations(minimum: original.minimum, maximum: original.maximum, to: device)
+    }
+
+    /// Writes both frame durations in an order that keeps minimum <= maximum at every step. Best effort.
+    @discardableResult
+    private func applyFrameDurations(minimum: CMTime, maximum: CMTime, to device: AVCaptureDevice) -> Bool {
+        guard minimum.isValid, maximum.isValid, CMTimeCompare(minimum, maximum) <= 0 else { return false }
+        let currentMinimum = device.activeVideoMinFrameDuration
+        let currentMaximum = device.activeVideoMaxFrameDuration
+        guard currentMinimum.isValid, currentMaximum.isValid else { return false }
+        if CMTimeCompare(currentMinimum, minimum) == 0, CMTimeCompare(currentMaximum, maximum) == 0 { return true }
+        do {
+            try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+            if CMTimeCompare(minimum, currentMaximum) > 0 {
+                device.activeVideoMaxFrameDuration = maximum
+                device.activeVideoMinFrameDuration = minimum
+            } else {
+                device.activeVideoMinFrameDuration = minimum
+                device.activeVideoMaxFrameDuration = maximum
+            }
+            return true
+        } catch {
+            wakeLog.debug("capture_rate_failed at_ms=\(wakeMilliseconds(), privacy: .public)")
+            return false
+        }
+    }
+
+    /// Times a deadline on the utility queue and runs the item on the camera queue. Cancelling the item
+    /// before the hop also cancels its work.
+    private func scheduleDeadline(after delay: TimeInterval, _ item: DispatchWorkItem) {
+        deadlineQueue.asyncAfter(deadline: .now() + max(0, delay)) { [weak self] in
+            guard !item.isCancelled else { return }
+            self?.queue.async(execute: item)
+        }
     }
 
     /// Bounds initial acquisition and each requested return frame. No watchdog runs between
@@ -253,7 +358,7 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             self.report(status: "unavailable", cameraStatus: "busy")
         }
         timeoutTimer = timeout
-        queue.asyncAfter(deadline: .now() + 5, execute: timeout)
+        scheduleDeadline(after: 5, timeout)
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
@@ -390,7 +495,7 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             self.armCaptureTimeout(assessmentToken: assessmentToken)
         }
         settleTimer = settle
-        queue.asyncAfter(deadline: .now() + delay, execute: settle)
+        scheduleDeadline(after: delay, settle)
     }
 
     /// Runs on the camera queue. Restarts capture when the active camera leaves or a camera that outranks
@@ -423,8 +528,9 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         timeoutAssessmentToken = nil
         settleTimer?.cancel(); settleTimer = nil
         output?.setSampleBufferDelegate(nil, queue: nil)
+        resetCaptureRate()
         if session?.isRunning == true { session?.stopRunning() }
-        output = nil; session = nil; sampling = false; activeCameraID = nil
+        output = nil; session = nil; sampling = false; activeCameraID = nil; activeDevice = nil
         inferenceRequested = false; receivedFirstFrame = false
         lifecycle.cancelDeadlines()
     }

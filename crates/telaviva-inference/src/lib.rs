@@ -167,6 +167,8 @@ fn create_session(model: &Path, coreml_candidate: bool) -> ort::Result<Session> 
     let builder = Session::builder()?
         .with_intra_threads(1)?
         .with_inter_threads(1)?
+        .with_intra_op_spinning(false)?
+        .with_inter_op_spinning(false)?
         .with_optimization_level(GraphOptimizationLevel::Level3)?;
     let builder = if coreml_candidate {
         builder.with_execution_providers([CoreMLExecutionProvider::default().build()])?
@@ -394,6 +396,19 @@ fn mean_luma(bgra: &[u8], width: usize, height: usize, stride: usize) -> f32 {
     (total / samples.max(1) as f64) as f32
 }
 
+/// Bilinear sample positions along one axis as (lower, upper, fraction), shared by rows and columns.
+fn axis_samples(resized: usize, source: usize) -> Vec<(usize, usize, f32)> {
+    (0..resized)
+        .map(|index| {
+            let position = ((index as f32 + 0.5) * source as f32 / resized as f32 - 0.5)
+                .clamp(0.0, (source - 1) as f32);
+            let lower = position.floor() as usize;
+            let upper = (lower + 1).min(source - 1);
+            (lower, upper, position - lower as f32)
+        })
+        .collect()
+}
+
 fn preprocess_bgra(bgra: &[u8], width: usize, height: usize, stride: usize) -> Option<Array4<f32>> {
     let scale = (INPUT as f32 / width as f32).min(INPUT as f32 / height as f32);
     let resized_w = ((width as f32 * scale).round() as usize).clamp(1, INPUT);
@@ -401,48 +416,58 @@ fn preprocess_bgra(bgra: &[u8], width: usize, height: usize, stride: usize) -> O
     let pad_x = (INPUT - resized_w) / 2;
     let pad_y = (INPUT - resized_h) / 2;
     let mut data = vec![0.0_f32; 3 * INPUT * INPUT];
-    for y in 0..resized_h {
-        let source_y = ((y as f32 + 0.5) * height as f32 / resized_h as f32 - 0.5)
-            .clamp(0.0, (height - 1) as f32);
-        let y0 = source_y.floor() as usize;
-        let y1 = (y0 + 1).min(height - 1);
-        let fy = source_y - y0 as f32;
-        for x in 0..resized_w {
-            let source_x = ((x as f32 + 0.5) * width as f32 / resized_w as f32 - 0.5)
-                .clamp(0.0, (width - 1) as f32);
-            let x0 = source_x.floor() as usize;
-            let x1 = (x0 + 1).min(width - 1);
-            let fx = source_x - x0 as f32;
-            let dst = (y + pad_y) * INPUT + x + pad_x;
-            for (channel, bgra_index) in [0, 1, 2].into_iter().enumerate() {
-                let p00 = bgra[y0 * stride + x0 * 4 + bgra_index] as f32;
-                let p01 = bgra[y0 * stride + x1 * 4 + bgra_index] as f32;
-                let p10 = bgra[y1 * stride + x0 * 4 + bgra_index] as f32;
-                let p11 = bgra[y1 * stride + x1 * 4 + bgra_index] as f32;
-                let top = p00 + (p01 - p00) * fx;
-                let bottom = p10 + (p11 - p10) * fx;
-                data[channel * INPUT * INPUT + dst] = top + (bottom - top) * fy;
+    if resized_w == width && resized_h == height {
+        // Identity letterbox: each output pixel is exactly one source pixel.
+        for y in 0..height {
+            for x in 0..width {
+                let src = y * stride + x * 4;
+                let dst = (y + pad_y) * INPUT + x + pad_x;
+                for (channel, bgra_index) in [0, 1, 2].into_iter().enumerate() {
+                    data[channel * INPUT * INPUT + dst] = bgra[src + bgra_index] as f32;
+                }
+            }
+        }
+    } else {
+        let rows = axis_samples(resized_h, height);
+        let columns = axis_samples(resized_w, width);
+        for (y, &(y0, y1, fy)) in rows.iter().enumerate() {
+            for (x, &(x0, x1, fx)) in columns.iter().enumerate() {
+                let dst = (y + pad_y) * INPUT + x + pad_x;
+                for (channel, bgra_index) in [0, 1, 2].into_iter().enumerate() {
+                    let p00 = bgra[y0 * stride + x0 * 4 + bgra_index] as f32;
+                    let p01 = bgra[y0 * stride + x1 * 4 + bgra_index] as f32;
+                    let p10 = bgra[y1 * stride + x0 * 4 + bgra_index] as f32;
+                    let p11 = bgra[y1 * stride + x1 * 4 + bgra_index] as f32;
+                    let top = p00 + (p01 - p00) * fx;
+                    let bottom = p10 + (p11 - p10) * fx;
+                    data[channel * INPUT * INPUT + dst] = top + (bottom - top) * fy;
+                }
             }
         }
     }
     Array4::from_shape_vec((1, 3, INPUT, INPUT), data).ok()
 }
 
+// Output names indexed by position in [8, 16, 32].
+const CLS_OUTPUTS: [&str; 3] = ["cls_8", "cls_16", "cls_32"];
+const OBJ_OUTPUTS: [&str; 3] = ["obj_8", "obj_16", "obj_32"];
+const BBOX_OUTPUTS: [&str; 3] = ["bbox_8", "bbox_16", "bbox_32"];
+
 fn decode_outputs(outputs: &ort::session::SessionOutputs<'_, '_>) -> Option<Vec<Box2d>> {
     let mut detections = Vec::new();
-    for stride in [8_usize, 16, 32] {
+    for (level, stride) in [8_usize, 16, 32].into_iter().enumerate() {
         let side = INPUT / stride;
         let count = side * side;
         let cls_view = outputs
-            .get(format!("cls_{stride}"))?
+            .get(CLS_OUTPUTS[level])?
             .try_extract_tensor::<f32>()
             .ok()?;
         let obj_view = outputs
-            .get(format!("obj_{stride}"))?
+            .get(OBJ_OUTPUTS[level])?
             .try_extract_tensor::<f32>()
             .ok()?;
         let bbox_view = outputs
-            .get(format!("bbox_{stride}"))?
+            .get(BBOX_OUTPUTS[level])?
             .try_extract_tensor::<f32>()
             .ok()?;
         let cls = cls_view.as_slice()?;
@@ -616,6 +641,117 @@ mod tests {
         assert!((red_plane[()] - 30.0).abs() < 1e-6);
         assert!((blue_plane[()] - 10.0).abs() < 1e-6);
         assert_eq!(tensor[[0, 0, 0, 0]], 0.0);
+    }
+
+    /// Verbatim copy of the pre-optimization per-pixel letterbox, used as the oracle.
+    fn preprocess_reference(
+        bgra: &[u8],
+        width: usize,
+        height: usize,
+        stride: usize,
+    ) -> Option<Array4<f32>> {
+        let scale = (INPUT as f32 / width as f32).min(INPUT as f32 / height as f32);
+        let resized_w = ((width as f32 * scale).round() as usize).clamp(1, INPUT);
+        let resized_h = ((height as f32 * scale).round() as usize).clamp(1, INPUT);
+        let pad_x = (INPUT - resized_w) / 2;
+        let pad_y = (INPUT - resized_h) / 2;
+        let mut data = vec![0.0_f32; 3 * INPUT * INPUT];
+        for y in 0..resized_h {
+            let source_y = ((y as f32 + 0.5) * height as f32 / resized_h as f32 - 0.5)
+                .clamp(0.0, (height - 1) as f32);
+            let y0 = source_y.floor() as usize;
+            let y1 = (y0 + 1).min(height - 1);
+            let fy = source_y - y0 as f32;
+            for x in 0..resized_w {
+                let source_x = ((x as f32 + 0.5) * width as f32 / resized_w as f32 - 0.5)
+                    .clamp(0.0, (width - 1) as f32);
+                let x0 = source_x.floor() as usize;
+                let x1 = (x0 + 1).min(width - 1);
+                let fx = source_x - x0 as f32;
+                let dst = (y + pad_y) * INPUT + x + pad_x;
+                for (channel, bgra_index) in [0, 1, 2].into_iter().enumerate() {
+                    let p00 = bgra[y0 * stride + x0 * 4 + bgra_index] as f32;
+                    let p01 = bgra[y0 * stride + x1 * 4 + bgra_index] as f32;
+                    let p10 = bgra[y1 * stride + x0 * 4 + bgra_index] as f32;
+                    let p11 = bgra[y1 * stride + x1 * 4 + bgra_index] as f32;
+                    let top = p00 + (p01 - p00) * fx;
+                    let bottom = p10 + (p11 - p10) * fx;
+                    data[channel * INPUT * INPUT + dst] = top + (bottom - top) * fy;
+                }
+            }
+        }
+        Array4::from_shape_vec((1, 3, INPUT, INPUT), data).ok()
+    }
+
+    fn lcg_bytes(len: usize, seed: u32) -> Vec<u8> {
+        let mut state = seed;
+        (0..len)
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (state >> 24) as u8
+            })
+            .collect()
+    }
+
+    fn assert_matches_reference(bgra: &[u8], width: usize, height: usize, stride: usize) {
+        let actual = preprocess_bgra(bgra, width, height, stride).unwrap();
+        let expected = preprocess_reference(bgra, width, height, stride).unwrap();
+        assert_eq!(actual.shape(), expected.shape());
+        assert_eq!(actual.as_slice().unwrap(), expected.as_slice().unwrap());
+    }
+
+    #[test]
+    fn preprocess_matches_reference_for_640x480_with_row_padding() {
+        let bgra = lcg_bytes(2576 * 480, 1);
+        assert_matches_reference(&bgra, 640, 480, 2576);
+    }
+
+    #[test]
+    fn preprocess_matches_reference_for_1280x720_downscale() {
+        let bgra = lcg_bytes(5120 * 720, 2);
+        assert_matches_reference(&bgra, 1280, 720, 5120);
+    }
+
+    #[test]
+    fn preprocess_matches_reference_for_2x1_frame() {
+        let bgra = lcg_bytes(8, 3);
+        assert_matches_reference(&bgra, 2, 1, 8);
+    }
+
+    #[test]
+    fn preprocess_matches_reference_for_320x240_upscale() {
+        let bgra = lcg_bytes(1280 * 240, 4);
+        assert_matches_reference(&bgra, 320, 240, 1280);
+    }
+
+    #[test]
+    fn preprocess_640x480_keeps_letterbox_padding_and_maps_first_pixel() {
+        let bgra = lcg_bytes(2576 * 480, 1);
+        let tensor = preprocess_bgra(&bgra, 640, 480, 2576).unwrap();
+        for channel in 0..3 {
+            for row in (0..80).chain(560..640) {
+                for column in 0..640 {
+                    assert_eq!(tensor[[0, channel, row, column]], 0.0);
+                }
+            }
+        }
+        assert_eq!(tensor[[0, 0, 80, 0]], bgra[0] as f32);
+    }
+
+    #[test]
+    fn output_names_are_distinct_and_match_model_layout() {
+        let mut names: Vec<&str> = CLS_OUTPUTS
+            .iter()
+            .chain(OBJ_OUTPUTS.iter())
+            .chain(BBOX_OUTPUTS.iter())
+            .copied()
+            .collect();
+        assert_eq!(CLS_OUTPUTS, ["cls_8", "cls_16", "cls_32"]);
+        assert_eq!(OBJ_OUTPUTS, ["obj_8", "obj_16", "obj_32"]);
+        assert_eq!(BBOX_OUTPUTS, ["bbox_8", "bbox_16", "bbox_32"]);
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), 9);
     }
 
     #[test]
