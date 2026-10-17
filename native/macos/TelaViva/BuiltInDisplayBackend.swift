@@ -1,12 +1,14 @@
 import CoreGraphics
 import Darwin
 import Foundation
+import IOKit
 import ObjectiveC
 
 enum BuiltInUnavailableReason: String {
     case noBuiltInDisplay
     case brightnessNotAdjustable
     case apiUnavailable
+    /// Built-in display is off, asleep, mirrored or the lid is closed.
     case displayOffline
 }
 
@@ -62,11 +64,18 @@ final class DisplayServicesBackend: BuiltInDisplayBackend {
     private var displayClientCache: (displayID: UInt32, client: AnyObject)?
 
     func status() -> BuiltInDisplayStatus {
-        guard let id = Self.onlineBuiltInDisplay() else {
-            return BuiltInDisplayStatus(available: false, reason: .noBuiltInDisplay, displayID: nil)
+        let found = Self.onlineBuiltInDisplay()
+        if let reason = Self.offlineReason(
+            builtInFound: found != nil,
+            lidClosed: Self.lidClosed(),
+            online: found.map { CGDisplayIsOnline($0) != 0 } ?? false,
+            active: found.map { CGDisplayIsActive($0) != 0 } ?? false,
+            asleep: found.map { CGDisplayIsAsleep($0) != 0 } ?? false
+        ) {
+            return BuiltInDisplayStatus(available: false, reason: reason, displayID: found)
         }
-        guard CGDisplayIsOnline(id) != 0, CGDisplayIsActive(id) != 0 else {
-            return BuiltInDisplayStatus(available: false, reason: .displayOffline, displayID: id)
+        guard let id = found else {
+            return BuiltInDisplayStatus(available: false, reason: .noBuiltInDisplay, displayID: nil)
         }
         guard let symbols = Self.symbols else {
             return BuiltInDisplayStatus(available: false, reason: .apiUnavailable, displayID: id)
@@ -75,6 +84,22 @@ final class DisplayServicesBackend: BuiltInDisplayBackend {
             return BuiltInDisplayStatus(available: false, reason: .brightnessNotAdjustable, displayID: id)
         }
         return BuiltInDisplayStatus(available: true, reason: nil, displayID: id)
+    }
+
+    /// True when the MacBook lid is closed; false when unknown or on a Mac without a lid.
+    static func lidClosed() -> Bool {
+        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
+        guard service != 0 else { return false }
+        defer { IOObjectRelease(service) }
+        let value = IORegistryEntryCreateCFProperty(service, "AppleClamshellState" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue()
+        return (value as? Bool) ?? false
+    }
+
+    /// Why the built-in display cannot be followed, or nil when it is on. A closed lid is always offline, even when the display left the online list.
+    static func offlineReason(builtInFound: Bool, lidClosed: Bool, online: Bool, active: Bool, asleep: Bool) -> BuiltInUnavailableReason? {
+        if lidClosed { return .displayOffline }
+        guard builtInFound else { return .noBuiltInDisplay }
+        return online && active && !asleep ? nil : .displayOffline
     }
 
     func isAsleep() -> Bool {

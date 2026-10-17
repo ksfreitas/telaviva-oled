@@ -68,6 +68,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     private var accessibilityObserver: NSObjectProtocol?
     private var screenObserver: NSObjectProtocol?
     private var wakeObserver: NSObjectProtocol?
+    private var screensWakeObserver: NSObjectProtocol?
     private var displaySleepObserver: NSObjectProtocol?
     private var settingsCloseObserver: NSObjectProtocol?
     /// Last state and locale applied to the status item; the icon is only reset when one of them changes.
@@ -213,7 +214,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         ddc.start()
         builtInMonitor.start()
         calibration.recoverIfNeeded()
-        // Availability is re-read on display changes and wake; there is no polling for it.
+        // Availability is re-read on display changes, system wake, and display sleep and wake; there is no polling for it.
         screenObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             self?.builtInMonitor.refreshAvailability()
         }
@@ -222,6 +223,12 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         }
         displaySleepObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: .main) { [weak self] _ in
             self?.calibration.end(.displaySleep)
+            self?.builtInMonitor.refreshAvailability()
+        }
+        screensWakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.builtInMonitor.refreshAvailability()
+            // The display can still read asleep when the notification arrives, so availability is checked again shortly after.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.builtInMonitor.refreshAvailability() }
         }
         observeScreensaver()
         powerSource = IOPSNotificationCreateRunLoopSource(powerSourceChanged, Unmanaged.passUnretained(self).toOpaque())?.takeRetainedValue()
@@ -252,10 +259,12 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
         if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
         if let displaySleepObserver { NSWorkspace.shared.notificationCenter.removeObserver(displaySleepObserver) }
+        if let screensWakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(screensWakeObserver) }
         if let settingsCloseObserver { NotificationCenter.default.removeObserver(settingsCloseObserver) }
         screenObserver = nil
         wakeObserver = nil
         displaySleepObserver = nil
+        screensWakeObserver = nil
         settingsCloseObserver = nil
         builtInMonitor.stop()
     }

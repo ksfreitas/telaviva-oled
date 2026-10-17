@@ -3465,6 +3465,41 @@ fn follow_stops_when_builtin_is_unavailable_or_follow_is_disabled() {
 }
 
 #[test]
+fn follow_pauses_while_builtin_is_unavailable_and_resumes_with_the_current_level() {
+    let mut core = follow_core(0.0, 100.0, 90.0);
+    let s = follow_builtin(&mut core, json!(50.0), false);
+    let write = follow_pending(&s, "screen", "set_brightness").expect("available builtin writes");
+    assert_eq!(write["value"].as_f64(), Some(50.0));
+    follow_ack(&mut core, &write, 50.0);
+    // Built-in unavailable: follow pauses, queues nothing and keeps the monitor eligible.
+    let s = send(
+        &mut core,
+        json!({"type":"builtin_display","available":false,"brightness":50.0,"calibrating":false}),
+    );
+    assert_eq!(s["ambient"]["active"].as_bool(), Some(false));
+    assert!(s["pending_actions"].as_array().unwrap().is_empty());
+    assert_eq!(follow_monitor(&s, "screen")["follow"], "eligible");
+    // Manual control still writes while paused.
+    let generation = follow_monitor(&s, "screen")["generation"].clone();
+    let s = send(
+        &mut core,
+        json!({"type":"set_brightness","monitor_id":"screen","value":20,"connection_generation":generation}),
+    );
+    let manual = follow_pending(&s, "screen", "set_brightness").expect("manual write");
+    assert_eq!(manual["value"].as_f64(), Some(20.0));
+    follow_ack(&mut core, &manual, 20.0);
+    // Built-in back at 75: follow resumes and replaces the manual 20 with the mapped value.
+    let mut s = follow_builtin(&mut core, json!(75.0), false);
+    assert_eq!(s["ambient"]["active"].as_bool(), Some(true));
+    if let Some(read) = follow_pending(&s, "screen", "read_brightness") {
+        s = follow_ack(&mut core, &read, 20.0);
+    }
+    // The p75 anchor maps to raw 70 on the 0..100 range.
+    let write = follow_pending(&s, "screen", "set_brightness").expect("follow resumes");
+    assert_eq!(write["value"].as_f64(), Some(70.0));
+}
+
+#[test]
 fn follow_reconnect_reapplies_the_curve_only_to_the_same_monitor_id() {
     let mut core = follow_core(0.0, 100.0, 90.0);
     let s = follow_builtin(&mut core, json!(50.0), false);

@@ -469,6 +469,29 @@ Notes:
 
 ---
 
+## I. Pause while the built-in screen is off
+
+Status: Not run
+
+Steps:
+
+1. Turn on follow with a calibrated monitor. Check that the popup shows no brightness slider for it.
+2. Close the lid with the external monitor still connected. In the popup, reached from the external display, check that the brightness slider is back, and that the Automatic brightness tab in Settings explains that the built-in display is off.
+3. With keyboard routing enabled, press the brightness keys. Check that they now change the external monitor.
+4. Open the lid. Check that the brightness slider disappears again, that the brightness keys pass through to macOS again, and that the monitor goes to the level matching the MacBook.
+5. Repeat with the lid open. Let only display sleep turn the screen off (for example with a short display sleep or `pmset displaysleepnow`), then wake it. Check the pause and resume as in steps 2 to 4.
+6. Change the monitor brightness manually during the pause, from its on-screen menu. Check that following replaces that change when it resumes.
+
+Expected:
+
+- Follow pauses and resumes by itself, and manual control returns during the pause.
+
+Result: 
+
+Notes: 
+
+---
+
 ## Summary
 
 | Section | Scope | Status | Date |
@@ -481,3 +504,4 @@ Notes:
 | F | Calibration (SC-004, SC-006, T053) | Not run | |
 | G | Popup and keys in follow mode (SC-007, T058) | Not run | |
 | H | Mac without a built-in display (SC-005) | Not run (unverified unless such a Mac is available) | |
+| I | Pause while the built-in screen is off | Not run | |

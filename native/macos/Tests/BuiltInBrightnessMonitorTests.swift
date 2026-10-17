@@ -134,6 +134,8 @@ private struct BuiltInBrightnessMonitorTests {
         stopCancelsEverything()
         tickDetectsAvailabilityLoss()
         deliveryDropsSupersededReports()
+        offlineReasonClassifiesLidAndSleep()
+        pausesWhileDisplayIsOffAndResumesWithFreshLevel()
         print("Built-in brightness monitor tests passed")
     }
 
@@ -434,5 +436,57 @@ private struct BuiltInBrightnessMonitorTests {
         h.monitor.deliver(reportAvailable(46), seq: 3)
         expect(h.log.reports == [reportAvailable(45, calibrating: true), reportAvailable(46)],
                "positive control: a higher sequence number is still delivered")
+    }
+
+    private static func offlineReasonClassifiesLidAndSleep() {
+        // A closed lid takes precedence over the built-in display lookup.
+        expect(DisplayServicesBackend.offlineReason(builtInFound: false, lidClosed: true,
+                                                    online: false, active: false, asleep: false) == .displayOffline,
+               "a closed lid with no built-in display is offline, not missing")
+        expect(DisplayServicesBackend.offlineReason(builtInFound: false, lidClosed: false,
+                                                    online: false, active: false, asleep: false) == .noBuiltInDisplay,
+               "an open lid with no built-in display reports the missing display")
+        expect(DisplayServicesBackend.offlineReason(builtInFound: true, lidClosed: false,
+                                                    online: true, active: true, asleep: true) == .displayOffline,
+               "an asleep built-in display is offline")
+        expect(DisplayServicesBackend.offlineReason(builtInFound: true, lidClosed: false,
+                                                    online: true, active: false, asleep: false) == .displayOffline,
+               "an inactive built-in display is offline")
+        expect(DisplayServicesBackend.offlineReason(builtInFound: true, lidClosed: false,
+                                                    online: true, active: true, asleep: false) == nil,
+               "an online, active, awake built-in display has no offline reason")
+        expect(DisplayServicesBackend.offlineReason(builtInFound: true, lidClosed: true,
+                                                    online: true, active: true, asleep: false) == .displayOffline,
+               "a closed lid is offline even when everything else is healthy")
+    }
+
+    private static func pausesWhileDisplayIsOffAndResumesWithFreshLevel() {
+        let h = Harness()
+        h.backend.level = 40
+        h.monitor.start()
+        h.monitor.setEnabled(true)
+        expect(h.scheduler.liveRepeating == 1 && h.log.reports.last == reportAvailable(40),
+               "positive control: enabling arms the timer and reports 40")
+
+        h.backend.statusValue = BuiltInDisplayStatus(available: false, reason: .displayOffline, displayID: 1)
+        let readsBeforeOffline = h.backend.reads
+        h.monitor.refreshAvailability()
+        expect(h.log.reports.last == reportUnavailable(.displayOffline) && h.log.reports.count == 3,
+               "a display going offline reports the reason at once")
+        expect(h.scheduler.liveRepeating == 0 && h.backend.reads == readsBeforeOffline,
+               "a display going offline cancels the timer and reads nothing")
+
+        h.monitor.refreshAvailability()
+        expect(h.log.reports.count == 3, "unchanged offline status reports nothing")
+
+        h.backend.statusValue = BuiltInDisplayStatus(available: true, reason: nil, displayID: 1)
+        h.backend.level = 60
+        h.monitor.refreshAvailability()
+        expect(h.log.reports.last == reportAvailable(60) && h.log.reports.count == 4,
+               "a display coming back reports the fresh level at once")
+        expect(h.scheduler.liveRepeating == 1, "a display coming back restarts the timer")
+
+        h.monitor.refreshAvailability()
+        expect(h.log.reports.count == 4, "unchanged availability after return reports nothing")
     }
 }
