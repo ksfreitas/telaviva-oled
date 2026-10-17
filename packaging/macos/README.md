@@ -33,6 +33,19 @@ license texts, including ONNX Runtime notices and the DDC transport attribution,
 are included in `Contents/Resources/ThirdPartyLicenses/`. The app's MIT license
 is included separately at `Contents/Resources/LICENSE`.
 
+## Xcode project
+
+The Xcode project at `native/macos/TelaViva.xcodeproj` links the Rust libraries
+from `target/`, but it has no Rust build phase. Run the Cargo build for the
+selected configuration from the repository root first:
+
+- Debug: `cargo build --workspace --locked`
+- Release: `cargo build --workspace --release --target aarch64-apple-darwin --locked`
+
+The Xcode project does not bundle the ONNX Runtime, the models or the licenses,
+so `./scripts/build-macos.sh` remains the verified build path (see
+[ADR 0009](../../adr/0009-app-icons-liquid-glass-and-presence-status-icon.md)).
+
 ## Permissions
 
 Keyboard routing needs both Accessibility and Input Monitoring under System

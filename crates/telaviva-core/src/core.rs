@@ -71,6 +71,8 @@ struct Action {
 pub struct Core {
     settings: Settings,
     config_path: Option<PathBuf>,
+    // Accepted by tv_create for ABI compatibility; no longer affects snapshot content.
+    #[allow(dead_code)]
     os_locale: String,
     monitors: BTreeMap<String, Monitor>,
     connection_generations: BTreeMap<String, u64>,
@@ -1338,7 +1340,7 @@ impl Core {
             "face" => json!(self.last_presence),
             _ => Value::Null,
         };
-        let value = json!({"revision":self.revision,"settings":self.settings,"messages":self.localized_messages(),"monitors":monitors,"pending_actions":actions,
+        let value = json!({"revision":self.revision,"settings":self.settings,"monitors":monitors,"pending_actions":actions,
             "ambient":{"enabled":self.settings.ambient_follow_enabled,"available":self.builtin_available,"active":self.settings.ambient_follow_enabled&&self.builtin_available,"calibrating":self.calibrating,"builtin_percent":self.builtin_percent},
             "camera":{"mode":camera_mode,"capture_mode":capture_mode,"status":self.camera_status,"display_status":display_status,"next_sample_in_ms":if camera_mode=="disabled"||camera_mode=="suspended"{Value::Null}else{json!(cadence)},"generation":self.camera_generation,"presence":presence},
             "power":{"on_battery":self.on_battery},"screensaver":{"state":self.saver_state},"status":"ready"});
@@ -1347,31 +1349,6 @@ impl Core {
             return Err("snapshot exceeds 8 MiB".into());
         }
         Ok(value)
-    }
-
-    fn localized_messages(&self) -> BTreeMap<String, String> {
-        let locale = match self.settings.locale.as_str() {
-            "pt-BR" => "pt-BR",
-            "en-US" => "en-US",
-            _ if self.os_locale.to_ascii_lowercase().starts_with("pt") => "pt-BR",
-            _ => "en-US",
-        };
-        let source = if locale == "pt-BR" {
-            include_str!("../../../locales/pt-BR.ftl")
-        } else {
-            include_str!("../../../locales/en-US.ftl")
-        };
-        source
-            .lines()
-            .filter_map(|line| {
-                let line = line.trim();
-                if line.is_empty() || line.starts_with('#') {
-                    return None;
-                }
-                let (key, value) = line.split_once('=')?;
-                Some((key.trim().to_owned(), value.trim().to_owned()))
-            })
-            .collect()
     }
 }
 

@@ -1,181 +1,238 @@
 import Foundation
 
-/// Queue-confined lifecycle policy shared by the camera adapter and hardware-free tests.
+/// Camera session timing for the macOS shell. The policy lives in the Rust core
+/// (`crates/telaviva-core/src/camera_lifecycle.rs`) behind an opaque `TvCameraLifecycle` handle.
+/// Each call encodes one JSON event, runs `tv_camera_lifecycle_step` and caches the `state` that the
+/// core returns, so the properties always report the state from the last successful call.
 /// Time is supplied by the caller from one monotonic clock domain.
-struct CameraLifecycle {
+///
+/// The camera adapter mutates this object only on its queue. A failed call (a non-TV_OK status, an
+/// undecodable result or an event the core rejects) is a programmer error. That call returns its stop
+/// value and the wrapper faults for good: every later call returns its stop value, so a broken ABI can
+/// stop the camera but never restart it.
+final class CameraLifecycle {
+    /// What the shell does with one camera frame. Decoded from the `value` string of a `frame` result.
     enum FrameDecision: Equatable {
         case discardWarmup
         case assessLight
         case assessPresence
         case assessmentExpired
+
+        init?(resultValue: String) {
+            switch resultValue {
+            case "discard_warmup": self = .discardWarmup
+            case "assess_light": self = .assessLight
+            case "assess_presence": self = .assessPresence
+            case "assessment_expired": self = .assessmentExpired
+            default: return nil
+            }
+        }
     }
 
-    private(set) var generation: UInt64 = 0
-    private(set) var cameraID: String?
-    private(set) var mode = "disabled"
-    private(set) var captureMode = "single_frame"
-    private(set) var alwaysOn = false
-    private(set) var settlingUntil: TimeInterval?
-    private(set) var assessmentDeadline: TimeInterval?
-    private(set) var acquisitionDeadline: TimeInterval?
-    private(set) var assessmentToken: UInt64 = 0
-    private(set) var darkSettleUsed = false
+    #if TELAVIVA_CORE
+    private let handle: OpaquePointer?
+    #endif
+    private var cached = LifecycleState.idle
+    private var faulted = false
 
-    var eligible: Bool { mode == "face" || mode == "light_only" }
-    var acquisitionPending: Bool { acquisitionDeadline != nil }
-    var shouldKeepSession: Bool {
-        eligible && alwaysOn && (captureMode == "continuous_monitoring" || captureMode == "continuous_return")
-    }
-    func acceptsCallback(generation callbackGeneration: UInt64) -> Bool {
-        eligible && callbackGeneration == generation
+    var generation: UInt64 { cached.generation }
+    var cameraID: String? { cached.cameraID }
+    var mode: String { cached.mode }
+    var captureMode: String { cached.captureMode }
+    var alwaysOn: Bool { cached.alwaysOn }
+    var settlingUntil: TimeInterval? { cached.settlingUntil }
+    var assessmentDeadline: TimeInterval? { cached.assessmentDeadline }
+    var acquisitionDeadline: TimeInterval? { cached.acquisitionDeadline }
+    var assessmentToken: UInt64 { cached.assessmentToken }
+    var eligible: Bool { cached.eligible }
+    var acquisitionPending: Bool { cached.acquisitionPending }
+    var shouldKeepSession: Bool { cached.shouldKeepSession }
+
+    init() {
+        #if TELAVIVA_CORE
+        var created: OpaquePointer?
+        let status = tv_camera_lifecycle_create(&created)
+        handle = status == TV_OK ? created : nil
+        #endif
     }
 
-    /// Returns true when the existing session must be stopped before applying the new state.
-    mutating func reconcile(mode nextMode: String, captureMode nextCaptureMode: String,
-                            generation nextGeneration: UInt64, cameraID nextCameraID: String?,
-                            alwaysOn nextAlwaysOn: Bool) -> Bool {
-        let nextEligible = nextMode == "face" || nextMode == "light_only"
-        let unchanged = mode == nextMode && captureMode == nextCaptureMode && generation == nextGeneration
-            && cameraID == nextCameraID && alwaysOn == nextAlwaysOn
-        let sameCamera = cameraID == nextCameraID
-        let retainAlwaysOn = alwaysOn && nextAlwaysOn && nextEligible && sameCamera
-            && (nextCaptureMode == "continuous_monitoring" || nextCaptureMode == "continuous_return")
-        let retainReturn = captureMode == "continuous_return" && nextCaptureMode == "continuous_return"
-            && nextEligible && sameCamera
-        let stop = eligible && (!nextEligible || !sameCamera || (!unchanged && !retainAlwaysOn && !retainReturn))
-        mode = nextMode
-        captureMode = nextCaptureMode
-        generation = nextGeneration
-        cameraID = nextCameraID
-        alwaysOn = nextAlwaysOn
-        if stop { cancelDeadlines() }
+    deinit {
+        #if TELAVIVA_CORE
+        if let handle { tv_camera_lifecycle_destroy(handle) }
+        #endif
+    }
+
+    /// Applies a new snapshot from the core. Returns true when the existing session must be stopped
+    /// before the new state is used. A failed call returns true.
+    func reconcile(mode nextMode: String, captureMode nextCaptureMode: String,
+                   generation nextGeneration: UInt64, cameraID nextCameraID: String?,
+                   alwaysOn nextAlwaysOn: Bool) -> Bool {
+        let cameraValue: Any = nextCameraID ?? NSNull()
+        guard let stop = booleanResult([
+            "type": "reconcile", "mode": nextMode, "capture_mode": nextCaptureMode,
+            "generation": nextGeneration, "camera_id": cameraValue, "always_on": nextAlwaysOn
+        ]) else { return true }
         return stop
     }
 
-    mutating func beginAcquisition(now: TimeInterval, timeout: TimeInterval = 5) {
-        darkSettleUsed = false
-        acquisitionDeadline = now + timeout
+    func beginAcquisition(now: TimeInterval) {
+        acknowledge(["type": "begin_acquisition", "now": now])
     }
 
-    mutating func acquiredFrame() { acquisitionDeadline = nil }
-
-    /// Each low-light request gets five seconds of exposure settling and then a fresh
-    /// five-second deadline for a post-settle frame.
-    mutating func beginLightAssessment(now: TimeInterval, settling: TimeInterval = 5,
-                                      frameTimeout: TimeInterval = 5) {
-        assessmentToken &+= 1
-        settlingUntil = now + settling
-        assessmentDeadline = now + settling + frameTimeout
+    func acquiredFrame() {
+        acknowledge(["type": "acquired_frame"])
     }
 
-    /// Face-mode dark frames get one five-second settle per sample. Returns true when the settle
-    /// started, so the caller keeps the session open; false when the dark result is final.
-    mutating func beginDarkSettle(now: TimeInterval, settling: TimeInterval = 5,
-                                  frameTimeout: TimeInterval = 5) -> Bool {
-        guard mode == "face", !darkSettleUsed else { return false }
-        darkSettleUsed = true
-        assessmentToken &+= 1
-        settlingUntil = now + settling
-        assessmentDeadline = now + settling + frameTimeout
-        return true
+    func beginLightAssessment(now: TimeInterval) {
+        acknowledge(["type": "begin_light_assessment", "now": now])
+    }
+
+    /// Returns true when the dark settle started, so the caller keeps the session open. Returns false
+    /// when the dark result is final for this sample, and also after a failed call.
+    func beginDarkSettle(now: TimeInterval) -> Bool {
+        booleanResult(["type": "begin_dark_settle", "now": now]) ?? false
     }
 
     func isCurrentAssessment(_ token: UInt64) -> Bool {
-        token == assessmentToken && assessmentDeadline != nil
+        booleanResult(["type": "is_current_assessment", "token": token]) ?? false
     }
 
-    mutating func frame(at now: TimeInterval) -> FrameDecision {
-        if let assessmentDeadline, now >= assessmentDeadline {
-            cancelDeadlines()
+    /// Classifies a frame that arrived at `now`. A failed call returns `.assessmentExpired`, which stops capture.
+    func frame(at now: TimeInterval) -> FrameDecision {
+        guard let value = stringResult(["type": "frame", "now": now]) else { return .assessmentExpired }
+        guard let decision = FrameDecision(resultValue: value) else {
+            markFaulted()
             return .assessmentExpired
         }
-        if let settlingUntil, now < settlingUntil { return .discardWarmup }
-        settlingUntil = nil
-        assessmentDeadline = nil
-        acquisitionDeadline = nil
-        return mode == "light_only" ? .assessLight : .assessPresence
+        return decision
     }
 
-    mutating func timedOut(at now: TimeInterval) -> Bool {
-        if let deadline = acquisitionDeadline, now >= deadline {
-            cancelDeadlines()
-            return true
+    /// Returns true when a deadline has passed. A failed call returns true, so the session stops.
+    func timedOut(at now: TimeInterval) -> Bool {
+        booleanResult(["type": "timed_out", "now": now]) ?? true
+    }
+
+    func cancelDeadlines() {
+        acknowledge(["type": "cancel_deadlines"])
+    }
+
+    /// True when a callback tagged with `callbackGeneration` belongs to the current eligible session.
+    /// A failed call returns false.
+    func acceptsCallback(generation callbackGeneration: UInt64) -> Bool {
+        booleanResult(["type": "accepts_callback", "generation": callbackGeneration]) ?? false
+    }
+
+    /// Encodes one event, runs one core step and returns the core's `value`. Returns nil on any failure.
+    /// The cached state is replaced only when the whole result decodes, so a failed call leaves it unchanged.
+    private func send(_ event: [String: Any]) -> StepValue? {
+        #if TELAVIVA_CORE
+        guard !faulted, let handle, JSONSerialization.isValidJSONObject(event),
+              let bytes = try? JSONSerialization.data(withJSONObject: event) else { return nil }
+        var buffer = TvBuffer(data: nil, len: 0)
+        defer { tv_buffer_free(&buffer) }
+        let status = bytes.withUnsafeBytes { raw in
+            tv_camera_lifecycle_step(handle, raw.baseAddress?.assumingMemoryBound(to: UInt8.self), raw.count, &buffer)
         }
-        if let deadline = assessmentDeadline, now >= deadline {
-            cancelDeadlines()
-            return true
+        guard status == TV_OK, let data = buffer.data,
+              let result = try? JSONDecoder().decode(StepResult.self, from: Data(bytes: data, count: buffer.len)) else {
+            return nil
         }
-        return false
+        cached = result.state
+        return result.value
+        #else
+        return nil
+        #endif
     }
 
-    mutating func cancelDeadlines() {
-        assessmentToken &+= 1
-        settlingUntil = nil
-        assessmentDeadline = nil
-        acquisitionDeadline = nil
-        darkSettleUsed = false
+    /// Sends an event whose `value` is a Boolean. Any other outcome faults the wrapper and returns nil.
+    private func booleanResult(_ event: [String: Any]) -> Bool? {
+        guard case .bool(let flag)? = send(event) else {
+            markFaulted()
+            return nil
+        }
+        return flag
+    }
+
+    /// Sends an event whose `value` is a string. Any other outcome faults the wrapper and returns nil.
+    private func stringResult(_ event: [String: Any]) -> String? {
+        guard case .text(let text)? = send(event) else {
+            markFaulted()
+            return nil
+        }
+        return text
+    }
+
+    /// Sends an event that has no value. Any other outcome faults the wrapper.
+    private func acknowledge(_ event: [String: Any]) {
+        if case .null? = send(event) { return }
+        markFaulted()
+    }
+
+    /// Stops the camera for good: the cached state reports an idle lifecycle and every later call returns
+    /// its stop value.
+    private func markFaulted() {
+        faulted = true
+        cached = LifecycleState.idle
     }
 }
 
-/// Frame rate of a retained capture session, in frames per second. It is set once, right after the session
-/// starts, and never changed while the session runs: changing the rate of a running camera restarts its
-/// stream and makes the camera LED blink. Matched to the nearest rate the camera supports.
-let sessionFrameRate: Double = 2
+/// The `value` of a step result: a Boolean, a frame-decision name, or null for events without a value.
+private enum StepValue: Decodable {
+    case bool(Bool)
+    case text(String)
+    case null
 
-/// One supported frame-rate range of a capture format, in frames per second. Cameras may expose several
-/// ranges, each continuous (15...30) or a single discrete rate (min == max, such as 15.000015).
-struct FrameRateRange: Equatable {
-    let minimum: Double
-    let maximum: Double
-}
-
-/// Where a chosen rate sits in its range. At an edge the caller must use the device's own duration value for
-/// that edge, because a rate rounded to a rational can land just outside the supported duration range, and
-/// AVFoundation raises an uncatchable Objective-C exception for that.
-enum FrameRateEdge: Equatable {
-    case inside
-    case minimum
-    case maximum
-}
-
-struct FrameRateChoice: Equatable {
-    let rangeIndex: Int
-    let rate: Double
-    let edge: FrameRateEdge
-}
-
-/// Within this many frames per second of a range edge, the edge itself is used.
-let frameRateEdgeTolerance: Double = 0.01
-
-/// Picks the supported range and rate closest to the target, or nil when no range is usable.
-/// Ranges that are non-finite, non-positive or inverted are skipped. Ties prefer the lower rate, then the lower index.
-func chooseFrameRate(target: Double = sessionFrameRate, ranges: [FrameRateRange]) -> FrameRateChoice? {
-    var best: FrameRateChoice?
-    var bestDistance = Double.infinity
-    for (index, range) in ranges.enumerated() {
-        guard range.minimum.isFinite, range.maximum.isFinite, range.minimum > 0,
-              range.minimum <= range.maximum else { continue }
-        let candidate: FrameRateChoice
-        if target <= range.minimum + frameRateEdgeTolerance {
-            candidate = FrameRateChoice(rangeIndex: index, rate: range.minimum, edge: .minimum)
-        } else if target >= range.maximum - frameRateEdgeTolerance {
-            candidate = FrameRateChoice(rangeIndex: index, rate: range.maximum, edge: .maximum)
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else if let flag = try? container.decode(Bool.self) {
+            self = .bool(flag)
         } else {
-            candidate = FrameRateChoice(rangeIndex: index, rate: target, edge: .inside)
-        }
-        let distance = abs(candidate.rate - target)
-        if distance < bestDistance || (distance == bestDistance && candidate.rate < (best?.rate ?? .infinity)) {
-            best = candidate
-            bestDistance = distance
+            self = .text(try container.decode(String.self))
         }
     }
-    return best
 }
 
-/// Frame duration for a rate as a rational (value / timescale seconds) that stays free of CoreMedia.
-/// Uses a fixed value of 1000 so fractional rates such as 7.5 fps stay exact. A non-finite or
-/// non-positive rate falls back to the session rate.
-func frameDuration(forRate rate: Double) -> (value: Int64, timescale: Int32) {
-    let safe = (rate.isFinite && rate > 0) ? rate : sessionFrameRate
-    return (1000, Int32((safe * 1000).rounded()))
+/// One step result: `{"value": ..., "state": {...}}`.
+private struct StepResult: Decodable {
+    let value: StepValue
+    let state: LifecycleState
+}
+
+/// The flat `state` object that the core returns after every step. Field names follow the core's JSON.
+private struct LifecycleState: Decodable {
+    let generation: UInt64
+    let cameraID: String?
+    let mode: String
+    let captureMode: String
+    let alwaysOn: Bool
+    let eligible: Bool
+    let acquisitionPending: Bool
+    let shouldKeepSession: Bool
+    let settlingUntil: TimeInterval?
+    let assessmentDeadline: TimeInterval?
+    let acquisitionDeadline: TimeInterval?
+    let assessmentToken: UInt64
+
+    /// Nothing is scheduled and no session is kept. Used before the first step and after a fault.
+    static let idle = LifecycleState(
+        generation: 0, cameraID: nil, mode: "disabled", captureMode: "single_frame", alwaysOn: false,
+        eligible: false, acquisitionPending: false, shouldKeepSession: false, settlingUntil: nil,
+        assessmentDeadline: nil, acquisitionDeadline: nil, assessmentToken: 0)
+
+    enum CodingKeys: String, CodingKey {
+        case generation
+        case cameraID = "camera_id"
+        case mode
+        case captureMode = "capture_mode"
+        case alwaysOn = "always_on"
+        case eligible
+        case acquisitionPending = "acquisition_pending"
+        case shouldKeepSession = "should_keep_session"
+        case settlingUntil = "settling_until"
+        case assessmentDeadline = "assessment_deadline"
+        case acquisitionDeadline = "acquisition_deadline"
+        case assessmentToken = "assessment_token"
+    }
 }

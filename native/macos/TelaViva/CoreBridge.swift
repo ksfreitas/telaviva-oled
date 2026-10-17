@@ -272,14 +272,13 @@ final class CoreBridge: ObservableObject {
 struct CoreSnapshot: Decodable {
     var revision: UInt64?
     var settings: CoreSettings?
-    var messages: [String: String]?
     var monitors: [CoreMonitor]?
     var pending_actions: [PendingAction]?
     var camera: CameraSnapshot?
     var ambient: CoreAmbient?
-    static let unavailable = CoreSnapshot(revision: nil, settings: nil, messages: nil, monitors: [], pending_actions: [], camera: nil)
-    private init(revision: UInt64?, settings: CoreSettings?, messages: [String: String]?, monitors: [CoreMonitor]?, pending_actions: [PendingAction]?, camera: CameraSnapshot?) {
-        self.revision = revision; self.settings = settings; self.messages = messages; self.monitors = monitors
+    static let unavailable = CoreSnapshot(revision: nil, settings: nil, monitors: [], pending_actions: [], camera: nil)
+    private init(revision: UInt64?, settings: CoreSettings?, monitors: [CoreMonitor]?, pending_actions: [PendingAction]?, camera: CameraSnapshot?) {
+        self.revision = revision; self.settings = settings; self.monitors = monitors
         self.pending_actions = pending_actions; self.camera = camera
     }
 }

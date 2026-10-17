@@ -10,7 +10,7 @@ struct MonitorPopup: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Label(AppText.string("app", locale: core.snapshot.settings?.locale, messages: core.snapshot.messages), systemImage: "display.2")
+                Label(AppText.string("app", locale: core.snapshot.settings?.locale), systemImage: "display.2")
                     .font(.headline)
                 Spacer()
                 Button { core.refresh(); refreshDisplays() } label: { Image(systemName: "arrow.clockwise") }
@@ -29,17 +29,17 @@ struct MonitorPopup: View {
                     screenCap: PopupLayout.listCap(visibleScreenHeight: NSScreen.main?.visibleFrame.height ?? 800)))
                 .onPreferenceChange(PopupCardHeightsKey.self) { cardHeights = $0 }
             } else {
-                ContentUnavailableView(AppText.string("noDisplays", locale: core.snapshot.settings?.locale, messages: core.snapshot.messages), systemImage: "display", description: Text(AppText.string("ddcUnavailable", locale: core.snapshot.settings?.locale, messages: core.snapshot.messages)))
+                ContentUnavailableView(AppText.string("noDisplays", locale: core.snapshot.settings?.locale), systemImage: "display", description: Text(AppText.string("ddcUnavailable", locale: core.snapshot.settings?.locale)))
                     .frame(maxWidth: .infinity, minHeight: 210)
             }
             if core.snapshot.revision == nil {
-                Label(AppText.string("coreUnavailable", locale: core.snapshot.settings?.locale, messages: core.snapshot.messages), systemImage: "exclamationmark.triangle")
+                Label(AppText.string("coreUnavailable", locale: core.snapshot.settings?.locale), systemImage: "exclamationmark.triangle")
                     .font(.caption).foregroundStyle(.secondary)
             }
             HStack {
                 Text(cameraStatus).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 Spacer()
-                Button(AppText.string("settings", locale: core.snapshot.settings?.locale, messages: core.snapshot.messages), action: openSettings)
+                Button(AppText.string("settings", locale: core.snapshot.settings?.locale), action: openSettings)
                 Button(AppText.string("quit", locale: core.snapshot.settings?.locale)) { NSApp.terminate(nil) }.keyboardShortcut("q")
             }
         }
@@ -48,7 +48,7 @@ struct MonitorPopup: View {
     }
 
     private var cameraStatus: String {
-        "\(AppText.string("camera", locale: core.snapshot.settings?.locale, messages: core.snapshot.messages)): \(AppText.cameraStatus(core.snapshot, locale: core.snapshot.settings?.locale))"
+        "\(AppText.string("camera", locale: core.snapshot.settings?.locale)): \(AppText.cameraStatus(core.snapshot, locale: core.snapshot.settings?.locale))"
     }
 }
 
@@ -67,9 +67,9 @@ private struct MonitorControls: View {
                 }
             }
             if !isFollowed {
-                control(AppText.string("brightness", locale: core.snapshot.settings?.locale, messages: core.snapshot.messages), value: monitor.brightness, feature: .brightness)
+                control(AppText.string("brightness", locale: core.snapshot.settings?.locale), value: monitor.brightness, feature: .brightness)
             }
-            control(AppText.string("volume", locale: core.snapshot.settings?.locale, messages: core.snapshot.messages), value: monitor.volume, feature: .volume)
+            control(AppText.string("volume", locale: core.snapshot.settings?.locale), value: monitor.volume, feature: .volume)
             if core.snapshot.settings?.screensaver_protection_enabled == true, monitor.protected != false {
                 screensaverTarget
             }
@@ -89,7 +89,7 @@ private struct MonitorControls: View {
         let enabled = maximum.map { $0 > 0 } ?? false
         let target = min(core.snapshot.settings?.screensaver_targets[monitor.id] ?? 0, maximum ?? 0)
         return HStack(spacing: 8) {
-            rowLabel(AppText.string("protectionBrightness", locale: core.snapshot.settings?.locale, messages: core.snapshot.messages))
+            rowLabel(AppText.string("protectionBrightness", locale: core.snapshot.settings?.locale))
             Slider(value: Binding(get: {
                 min(core.snapshot.settings?.screensaver_targets[monitor.id] ?? 0, maximum ?? 0)
             }, set: { value in
@@ -103,7 +103,7 @@ private struct MonitorControls: View {
     }
 
     private var protectionToggle: some View {
-        let title = AppText.string("protection.monitor.toggle", locale: core.snapshot.settings?.locale, messages: core.snapshot.messages)
+        let title = AppText.string("protection.monitor.toggle", locale: core.snapshot.settings?.locale)
         return Toggle(isOn: Binding(get: {
             monitor.protected ?? true
         }, set: { enabled in

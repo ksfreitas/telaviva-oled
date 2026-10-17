@@ -10,6 +10,7 @@ extern "C" {
 
 #define TV_CORE_ABI_VERSION 1u
 typedef struct TvCore TvCore;
+typedef struct TvCameraLifecycle TvCameraLifecycle;
 typedef struct TvBuffer { uint8_t *data; size_t len; } TvBuffer;
 typedef void (*TvSnapshotReady)(uint64_t revision, void *userdata);
 
@@ -19,7 +20,10 @@ uint32_t tv_abi_version(void);
 /* options is UTF-8 JSON: {"config_path":"...","os_locale":"pt-BR"}; NULL/0 selects defaults. */
 int32_t tv_create(uint32_t abi_version, const uint8_t *options, size_t options_len,
                   TvSnapshotReady callback, void *userdata, TvCore **out_core);
-/* Submit a UTF-8 JSON event/command; maximum input length is 64 KiB. */
+/* Submit a UTF-8 JSON event/command; maximum input length is 64 KiB.
+ * After tv_shutdown, the null and size checks still run first, then TV_CLOSED is returned for
+ * every input except a JSON object whose "type" is "hardware_result", which is still passed to
+ * the core. Malformed JSON also returns TV_CLOSED after shutdown. */
 int32_t tv_submit(TvCore *core, const uint8_t *json, size_t json_len);
 /* Copies a revisioned UTF-8 JSON snapshot into a Rust-owned buffer (maximum 8 MiB).
  * pending_actions are dispatched asynchronously by the native host. Automatic
@@ -30,8 +34,27 @@ int32_t tv_snapshot(TvCore *core, TvBuffer *out_buffer);
 /* Stops accepting commands, emits best-effort owned-value restore actions, and drains callbacks. */
 int32_t tv_shutdown(TvCore *core);
 void tv_destroy(TvCore *core);
-/* Frees and zeroes a buffer returned by tv_snapshot. */
+/* Frees and zeroes a buffer returned by tv_snapshot or tv_camera_lifecycle_step. */
 void tv_buffer_free(TvBuffer *buffer);
+
+/* Camera session timing, additive to ABI version 1. The core reads no clock: the shell passes
+ * "now" in seconds, from its own monotonic clock, with every time-dependent event. Events are
+ * UTF-8 JSON objects with a "type" member: reconcile {mode, capture_mode, generation, camera_id,
+ * always_on}, begin_acquisition {now}, acquired_frame, begin_light_assessment {now},
+ * begin_dark_settle {now}, is_current_assessment {token}, frame {now}, timed_out {now},
+ * cancel_deadlines, accepts_callback {generation}. Each result is {"value": ..., "state": {...}}. */
+/* Creates a lifecycle in the inactive state (mode "disabled", no timers). Returns
+ * TV_INVALID_ARGUMENT when out_lifecycle is NULL. */
+int32_t tv_camera_lifecycle_create(TvCameraLifecycle **out_lifecycle);
+/* Applies one JSON event and copies its result into out_buffer. The maximum input length is
+ * 64 KiB; a longer input returns TV_SIZE_LIMIT. Malformed JSON, an unknown type or an unknown
+ * field returns TV_INVALID_ARGUMENT. Both failures leave the lifecycle unchanged and write no
+ * buffer. A handle poisoned by an earlier panic returns TV_INTERNAL. Free a written buffer with
+ * tv_buffer_free. */
+int32_t tv_camera_lifecycle_step(TvCameraLifecycle *lifecycle, const uint8_t *json,
+                                 size_t json_len, TvBuffer *out_buffer);
+/* Destroys a lifecycle handle; NULL is ignored. */
+void tv_camera_lifecycle_destroy(TvCameraLifecycle *lifecycle);
 
 #ifdef __cplusplus
 }

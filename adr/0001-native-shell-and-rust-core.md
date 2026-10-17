@@ -26,3 +26,7 @@ The first implementation groups policy in `core.rs`, settings in `settings.rs`, 
 ## Validation limits
 
 Rust tests and coverage establish automated policy/inference evidence. They do not establish universal DDC support, simultaneous camera sharing, screensaver startup reconciliation, live face recall, accelerated energy savings, or release readiness. See the current [validation reports](../specs/archived/external-monitor-control-and-oled-presence-protection/validation/results.md) and [implementation plan](../specs/archived/external-monitor-control-and-oled-presence-protection/plan.md).
+
+## Amendment 2026-10-17: Locale catalogs
+
+The statement in Consequences that static locale catalogs cover current messages is partially superseded by [ADR 0015](0015-native-shells-own-ui-strings.md), and the rest of this record remains in force.

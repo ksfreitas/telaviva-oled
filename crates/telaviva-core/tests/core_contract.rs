@@ -520,24 +520,23 @@ fn actions_serialize_per_monitor_and_ignore_wrong_generation_acknowledgements() 
 }
 
 #[test]
-fn locale_catalogs_have_matching_keys_and_auto_locale_uses_native_locale() {
-    fn keys(src: &str) -> std::collections::BTreeSet<String> {
-        src.lines()
-            .filter_map(|line| line.split_once('=').map(|(key, _)| key.trim().to_owned()))
-            .collect()
-    }
-    let en = include_str!("../../../locales/en-US.ftl");
-    let pt = include_str!("../../../locales/pt-BR.ftl");
-    assert_eq!(keys(en), keys(pt));
+fn snapshot_omits_messages_and_locale_setting_still_validates() {
+    // os_locale is still accepted by Core::new but no longer changes the snapshot.
     let core = Core::new(CoreOptions {
         os_locale: Some("pt_BR".into()),
         ..CoreOptions::default()
     })
     .unwrap();
-    assert_eq!(
-        core.snapshot_value().unwrap()["messages"]["status-ready"],
-        "Pronto"
-    );
+    assert!(core.snapshot_value().unwrap().get("messages").is_none());
+    for locale in ["auto", "en-US", "pt-BR"] {
+        let text = format!(r#"{{"schema_version":1,"locale":"{locale}"}}"#);
+        assert!(
+            Settings::from_json(text.as_bytes()).is_ok(),
+            "{locale} should validate"
+        );
+    }
+    let invalid = Settings::from_json(br#"{"schema_version":1,"locale":"fr-FR"}"#);
+    assert_eq!(invalid.err().as_deref(), Some("unsupported locale"));
 }
 
 #[test]

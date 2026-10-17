@@ -67,6 +67,8 @@ jobs:
         run: cargo +stable build --workspace --release --target aarch64-apple-darwin --locked
       - name: Test asynchronous Rust bridge
         run: tools/tests/test-core-bridge.sh
+      - name: Test camera lifecycle bridge
+        run: tools/tests/test-camera-lifecycle-bridge.sh
       - name: Fetch pinned Apple Silicon ONNX Runtime
         run: tools/inference/fetch-macos-runtime.sh
       - name: Package native macOS app

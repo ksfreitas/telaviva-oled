@@ -11,7 +11,7 @@ Implementation is in progress. The repository contains a Cargo workspace, shared
 - `ARCHITECTURE.md`: intended architecture, requirements, unresolved design questions, and CodeAdvisor conventions.
 - `CHANGELOG.md`: release history, starting with Unreleased.
 - `adr/`: permanent architecture decision records.
-- `specs/oled-monitor-protection/`: requirements, technical architecture, and runtime contracts for the initial application.
+- `specs/oled-monitor-protection/`: holds only navigation pointers to archived records for the initial application's requirements, technical architecture, and runtime contracts.
 - `crates/telaviva-core/`: shared policy, settings and native-shell C ABI.
 - `crates/telaviva-inference/`: image quality assessment and local YuNet/ONNX detection.
 - `native/macos/`: native SwiftUI/AppKit shell and macOS device adapters.
@@ -24,7 +24,7 @@ Implementation is in progress. The repository contains a Cargo workspace, shared
 - Presence means detecting any face, without identifying a specific person or requiring face enrollment.
 - Keep intended behavior distinct from implemented and hardware-verified capabilities.
 - Determine monitor capabilities, platform limitations, and failure behavior during design; do not assume uniform DDC support.
-- Follow the selected design in `specs/oled-monitor-protection/architecture.md`: native SwiftUI/AppKit and WinUI 3 shells, one shared Rust core with a versioned C ABI, local YuNet inference through ONNX Runtime, and conditional low-energy acceleration.
+- Follow the selected design in `ARCHITECTURE.md`, `api.md` and the ADRs in `adr/` (especially `adr/0001-native-shell-and-rust-core.md`): native SwiftUI/AppKit and WinUI 3 shells, one shared Rust core with a versioned C ABI, local YuNet inference through ONNX Runtime, and conditional low-energy acceleration.
 - Use only open-source redistributed dependencies and assets. Initial macOS support targets Apple Silicon; Intel is deferred and DDC compatibility remains connection-specific, including on M1.
 - Follow the process conventions in ARCHITECTURE.md. Documentation and commit language default to en-US.
 

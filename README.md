@@ -57,6 +57,7 @@ tools/tests/test-popup-layout.sh
 tools/tests/test-builtin-brightness-monitor.sh
 tools/tests/test-ambient-calibration.sh
 tools/tests/test-core-bridge.sh
+tools/tests/test-camera-lifecycle-bridge.sh
 tools/tests/test-hardware-key-router.sh
 tools/tests/test-default-audio-output.sh
 tools/tests/test-media-key-probe.sh

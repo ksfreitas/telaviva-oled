@@ -1,3 +1,4 @@
+pub mod camera_lifecycle;
 mod core;
 pub mod ffi;
 mod settings;

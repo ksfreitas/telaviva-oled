@@ -1,3 +1,4 @@
+use crate::camera_lifecycle::{CameraLifecycle, StepError, MAX_EVENT_BYTES};
 use crate::{Core, CoreOptions};
 use serde::Deserialize;
 use std::{
@@ -36,6 +37,16 @@ pub struct TvCore {
 }
 unsafe impl Send for TvCore {}
 unsafe impl Sync for TvCore {}
+
+/// Opaque handle for camera session timing. The lifecycle is owned data behind a mutex, so
+/// the handle is `Send` and `Sync` on its own and needs no `unsafe impl`. The assertion below
+/// keeps that true: a future raw-pointer field would stop this from compiling.
+pub struct TvCameraLifecycle {
+    lifecycle: Mutex<CameraLifecycle>,
+}
+
+const fn assert_send_sync<T: Send + Sync>() {}
+const _: () = assert_send_sync::<TvCameraLifecycle>();
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -261,6 +272,84 @@ pub unsafe extern "C" fn tv_buffer_free(buffer: *mut TvBuffer) {
             drop(Box::from_raw(slice));
             b.data = ptr::null_mut();
             b.len = 0
+        }
+    }));
+}
+
+#[no_mangle]
+/// Creates a camera lifecycle handle in the inactive state (mode `disabled`, no timers).
+///
+/// # Safety
+/// `out` must point to a writable handle pointer.
+pub unsafe extern "C" fn tv_camera_lifecycle_create(out: *mut *mut TvCameraLifecycle) -> i32 {
+    guarded(|| {
+        if out.is_null() {
+            return TV_INVALID_ARGUMENT;
+        }
+        *out = Box::into_raw(Box::new(TvCameraLifecycle {
+            lifecycle: Mutex::new(CameraLifecycle::new()),
+        }));
+        TV_OK
+    })
+}
+
+#[no_mangle]
+/// Applies one UTF-8 JSON event and copies the JSON result into a Rust-owned buffer.
+///
+/// A rejected event returns `TV_INVALID_ARGUMENT` (or `TV_SIZE_LIMIT` when it is longer than
+/// 64 KiB), leaves the lifecycle unchanged and writes no buffer.
+///
+/// # Safety
+/// `handle` must be live; `json` must point to `len` readable bytes when non-null; `out` must
+/// point to a writable `TvBuffer`.
+pub unsafe extern "C" fn tv_camera_lifecycle_step(
+    handle: *mut TvCameraLifecycle,
+    json: *const u8,
+    len: usize,
+    out: *mut TvBuffer,
+) -> i32 {
+    guarded(|| {
+        if handle.is_null() || out.is_null() || (len > 0 && json.is_null()) {
+            return TV_INVALID_ARGUMENT;
+        }
+        if len > MAX_EVENT_BYTES {
+            return TV_SIZE_LIMIT;
+        }
+        let h = &*handle;
+        let input = if len == 0 {
+            &[][..]
+        } else {
+            slice::from_raw_parts(json, len)
+        };
+        let result = {
+            let Ok(mut lifecycle) = h.lifecycle.lock() else {
+                return TV_INTERNAL;
+            };
+            lifecycle.step(input)
+        };
+        let text = match result {
+            Ok(text) => text,
+            Err(StepError::InputTooLarge { .. }) => return TV_SIZE_LIMIT,
+            Err(_) => return TV_INVALID_ARGUMENT,
+        };
+        let bytes = text.into_bytes().into_boxed_slice();
+        let written = bytes.len();
+        let ptr = Box::into_raw(bytes) as *mut u8;
+        (*out).data = ptr;
+        (*out).len = written;
+        TV_OK
+    })
+}
+
+#[no_mangle]
+/// Destroys a camera lifecycle handle. A null handle is ignored.
+///
+/// # Safety
+/// `handle` must be null or a live handle with no concurrent calls.
+pub unsafe extern "C" fn tv_camera_lifecycle_destroy(handle: *mut TvCameraLifecycle) {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        if !handle.is_null() {
+            drop(Box::from_raw(handle));
         }
     }));
 }

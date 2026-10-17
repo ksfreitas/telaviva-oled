@@ -4,10 +4,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-swiftc "$ROOT/native/macos/TelaViva/CameraLifecycle.swift" \
-  "$ROOT/native/macos/Tests/CameraLifecycleTests.swift" \
-  -o "$TMP/camera-lifecycle-tests"
-"$TMP/camera-lifecycle-tests"
+swiftc "$ROOT/native/macos/TelaViva/CameraFrameRate.swift" \
+  "$ROOT/native/macos/Tests/CameraFrameRateTests.swift" \
+  -o "$TMP/camera-frame-rate-tests"
+"$TMP/camera-frame-rate-tests"
 swiftc "$ROOT/native/macos/TelaViva/CameraSelection.swift" \
   "$ROOT/native/macos/Tests/CameraSelectionTests.swift" \
   -o "$TMP/camera-selection-tests"

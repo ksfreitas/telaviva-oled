@@ -576,6 +576,9 @@ fn sha256(input: &[u8]) -> String {
 }
 
 #[cfg(test)]
+mod header_contract_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

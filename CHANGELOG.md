@@ -12,6 +12,9 @@
 - A dimmed monitor that wakes while its DDC channel is not ready is now restored: a failed wake readback or restore write is retried up to three times while ownership of the dimmed value is kept, instead of dropping ownership and leaving the monitor at its dimmed brightness.
 - The camera status shown when display sleep suspends monitoring was missing its pt-BR text and now has it.
 - The macOS app now builds with older SDKs such as the macos-14 CI runner's: the camera connect and disconnect observers use the raw AVFoundation notification names instead of the `AVCaptureDevice.wasConnectedNotification` members that only newer SDKs provide.
+- Release builds of the macOS Xcode project link the `aarch64-apple-darwin` release Rust libraries under `target/aarch64-apple-darwin/release/` instead of the debug libraries in `target/debug/`; Debug still links `target/debug/`, and the packaging README lists the Rust build prerequisites for the Xcode project.
+- C header documentation is corrected: `tv_inference_detect_bgra` no longer lists `3` (unavailable), which only the create functions return, `tv_inference_create` lists its real return codes, and `tv_submit` documents when it returns `TV_CLOSED` after shutdown. These are comment-only changes with no ABI change.
+- Live documentation no longer points to the navigation stub `specs/oled-monitor-protection/architecture.md` as the design; it links to the permanent documents, `api.md`, the ADRs and the archived originals.
 
 ### Changed
 
@@ -27,6 +30,8 @@
 - Presence checking on macOS now stays off while every eligible monitor is at or below the brightness threshold, which defaults to 20%; lower the slider to 10% to keep protection at low brightness. Hardware acceptance is pending.
 - Calibration of external monitors against the MacBook screen is inverted: each point now sets the monitor to 25, 50, 75 or 100% of its brightness, the calibration slider sets the MacBook brightness, and the core inverts the saved points when following. Monitors calibrated with earlier development builds need recalibration. Calibration is refused, and a calibration in progress stops, while the MacBook screen is off or the lid is closed. Hardware checks are pending acceptance.
 - Ambient calibration points are now added and removed by the user (at least two, kept in ascending order); existing points are kept. Hardware checks are pending acceptance.
+- Camera session timing moves from the macOS shell into the Rust core: session retention, the acquisition and assessment deadlines, the warm-up and dark-settle windows, and the stale-callback check now run in `telaviva-core` behind the additive `TvCameraLifecycle` C ABI (`tv_camera_lifecycle_create`, `tv_camera_lifecycle_step` and `tv_camera_lifecycle_destroy`); ABI version stays 1. Swift keeps the timers, the monotonic clock and AVFoundation. Camera hardware acceptance is pending.
+- The core snapshot no longer carries the `messages` field, and the core's `.ftl` locale catalogs (`locales/en-US.ftl` and `locales/pt-BR.ftl`) are removed: each native shell owns its UI strings, while the core keeps the `locale` setting and returns status codes. `os_locale` is still accepted by `tv_create` but no longer affects snapshot content.
 
 ### Added
 
@@ -46,6 +51,7 @@
 - Finalized the camera lifecycle decision in ADR 0003 and archived its standalone plan and unrun macOS hardware acceptance checklist.
 - Corrected the macOS CI `lipo` invocation to verify the packaged arm64 executable.
 - Configurable presence brightness threshold on macOS: a Settings slider (10 to 90%, default 20%) sets the brightness an eligible monitor must be above for presence checking to run; hardware acceptance is pending.
+- Header contract tests: `crates/telaviva-core/tests/header_contract.rs` and `crates/telaviva-inference/src/header_contract_tests.rs` check `include/telaviva_core.h` and `include/telaviva_inference.h` against the Rust ABI (prototypes, struct fields, constants and opaque types), so header drift fails `cargo test` without a new dependency.
 
 - Baseline project documentation and CodeAdvisor conventions for the planned Rust application on macOS and Windows.
 

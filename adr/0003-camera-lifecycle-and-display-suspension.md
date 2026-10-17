@@ -81,3 +81,7 @@ This dated amendment adds decisions to the camera lifecycle contract above. The 
 
 - Status: implemented. Hardware CPU, energy, and frame-rate measurements are pending, so this amendment does not change the acceptance matrix.
 - The C ABI is unchanged.
+
+## Amendment 2026-10-17: Camera session timing in the core
+
+Session timing now lives in the core behind `TvCameraLifecycle` (see [ADR 0014](0014-camera-lifecycle-in-the-core.md)), and the decisions in this record remain in force.
