@@ -210,7 +210,8 @@ struct HardwareKeySequence {
                           displays: [HardwareKeyDisplay],
                           valueFor: (HardwareKeyDisplay, HardwareKeyFeature) -> Double?,
                           reserve: (HardwareKeyDisplay, HardwareKeyFeature, HardwareKeyEvent.Direction, Bool, Double) -> Bool,
-                          reserveMute: (HardwareKeyDisplay, Double) -> Bool = { _, _ in false }) -> Bool {
+                          reserveMute: (HardwareKeyDisplay, Double) -> Bool = { _, _ in false },
+                          followedBrightness: Set<String> = []) -> Bool {
         switch event.phase {
         case .up:
             guard let held = latches.removeValue(forKey: event.keyIdentity) else { return false }
@@ -254,6 +255,8 @@ struct HardwareKeySequence {
                       ? HardwareKeyPolicy.volumeTarget(defaultOutputUID: defaultOutputUID, displays: displays)
                       : HardwareKeyPolicy.target(at: pointer, displays: displays, feature: event.feature),
                   let monitorID = display.monitorID, let generation = display.generation,
+                  // A followed monitor keeps its brightness keys on macOS; volume and mute are never followed.
+                  !(event.feature == .brightness && followedBrightness.contains(monitorID)),
                   let value = valueFor(display, event.feature),
                   event.isMute ? reserveMute(display, value)
                                : reserve(display, event.feature, event.direction, event.isFineStep, value) else {
@@ -315,6 +318,8 @@ final class HardwareKeyRouter: ObservableObject {
     /// Configured whole-point steps; written by setSteps and read in reserveStep under stateLock.
     private var brightnessStep = HardwareKeyPolicy.defaultStep
     private var volumeStep = HardwareKeyPolicy.defaultStep
+    /// Monitors whose brightness keys pass through to macOS; written by setFollowedBrightnessDisplays under stateLock.
+    private var followedBrightnessDisplays = Set<String>()
     private var sequence = HardwareKeySequence()
     private var intents: [HardwareKeyIntentKey: HardwareKeyIntent] = [:]
     /// Volume level to restore on the next mute press; in memory only and bounded to 128 entries.
@@ -453,6 +458,15 @@ final class HardwareKeyRouter: ObservableObject {
         volumeStep = HardwareKeyPolicy.clampedStep(volume)
     }
 
+    /// Stores the monitors whose brightness keys pass through to macOS. Only the next key-down sees a change;
+    /// a press already latched keeps its outcome.
+    func setFollowedBrightnessDisplays(_ monitorIDs: Set<String>) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard !stopped else { return }
+        followedBrightnessDisplays = monitorIDs
+    }
+
     /// Call immediately before the matching manual core command is submitted.
     func manualControlChanged(monitorID: String, generation: UInt64, feature: HardwareKeyFeature, value: Double, revision: UInt64) {
         guard value.isFinite, (0...100).contains(value) else { return }
@@ -568,7 +582,8 @@ final class HardwareKeyRouter: ObservableObject {
                                        reserve: { [unowned self] display, feature, direction, fine, value in
                                            self.reserveStep(display: display, feature: feature, direction: direction, fine: fine, value: value)
                                        },
-                                       reserveMute: { [unowned self] display, value in self.reserveMute(display: display, value: value) })
+                                       reserveMute: { [unowned self] display, value in self.reserveMute(display: display, value: value) },
+                                       followedBrightness: followedBrightnessDisplays)
         stateLock.unlock()
         return handled
     }
@@ -707,7 +722,8 @@ final class HardwareKeyRouter: ObservableObject {
                                       reserve: { [unowned self] display, feature, direction, fine, value in
                                           self.reserveStep(display: display, feature: feature, direction: direction, fine: fine, value: value)
                                       },
-                                      reserveMute: { [unowned self] display, value in self.reserveMute(display: display, value: value) })
+                                      reserveMute: { [unowned self] display, value in self.reserveMute(display: display, value: value) },
+                                      followedBrightness: followedBrightnessDisplays)
         stateLock.unlock()
         return result ? nil : Unmanaged.passUnretained(event)
     }

@@ -6,6 +6,8 @@ use std::{
 };
 
 pub const MAX_CAMERA_HISTORY: usize = 8;
+const MAX_MONITOR_ENTRIES: usize = 128;
+const MAX_MONITOR_ID_BYTES: usize = 512;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -41,6 +43,52 @@ pub struct Settings {
     pub camera_history: Vec<String>,
     #[serde(default)]
     pub screensaver_targets: std::collections::BTreeMap<String, f64>,
+    #[serde(default)]
+    pub ambient_follow_enabled: bool,
+    #[serde(default)]
+    pub ambient_curves: std::collections::BTreeMap<String, AmbientCurve>,
+    #[serde(default)]
+    pub protection_disabled: std::collections::BTreeSet<String>,
+}
+
+// One monitor's calibration: its normalized brightness judged equal to the MacBook at 25, 50, 75
+// and 100 percent. A curve is complete only when all four points are present.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AmbientCurve {
+    #[serde(default)]
+    pub p25: Option<f64>,
+    #[serde(default)]
+    pub p50: Option<f64>,
+    #[serde(default)]
+    pub p75: Option<f64>,
+    #[serde(default)]
+    pub p100: Option<f64>,
+}
+
+impl AmbientCurve {
+    pub fn is_complete(&self) -> bool {
+        self.p25.is_some() && self.p50.is_some() && self.p75.is_some() && self.p100.is_some()
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        let points = [self.p25, self.p50, self.p75, self.p100];
+        if points
+            .iter()
+            .flatten()
+            .any(|v| !v.is_finite() || !(0.0..=100.0).contains(v))
+        {
+            return Err("invalid ambient curve point".into());
+        }
+        let mut previous = f64::NEG_INFINITY;
+        for value in points.iter().flatten() {
+            if *value < previous {
+                return Err("ambient curve points must not decrease".into());
+            }
+            previous = *value;
+        }
+        Ok(())
+    }
 }
 
 fn schema_version() -> u32 {
@@ -80,6 +128,9 @@ impl Default for Settings {
             selected_camera_id: None,
             camera_history: Vec::new(),
             screensaver_targets: Default::default(),
+            ambient_follow_enabled: false,
+            ambient_curves: Default::default(),
+            protection_disabled: Default::default(),
         }
     }
 }
@@ -142,6 +193,25 @@ impl Settings {
             .any(|(k, v)| k.is_empty() || !v.is_finite() || !(0.0..=100.0).contains(v))
         {
             return Err("invalid screensaver target".into());
+        }
+        if self.ambient_curves.len() > MAX_MONITOR_ENTRIES {
+            return Err("ambient curves exceed their limit".into());
+        }
+        for (id, curve) in &self.ambient_curves {
+            if id.is_empty() || id.len() > MAX_MONITOR_ID_BYTES {
+                return Err("invalid ambient curve monitor ID".into());
+            }
+            curve.validate()?;
+        }
+        if self.protection_disabled.len() > MAX_MONITOR_ENTRIES {
+            return Err("protection exceptions exceed their limit".into());
+        }
+        if self
+            .protection_disabled
+            .iter()
+            .any(|id| id.is_empty() || id.len() > MAX_MONITOR_ID_BYTES)
+        {
+            return Err("invalid protection monitor ID".into());
         }
         Ok(())
     }

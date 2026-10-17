@@ -16,6 +16,10 @@ private struct CoreBridgeTests {
         keyStepSettingsReachRouterThroughCore()
         cameraHistoryDecodesAndStaysOutOfSaves()
         cameraSelectionRoundTripsThroughCore()
+        coreSettingsAmbientFieldsJSON()
+        monitorFollowAndProtectionDecode()
+        ambientSnapshotDecodes()
+        builtInDisplayReportReachesTheSnapshot()
         print("Core bridge asynchronous tests passed")
     }
 
@@ -421,6 +425,120 @@ private struct CoreBridgeTests {
         expect(waitUntil {
             bridge.snapshot.settings?.selected_camera_id == nil && bridge.snapshot.settings?.camera_history == []
         }, "selecting the default camera clears the selection and the history")
+
+        var shutdownFinished = false
+        bridge.beginShutdown { shutdownFinished = true }
+        expect(waitUntil { shutdownFinished }, "shutdown completes before the temporary directory is removed")
+    }
+
+    /// Decodes a full snapshot object, the shape `tv_snapshot` returns, so any optional section can be left out.
+    private static func decodeSnapshot(_ object: [String: Any]) -> CoreSnapshot {
+        let data = try! JSONSerialization.data(withJSONObject: object)
+        return try! JSONDecoder().decode(CoreSnapshot.self, from: data)
+    }
+
+    private static func coreSettingsAmbientFieldsJSON() {
+        // Snapshots from before brightness follow existed must still decode, with the new settings absent.
+        let withoutAmbient = decodeSettings([:])
+        expect(withoutAmbient.ambientFollowEnabled == nil && withoutAmbient.ambientCurves == nil &&
+               withoutAmbient.protectionDisabled == nil, "absent ambient settings decode as nil")
+
+        // A curve with a null point is incomplete, but it must still decode so the settings can be saved back.
+        let complete = AmbientCurve(p25: 18, p50: 40, p75: 66, p100: 100)
+        let partial = AmbientCurve(p25: 18, p50: nil, p75: nil, p100: 100)
+        let withAmbient = decodeSettings([
+            "ambient_follow_enabled": true,
+            "ambient_curves": ["monitor-a": ["p25": 18, "p50": 40, "p75": 66, "p100": 100],
+                               "monitor-c": ["p25": 18, "p50": NSNull(), "p75": NSNull(), "p100": 100]],
+            "protection_disabled": ["monitor-b"]
+        ])
+        expect(withAmbient.ambientFollowEnabled == true, "ambient_follow_enabled decodes from a snapshot that carries it")
+        expect(withAmbient.ambientCurves == ["monitor-a": complete, "monitor-c": partial],
+               "ambient_curves decode per monitor, with null points as nil")
+        expect(withAmbient.protectionDisabled == ["monitor-b"], "protection_disabled decodes as a list of monitor IDs")
+
+        var settings = CoreSettings()
+        settings.ambientFollowEnabled = true
+        settings.ambientCurves = ["monitor-a": complete, "monitor-c": partial]
+        settings.protectionDisabled = ["monitor-b"]
+        let emitted = settings.json
+        expect(JSONSerialization.isValidJSONObject(emitted), "settings payload with ambient fields is valid JSON")
+        expect((emitted["ambient_follow_enabled"] as? Bool) == true, "ambient_follow_enabled is emitted as a bool when set")
+        expect((emitted["protection_disabled"] as? [String]) == ["monitor-b"],
+               "protection_disabled is emitted as an array of monitor IDs when set")
+        let curves = emitted["ambient_curves"] as? [String: Any]
+        let emittedComplete = curves?["monitor-a"] as? [String: Any]
+        expect((emittedComplete?["p25"] as? Double) == 18 && (emittedComplete?["p50"] as? Double) == 40 &&
+               (emittedComplete?["p75"] as? Double) == 66 && (emittedComplete?["p100"] as? Double) == 100,
+               "a complete curve is emitted with its four points as numbers")
+        let emittedPartial = curves?["monitor-c"] as? [String: Any]
+        expect((emittedPartial?["p25"] as? Double) == 18 && (emittedPartial?["p100"] as? Double) == 100,
+               "a partial curve keeps its present points as numbers")
+        expect(emittedPartial?["p50"] is NSNull && emittedPartial?["p75"] is NSNull,
+               "a partial curve emits null for its missing points")
+
+        // Omitted keys leave the core's stored values untouched, so an unrelated save must not send these.
+        let unset = CoreSettings()
+        expect(unset.json["ambient_follow_enabled"] == nil && unset.json["ambient_curves"] == nil &&
+               unset.json["protection_disabled"] == nil,
+               "unset ambient settings are omitted from the payload so an unrelated save leaves them untouched")
+    }
+
+    private static func monitorFollowAndProtectionDecode() {
+        let snapshot = decodeSnapshot(["monitors": [
+            ["id": "screen", "name": "Display", "follow": "eligible", "protected": true],
+            ["id": "dock", "name": "Dock", "follow": "uncalibrated", "protected": false],
+            ["id": "plain", "name": "Plain"]
+        ]])
+        func monitor(_ id: String) -> CoreMonitor? { snapshot.monitors?.first(where: { $0.id == id }) }
+        expect(monitor("screen")?.follow == "eligible" && monitor("screen")?.protected == true,
+               "follow and protected decode from a monitor that carries them")
+        expect(monitor("dock")?.follow == "uncalibrated" && monitor("dock")?.protected == false,
+               "protected false decodes as false, not nil")
+        expect(monitor("plain") != nil && monitor("plain")?.follow == nil && monitor("plain")?.protected == nil,
+               "absent follow and protected decode as nil")
+    }
+
+    private static func ambientSnapshotDecodes() {
+        let withAmbient = decodeSnapshot(["ambient": [
+            "enabled": true, "available": true, "active": true, "calibrating": false, "builtin_percent": 44
+        ]])
+        expect(withAmbient.ambient == CoreAmbient(enabled: true, available: true, active: true, calibrating: false,
+                                                  builtinPercent: 44),
+               "ambient decodes from a snapshot that carries it")
+
+        // builtin_percent is null when the shell does not know the built-in level.
+        let unknownLevel = decodeSnapshot(["ambient": [
+            "enabled": true, "available": false, "active": false, "calibrating": true, "builtin_percent": NSNull()
+        ]])
+        expect(unknownLevel.ambient == CoreAmbient(enabled: true, available: false, active: false, calibrating: true,
+                                                   builtinPercent: nil),
+               "a null builtin_percent decodes as nil")
+
+        expect(decodeSnapshot([:]).ambient == nil, "snapshots without ambient still decode with it absent")
+    }
+
+    private static func builtInDisplayReportReachesTheSnapshot() {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("telaviva-core-bridge-tests-\(UUID().uuidString)", isDirectory: true)
+        try! FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let bridge = CoreBridge(configPath: directory.appendingPathComponent("settings.json"))
+        expect(waitUntil { bridge.snapshot.revision != nil }, "initial snapshot is published before the built-in display test")
+
+        // The report has no completion, so the published snapshot is the only observable effect.
+        bridge.submitBuiltInDisplay(available: true, brightness: 44, calibrating: false)
+        expect(waitUntil {
+            bridge.snapshot.ambient?.available == true && bridge.snapshot.ambient?.builtinPercent == 44 &&
+                bridge.snapshot.ambient?.calibrating == false
+        }, "built-in display level 44 is published in the ambient snapshot")
+
+        // A report without a readable level clears the published percent.
+        bridge.submitBuiltInDisplay(available: true, brightness: nil, calibrating: false)
+        expect(waitUntil {
+            bridge.snapshot.ambient?.available == true && bridge.snapshot.ambient?.builtinPercent == nil
+        }, "a report without a level publishes a nil built-in percent")
 
         var shutdownFinished = false
         bridge.beginShutdown { shutdownFinished = true }

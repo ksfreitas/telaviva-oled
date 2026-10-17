@@ -2183,3 +2183,1164 @@ fn resume_clears_low_light_and_busy_status_but_keeps_permission() {
     assert_eq!(woke_denied["camera"]["mode"], "suspended");
     assert_eq!(woke_denied["camera"]["next_sample_in_ms"], Value::Null);
 }
+
+// Ambient follow and per-monitor protection contracts from
+// specs/archived/macbook-brightness-follow/contracts.md: settings, update_settings and snapshot fields.
+
+#[test]
+fn ambient_settings_default_to_follow_off_with_empty_curves_and_protection_list() {
+    let core = Core::new(CoreOptions::default()).unwrap();
+    let snapshot = core.snapshot_value().unwrap();
+    let settings = &snapshot["settings"];
+    assert_eq!(settings["ambient_follow_enabled"].as_bool(), Some(false));
+    assert_eq!(settings["ambient_curves"], json!({}));
+    assert_eq!(settings["protection_disabled"], json!([]));
+}
+
+#[test]
+fn ambient_curve_accepts_bounds_nulls_and_non_decreasing_points() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    let curves = [
+        // 0 and 100 are inclusive bounds.
+        json!({"p25":0.0,"p50":50.0,"p75":75.0,"p100":100.0}),
+        // Equal neighboring points are non-decreasing.
+        json!({"p25":50.0,"p50":50.0,"p75":50.0,"p100":50.0}),
+        // Null points are skipped when checking the order.
+        json!({"p25":10.0,"p50":null,"p75":30.0,"p100":null}),
+    ];
+    for curve in &curves {
+        let snapshot = send(
+            &mut core,
+            json!({"type":"update_settings","settings":{"ambient_curves":{"screen":curve}}}),
+        );
+        let stored = &snapshot["settings"]["ambient_curves"]["screen"];
+        for point in ["p25", "p50", "p75", "p100"] {
+            assert_eq!(stored[point], curve[point]);
+        }
+    }
+}
+
+#[test]
+fn ambient_curve_rejects_out_of_range_and_non_finite_points() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    // A valid boundary curve is saved first, so the rejections below cannot pass
+    // merely because the field is unknown to the core.
+    send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"ambient_curves":{"screen":{"p25":0.0,"p50":50.0,"p75":75.0,"p100":100.0}}}}),
+    );
+    let before = core.snapshot_value().unwrap()["settings"].clone();
+    for curve in [
+        json!({"p25":-1.0,"p50":50.0,"p75":75.0,"p100":100.0}),
+        json!({"p25":0.0,"p50":50.0,"p75":75.0,"p100":101.0}),
+    ] {
+        let event =
+            json!({"type":"update_settings","settings":{"ambient_curves":{"screen":curve}}});
+        assert!(core
+            .submit_json(&serde_json::to_vec(&event).unwrap())
+            .is_err());
+        assert_eq!(core.snapshot_value().unwrap()["settings"], before);
+    }
+    // NaN and Infinity are not JSON, so these are sent as raw text the parser must reject.
+    for raw in [
+        r#"{"type":"update_settings","settings":{"ambient_curves":{"screen":{"p25":NaN,"p50":50,"p75":75,"p100":100}}}}"#,
+        r#"{"type":"update_settings","settings":{"ambient_curves":{"screen":{"p25":0,"p50":Infinity,"p75":75,"p100":100}}}}"#,
+        r#"{"type":"update_settings","settings":{"ambient_curves":{"screen":{"p25":0,"p50":50,"p75":-Infinity,"p100":100}}}}"#,
+    ] {
+        assert!(core.submit_json(raw.as_bytes()).is_err());
+        assert_eq!(core.snapshot_value().unwrap()["settings"], before);
+    }
+}
+
+#[test]
+fn ambient_curve_rejects_decreasing_present_points_and_keeps_previous_curves() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"ambient_curves":{"screen":{"p25":10.0,"p50":40.0,"p75":66.0,"p100":100.0}}}}),
+    );
+    let before = core.snapshot_value().unwrap()["settings"].clone();
+    for curve in [
+        json!({"p25":50.0,"p50":20.0,"p75":66.0,"p100":100.0}),
+        json!({"p25":40.0,"p50":null,"p75":30.0,"p100":null}),
+        json!({"p25":null,"p50":60.0,"p75":30.0,"p100":null}),
+        json!({"p25":10.0,"p50":60.0,"p75":50.0,"p100":40.0}),
+    ] {
+        let event =
+            json!({"type":"update_settings","settings":{"ambient_curves":{"screen":curve}}});
+        assert!(core
+            .submit_json(&serde_json::to_vec(&event).unwrap())
+            .is_err());
+        assert_eq!(core.snapshot_value().unwrap()["settings"], before);
+    }
+}
+
+#[test]
+fn ambient_curve_keys_and_protection_ids_must_be_one_to_512_bytes() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    let curve = json!({"p25":10.0,"p50":40.0,"p75":66.0,"p100":100.0});
+    let longest = "x".repeat(512);
+    let oversized = "x".repeat(513);
+    // "é" is two bytes in UTF-8: 256 of them fill exactly 512 bytes, 257 exceed the limit.
+    let longest_multibyte = "é".repeat(256);
+    let oversized_multibyte = "é".repeat(257);
+    let curve_update =
+        |key: &str| json!({"type":"update_settings","settings":{"ambient_curves":{key: curve}}});
+    let protection_update =
+        |id: &str| json!({"type":"update_settings","settings":{"protection_disabled":[id]}});
+    let first = send(&mut core, curve_update(longest.as_str()));
+    let curves = &first["settings"]["ambient_curves"];
+    assert!(curves.get(longest.as_str()).is_some());
+    // Each update replaces the whole map, so only the multibyte key remains afterwards.
+    let second = send(&mut core, curve_update(longest_multibyte.as_str()));
+    let curves = &second["settings"]["ambient_curves"];
+    assert!(curves.get(longest_multibyte.as_str()).is_some());
+    let before = core.snapshot_value().unwrap()["settings"].clone();
+    for key in ["", oversized.as_str(), oversized_multibyte.as_str()] {
+        assert!(core
+            .submit_json(&serde_json::to_vec(&curve_update(key)).unwrap())
+            .is_err());
+    }
+    assert_eq!(core.snapshot_value().unwrap()["settings"], before);
+    // Protection IDs follow the same 1 to 512 byte rule.
+    let listed = send(&mut core, protection_update(longest.as_str()));
+    assert_eq!(listed["settings"]["protection_disabled"], json!([longest]));
+    let before = core.snapshot_value().unwrap()["settings"].clone();
+    for id in ["", oversized.as_str(), oversized_multibyte.as_str()] {
+        assert!(core
+            .submit_json(&serde_json::to_vec(&protection_update(id)).unwrap())
+            .is_err());
+    }
+    assert_eq!(core.snapshot_value().unwrap()["settings"], before);
+}
+
+#[test]
+fn ambient_curves_and_protection_disabled_cap_at_128_entries() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    let curve = json!({"p25":10.0,"p50":40.0,"p75":66.0,"p100":100.0});
+    let mut curves = serde_json::Map::new();
+    for index in 0..128 {
+        curves.insert(format!("display-{index}"), curve.clone());
+    }
+    let full = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"ambient_curves":Value::Object(curves.clone())}}),
+    );
+    let stored = full["settings"]["ambient_curves"].clone();
+    assert_eq!(stored.as_object().unwrap().len(), 128);
+    curves.insert("display-128".to_string(), curve);
+    let too_many =
+        json!({"type":"update_settings","settings":{"ambient_curves":Value::Object(curves)}});
+    assert!(core
+        .submit_json(&serde_json::to_vec(&too_many).unwrap())
+        .is_err());
+    assert_eq!(
+        core.snapshot_value().unwrap()["settings"]["ambient_curves"],
+        stored
+    );
+
+    let ids: Vec<String> = (0..128).map(|index| format!("display-{index}")).collect();
+    let mut sorted_ids = ids.clone();
+    sorted_ids.sort();
+    let listed = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"protection_disabled":ids}}),
+    );
+    assert_eq!(listed["settings"]["protection_disabled"], json!(sorted_ids));
+    let mut too_many_ids = ids.clone();
+    too_many_ids.push("display-128".to_string());
+    let rejected =
+        json!({"type":"update_settings","settings":{"protection_disabled":too_many_ids}});
+    assert!(core
+        .submit_json(&serde_json::to_vec(&rejected).unwrap())
+        .is_err());
+    assert_eq!(
+        core.snapshot_value().unwrap()["settings"]["protection_disabled"],
+        json!(sorted_ids)
+    );
+}
+
+#[test]
+fn ambient_settings_round_trip_through_persisted_settings_file() {
+    let root = std::env::temp_dir().join(format!("telaviva-ambient-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::create_dir_all(&root);
+    let path = root.join("settings.json");
+    let mut core = Core::new(CoreOptions {
+        config_path: Some(path.clone()),
+        ..CoreOptions::default()
+    })
+    .unwrap();
+    let curve = json!({"p25":18.0,"p50":40.0,"p75":66.0,"p100":100.0});
+    let saved = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{
+            "ambient_follow_enabled":true,
+            "ambient_curves":{"screen":curve},
+            "protection_disabled":["screen"]
+        }}),
+    );
+    let persisted: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(persisted["ambient_follow_enabled"].as_bool(), Some(true));
+    assert_eq!(persisted["ambient_curves"], json!({"screen": curve}));
+    assert_eq!(persisted["protection_disabled"], json!(["screen"]));
+    let reloaded = Core::new(CoreOptions {
+        config_path: Some(path.clone()),
+        ..CoreOptions::default()
+    })
+    .unwrap();
+    let loaded = reloaded.snapshot_value().unwrap();
+    assert_eq!(loaded["settings"], saved["settings"]);
+    assert_eq!(
+        loaded["settings"]["ambient_follow_enabled"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        loaded["settings"]["ambient_curves"],
+        json!({"screen": curve})
+    );
+    assert_eq!(loaded["settings"]["protection_disabled"], json!(["screen"]));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn ambient_update_settings_replaces_curves_and_protection_list_whole() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    let first_curve = json!({"p25":18.0,"p50":40.0,"p75":66.0,"p100":100.0});
+    let second_curve = json!({"p25":10.0,"p50":20.0,"p75":30.0,"p100":40.0});
+    let first = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{
+            "ambient_follow_enabled":true,
+            "ambient_curves":{"screen-a":first_curve},
+            "protection_disabled":["screen-a"]
+        }}),
+    );
+    assert_eq!(
+        first["settings"]["ambient_curves"],
+        json!({"screen-a": first_curve})
+    );
+    assert_eq!(
+        first["settings"]["protection_disabled"],
+        json!(["screen-a"])
+    );
+    let replaced = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{
+            "ambient_curves":{"screen-b":second_curve},
+            "protection_disabled":["screen-b"]
+        }}),
+    );
+    assert_eq!(
+        replaced["settings"]["ambient_curves"],
+        json!({"screen-b": second_curve})
+    );
+    assert_eq!(
+        replaced["settings"]["protection_disabled"],
+        json!(["screen-b"])
+    );
+    // Keys omitted from an update keep their values.
+    assert_eq!(
+        replaced["settings"]["ambient_follow_enabled"].as_bool(),
+        Some(true)
+    );
+    let toggled = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"ambient_follow_enabled":false}}),
+    );
+    assert_eq!(
+        toggled["settings"]["ambient_follow_enabled"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        toggled["settings"]["ambient_curves"],
+        json!({"screen-b": second_curve})
+    );
+    assert_eq!(
+        toggled["settings"]["protection_disabled"],
+        json!(["screen-b"])
+    );
+    // An empty value is still a whole replacement.
+    let cleared = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"ambient_curves":{},"protection_disabled":[]}}),
+    );
+    assert_eq!(cleared["settings"]["ambient_curves"], json!({}));
+    assert_eq!(cleared["settings"]["protection_disabled"], json!([]));
+    assert_eq!(
+        cleared["settings"]["ambient_follow_enabled"].as_bool(),
+        Some(false)
+    );
+}
+
+#[test]
+fn ambient_invalid_curve_rejects_the_whole_update_and_keeps_previous_settings() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"ambient_curves":{"screen":{"p25":10.0,"p50":40.0,"p75":66.0,"p100":100.0}}}}),
+    );
+    let before = core.snapshot_value().unwrap()["settings"].clone();
+    // The rejected update also carries a valid toggle; none of it may be applied.
+    let invalid = json!({"type":"update_settings","settings":{
+        "ambient_follow_enabled":true,
+        "ambient_curves":{"screen":{"p25":50.0,"p50":20.0,"p75":66.0,"p100":100.0}}
+    }});
+    let message = core
+        .submit_json(&serde_json::to_vec(&invalid).unwrap())
+        .unwrap_err();
+    assert!(!message.is_empty());
+    assert_eq!(core.snapshot_value().unwrap()["settings"], before);
+    let out_of_range = json!({"type":"update_settings","settings":{
+        "ambient_follow_enabled":true,
+        "ambient_curves":{"screen":{"p25":10.0,"p50":40.0,"p75":66.0,"p100":120.0}}
+    }});
+    assert!(core
+        .submit_json(&serde_json::to_vec(&out_of_range).unwrap())
+        .is_err());
+    assert_eq!(core.snapshot_value().unwrap()["settings"], before);
+}
+
+#[test]
+fn ambient_snapshot_reports_static_builtin_state_and_mirrors_the_enabled_flag() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    let initial = core.snapshot_value().unwrap();
+    let ambient = &initial["ambient"];
+    assert_eq!(ambient["enabled"].as_bool(), Some(false));
+    assert_eq!(ambient["available"].as_bool(), Some(false));
+    assert_eq!(ambient["active"].as_bool(), Some(false));
+    assert_eq!(ambient["calibrating"].as_bool(), Some(false));
+    assert_eq!(ambient["builtin_percent"], Value::Null);
+    let enabled = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"ambient_follow_enabled":true}}),
+    );
+    let ambient = &enabled["ambient"];
+    assert_eq!(ambient["enabled"].as_bool(), Some(true));
+    // Until the shell reports the built-in display, it is unavailable, so follow is not active.
+    assert_eq!(ambient["available"].as_bool(), Some(false));
+    assert_eq!(ambient["active"].as_bool(), Some(false));
+    assert_eq!(ambient["calibrating"].as_bool(), Some(false));
+    assert_eq!(ambient["builtin_percent"], Value::Null);
+}
+
+#[test]
+fn ambient_follow_state_is_uncalibrated_until_a_complete_curve_exists() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    let discovered = send(
+        &mut core,
+        json!({"type":"monitor_discovered","monitor":{
+            "id":"screen","name":"Display","identity_status":"stable","connection_path":"usb",
+            "brightness":{"supported":true,"value":50,"raw":50,"min":0,"max":100},
+            "volume":{"supported":true,"value":25,"raw":25,"min":0,"max":100}
+        }}),
+    );
+    assert_eq!(discovered["monitors"][0]["follow"], "uncalibrated");
+    let partial = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"ambient_curves":{"screen":{"p25":10.0,"p50":40.0,"p75":66.0,"p100":null}}}}),
+    );
+    assert_eq!(partial["monitors"][0]["follow"], "uncalibrated");
+    let complete = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"ambient_curves":{"screen":{"p25":18.0,"p50":40.0,"p75":66.0,"p100":100.0}}}}),
+    );
+    assert_eq!(complete["monitors"][0]["follow"], "eligible");
+    // Eligibility is reported whether or not follow is switched on.
+    let enabled = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"ambient_follow_enabled":true}}),
+    );
+    assert_eq!(enabled["monitors"][0]["follow"], "eligible");
+}
+
+#[test]
+fn ambient_follow_state_is_unsupported_without_ddc_brightness() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    send(
+        &mut core,
+        json!({"type":"monitor_discovered","monitor":{
+            "id":"screen","name":"Display","identity_status":"stable","connection_path":"usb",
+            "brightness":{"supported":false,"value":null,"raw":null,"min":0,"max":100},
+            "volume":{"supported":true,"value":25,"raw":25,"min":0,"max":100}
+        }}),
+    );
+    // A complete curve cannot make a monitor without DDC brightness eligible.
+    let snapshot = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"ambient_curves":{"screen":{"p25":18.0,"p50":40.0,"p75":66.0,"p100":100.0}}}}),
+    );
+    assert_eq!(snapshot["monitors"][0]["follow"], "unsupported");
+}
+
+#[test]
+fn ambient_follow_state_is_unstable_for_ambiguous_identity() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    let discovered = send(
+        &mut core,
+        json!({"type":"monitor_discovered","monitor":{
+            "id":"ambiguous","name":"Display","identity_status":"ambiguous","connection_path":"",
+            "brightness":{"supported":true,"value":50,"raw":50,"min":0,"max":100},
+            "volume":{"supported":true,"value":30,"raw":30,"min":0,"max":100}
+        }}),
+    );
+    assert_eq!(discovered["monitors"][0]["follow"], "unstable");
+    let complete = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"ambient_curves":{"ambiguous":{"p25":18.0,"p50":40.0,"p75":66.0,"p100":100.0}}}}),
+    );
+    // A complete curve does not make a monitor with ambiguous identity eligible.
+    assert_eq!(complete["monitors"][0]["follow"], "unstable");
+}
+
+#[test]
+fn protection_flag_is_true_by_default_and_false_only_for_listed_monitor_ids() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    for id in ["screen-a", "screen-b"] {
+        send(
+            &mut core,
+            json!({"type":"monitor_discovered","monitor":{
+                "id":id,"name":id,"identity_status":"stable","connection_path":"usb",
+                "brightness":{"supported":true,"value":50,"raw":50,"min":0,"max":100},
+                "volume":{"supported":true,"value":25,"raw":25,"min":0,"max":100}
+            }}),
+        );
+    }
+    let protected_of = |snapshot: &Value, id: &str| -> Option<bool> {
+        snapshot["monitors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|monitor| monitor["id"] == id)
+            .unwrap()["protected"]
+            .as_bool()
+    };
+    let before = core.snapshot_value().unwrap();
+    assert_eq!(protected_of(&before, "screen-a"), Some(true));
+    assert_eq!(protected_of(&before, "screen-b"), Some(true));
+    let disabled = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"protection_disabled":["screen-a"]}}),
+    );
+    assert_eq!(protected_of(&disabled, "screen-a"), Some(false));
+    assert_eq!(protected_of(&disabled, "screen-b"), Some(true));
+    let restored = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"protection_disabled":[]}}),
+    );
+    assert_eq!(protected_of(&restored, "screen-a"), Some(true));
+}
+
+#[test]
+fn protection_monitor_disabled_monitor_is_not_presence_dimmed() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    for id in ["one", "two"] {
+        send(
+            &mut core,
+            json!({"type":"monitor_discovered","monitor":{
+                "id":id,"name":id,"identity_status":"stable","connection_path":"usb",
+                "brightness":{"supported":true,"value":70,"raw":70,"min":0,"max":100},
+                "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}
+            }}),
+        );
+    }
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    let mut observed = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true,"protection_disabled":["two"]}}),
+    );
+    for offset in [10_000, 20_000] {
+        observed = send(
+            &mut core,
+            json!({"type":"presence_observation","status":"absent","captured_at_ms":capture_time(offset),"camera_generation":observed["camera"]["generation"]}),
+        );
+    }
+    let monitor = |snapshot: &Value, id: &str| -> Value {
+        snapshot["monitors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == id)
+            .unwrap()
+            .clone()
+    };
+    let one = monitor(&observed, "one");
+    let two = monitor(&observed, "two");
+    let actions = observed["pending_actions"].as_array().unwrap();
+    // Positive control: "one" dims on the second absent sample.
+    assert_eq!(one["presence_dimmed"], true);
+    let dim = actions
+        .iter()
+        .find(|a| a["monitor_id"] == "one")
+        .expect("one must have a dim action");
+    assert_eq!(dim["kind"], "set_brightness");
+    assert_eq!(dim["value"].as_f64(), Some(0.0));
+    // "two" is protection-disabled: no dim and no pending action.
+    assert_eq!(two["presence_dimmed"], false);
+    assert!(actions.iter().all(|a| a["monitor_id"] != "two"));
+}
+
+#[test]
+fn protection_monitor_disabled_monitor_is_not_screensaver_dimmed() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    for id in ["one", "two"] {
+        send(
+            &mut core,
+            json!({"type":"monitor_discovered","monitor":{
+                "id":id,"name":id,"identity_status":"stable","connection_path":"usb",
+                "brightness":{"supported":true,"value":70,"raw":70,"min":0,"max":100},
+                "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}
+            }}),
+        );
+    }
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"screensaver_protection_enabled":true,"protection_disabled":["two"]}}),
+    );
+    let saver = send(&mut core, json!({"type":"screensaver","state":"active"}));
+    let monitor = |snapshot: &Value, id: &str| -> Value {
+        snapshot["monitors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == id)
+            .unwrap()
+            .clone()
+    };
+    let one = monitor(&saver, "one");
+    let two = monitor(&saver, "two");
+    let actions = saver["pending_actions"].as_array().unwrap();
+    // Positive control: "one" is screensaver-dimmed.
+    assert_eq!(saver["screensaver"]["state"], "active");
+    assert!(one["brightness"]["reasons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|reason| reason == "screensaver"));
+    assert!(actions
+        .iter()
+        .any(|a| a["monitor_id"] == "one" && a["kind"] == "set_brightness"));
+    // "two" is protection-disabled: no screensaver reason and no write.
+    assert!(!two["brightness"]["reasons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|reason| reason == "screensaver"));
+    assert!(actions
+        .iter()
+        .all(|a| !(a["monitor_id"] == "two" && a["kind"] == "set_brightness")));
+}
+
+#[test]
+fn protection_monitor_toggle_off_while_dimmed_restores_only_that_monitor() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    for id in ["one", "two"] {
+        send(
+            &mut core,
+            json!({"type":"monitor_discovered","monitor":{
+                "id":id,"name":id,"identity_status":"stable","connection_path":"usb",
+                "brightness":{"supported":true,"value":70,"raw":70,"min":0,"max":100},
+                "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}
+            }}),
+        );
+    }
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    let mut observed = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true}}),
+    );
+    for offset in [10_000, 20_000] {
+        observed = send(
+            &mut core,
+            json!({"type":"presence_observation","status":"absent","captured_at_ms":capture_time(offset),"camera_generation":observed["camera"]["generation"]}),
+        );
+    }
+    let monitor = |snapshot: &Value, id: &str| -> Value {
+        snapshot["monitors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == id)
+            .unwrap()
+            .clone()
+    };
+    // Positive control: both monitors dim and are acknowledged.
+    for id in ["one", "two"] {
+        let dim = observed["pending_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["monitor_id"] == id && a["kind"] == "set_brightness")
+            .expect("both monitors must dim")
+            .clone();
+        assert_eq!(dim["value"].as_f64(), Some(0.0));
+        observed = send(
+            &mut core,
+            json!({"type":"hardware_result","action_id":dim["id"],"generation":dim["generation"],"ok":true,"value":0}),
+        );
+    }
+    let dimmed_one = monitor(&observed, "one");
+    let dimmed_two = monitor(&observed, "two");
+    assert_eq!(dimmed_one["presence_dimmed"], true);
+    assert_eq!(dimmed_two["presence_dimmed"], true);
+    let toggled = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"protection_disabled":["two"]}}),
+    );
+    let actions = toggled["pending_actions"].as_array().unwrap();
+    // "two" verifies ownership with a readback before any restoring write.
+    let read = actions
+        .iter()
+        .find(|a| a["monitor_id"] == "two")
+        .expect("unprotected monitor must read back first");
+    assert_eq!(read["kind"], "read_brightness");
+    assert_eq!(read["target"].as_f64(), Some(70.0));
+    assert!(actions
+        .iter()
+        .all(|a| !(a["monitor_id"] == "two" && a["kind"] == "set_brightness")));
+    // "one" stays dimmed and gets no restoring write.
+    let still_one = monitor(&toggled, "one");
+    let still_two = monitor(&toggled, "two");
+    assert_eq!(still_one["presence_dimmed"], true);
+    assert_eq!(still_two["presence_dimmed"], false);
+    assert!(actions
+        .iter()
+        .all(|a| !(a["monitor_id"] == "one" && a["kind"] == "set_brightness")));
+    let readback = send(
+        &mut core,
+        json!({"type":"hardware_result","action_id":read["id"],"generation":read["generation"],"ok":true,"value":0}),
+    );
+    let restore = readback["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["monitor_id"] == "two" && a["kind"] == "set_brightness")
+        .expect("owned dim must restore after readback");
+    assert_eq!(restore["value"].as_f64(), Some(70.0));
+    assert!(readback["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|a| !(a["monitor_id"] == "one" && a["kind"] == "set_brightness")));
+}
+
+#[test]
+fn protection_monitor_reenabled_needs_two_fresh_misses_before_dimming() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    for id in ["one", "two"] {
+        send(
+            &mut core,
+            json!({"type":"monitor_discovered","monitor":{
+                "id":id,"name":id,"identity_status":"stable","connection_path":"usb",
+                "brightness":{"supported":true,"value":70,"raw":70,"min":0,"max":100},
+                "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}
+            }}),
+        );
+    }
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    let enabled = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true}}),
+    );
+    // One miss for both monitors.
+    send(
+        &mut core,
+        json!({"type":"presence_observation","status":"absent","captured_at_ms":capture_time(10_000),"camera_generation":enabled["camera"]["generation"]}),
+    );
+    send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"protection_disabled":["two"]}}),
+    );
+    let reenabled = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"protection_disabled":[]}}),
+    );
+    let monitor = |snapshot: &Value, id: &str| -> Value {
+        snapshot["monitors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == id)
+            .unwrap()
+            .clone()
+    };
+    // Positive control: "one" reaches its second miss and dims.
+    let second = send(
+        &mut core,
+        json!({"type":"presence_observation","status":"absent","captured_at_ms":capture_time(20_000),"camera_generation":reenabled["camera"]["generation"]}),
+    );
+    let one = monitor(&second, "one");
+    assert_eq!(one["presence_dimmed"], true);
+    // "two" counted from zero again, so one miss is not enough.
+    let two = monitor(&second, "two");
+    assert_eq!(two["presence_dimmed"], false);
+    assert!(second["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|a| !(a["monitor_id"] == "two" && a["kind"] == "set_brightness")));
+    let third = send(
+        &mut core,
+        json!({"type":"presence_observation","status":"absent","captured_at_ms":capture_time(30_000),"camera_generation":second["camera"]["generation"]}),
+    );
+    let two_after = monitor(&third, "two");
+    assert_eq!(two_after["presence_dimmed"], true);
+}
+
+#[test]
+fn protection_monitor_unprotected_only_camera_matches_no_monitor_state() {
+    let mut empty = Core::new(CoreOptions::default()).unwrap();
+    send(&mut empty, json!({"type":"power","on_battery":false}));
+    let none = send(
+        &mut empty,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true}}),
+    );
+    assert_eq!(none["camera"]["mode"], "suspended");
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    send(
+        &mut core,
+        json!({"type":"monitor_discovered","monitor":{
+            "id":"one","name":"one","identity_status":"stable","connection_path":"usb",
+            "brightness":{"supported":true,"value":70,"raw":70,"min":0,"max":100},
+            "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}
+        }}),
+    );
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    // Positive control: a protected monitor keeps the camera in face mode.
+    let protected = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true}}),
+    );
+    assert_eq!(protected["camera"]["mode"], "face");
+    let unprotected = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"protection_disabled":["one"]}}),
+    );
+    assert_eq!(unprotected["camera"]["mode"], none["camera"]["mode"]);
+    assert_eq!(unprotected["camera"]["status"], none["camera"]["status"]);
+    assert_eq!(
+        unprotected["camera"]["display_status"],
+        none["camera"]["display_status"]
+    );
+    assert_eq!(
+        unprotected["camera"]["capture_mode"],
+        none["camera"]["capture_mode"]
+    );
+    // Adding a protected monitor makes the camera eligible again.
+    let added = send(
+        &mut core,
+        json!({"type":"monitor_discovered","monitor":{
+            "id":"two","name":"two","identity_status":"stable","connection_path":"usb",
+            "brightness":{"supported":true,"value":70,"raw":70,"min":0,"max":100},
+            "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}
+        }}),
+    );
+    assert_eq!(added["camera"]["mode"], "face");
+    assert_eq!(added["camera"]["capture_mode"], "single_frame");
+}
+
+fn follow_curve() -> Value {
+    json!({"p25":30.0,"p50":50.0,"p75":70.0,"p100":100.0})
+}
+
+fn follow_discovery(id: &str, min: f64, max: f64, raw: f64) -> Value {
+    json!({"type":"monitor_discovered","monitor":{
+        "id":id,"name":id,"identity_status":"stable","connection_path":"usb",
+        "brightness":{"supported":true,"value":raw,"raw":raw,"min":min,"max":max},
+        "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}
+    }})
+}
+
+// Fresh core with one calibrated monitor "screen" and follow switched on.
+fn follow_core(min: f64, max: f64, raw: f64) -> Core {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    send(&mut core, follow_discovery("screen", min, max, raw));
+    send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"ambient_follow_enabled":true,"ambient_curves":{"screen":follow_curve()}}}),
+    );
+    core
+}
+
+fn follow_builtin(core: &mut Core, brightness: Value, calibrating: bool) -> Value {
+    send(
+        core,
+        json!({"type":"builtin_display","available":true,"brightness":brightness,"calibrating":calibrating}),
+    )
+}
+
+fn follow_pending(snapshot: &Value, monitor_id: &str, kind: &str) -> Option<Value> {
+    snapshot["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["monitor_id"] == monitor_id && a["kind"] == kind)
+        .cloned()
+}
+
+fn follow_monitor<'a>(snapshot: &'a Value, id: &str) -> &'a Value {
+    snapshot["monitors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == id)
+        .expect("monitor is connected")
+}
+
+fn follow_ack(core: &mut Core, action: &Value, value: f64) -> Value {
+    send(
+        core,
+        json!({"type":"hardware_result","action_id":action["id"],"generation":action["generation"],"ok":true,"value":value}),
+    )
+}
+
+fn follow_presence(core: &mut Core, status: &str, offset: u64, snapshot: &Value) -> Value {
+    send(
+        core,
+        json!({"type":"presence_observation","status":status,"captured_at_ms":capture_time(offset),"camera_generation":snapshot["camera"]["generation"]}),
+    )
+}
+
+fn follow_assert_rejected(core: &mut Core, event: Value) {
+    let before = core.snapshot_value().unwrap();
+    let bytes = serde_json::to_vec(&event).unwrap();
+    assert!(core.submit_json(&bytes).is_err(), "must reject {}", event);
+    let after = core.snapshot_value().unwrap();
+    assert_eq!(after["revision"], before["revision"]);
+    assert_eq!(after["ambient"], before["ambient"]);
+}
+
+// Raw value of the set_brightness emitted by one built-in change on a fresh core.
+fn follow_first_write(min: f64, max: f64, raw: f64, brightness: f64) -> Option<f64> {
+    let mut core = follow_core(min, max, raw);
+    let s = follow_builtin(&mut core, json!(brightness), false);
+    follow_pending(&s, "screen", "set_brightness").and_then(|action| action["value"].as_f64())
+}
+
+#[test]
+fn follow_curve_maps_anchor_percents_to_exact_raw_targets() {
+    // The monitor starts at 90, so no anchor target equals its current raw value.
+    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 25.0), Some(30.0));
+    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 50.0), Some(50.0));
+    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 75.0), Some(70.0));
+    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 100.0), Some(100.0));
+    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 0.0), Some(0.0));
+}
+
+#[test]
+fn follow_curve_interpolates_linearly_between_anchors_and_from_origin() {
+    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 37.5), Some(40.0));
+    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 12.5), Some(15.0));
+    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 62.5), Some(60.0));
+    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 87.5), Some(85.0));
+}
+
+#[test]
+fn follow_curve_rounds_fractional_targets_to_whole_raw_units() {
+    // 10 maps to exactly 12.0, 11 maps to 13.2 and 13 maps to 15.6.
+    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 10.0), Some(12.0));
+    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 11.0), Some(13.0));
+    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 13.0), Some(16.0));
+}
+
+#[test]
+fn follow_curve_maps_through_a_0_to_255_raw_range() {
+    // Normalized 40 is raw 102.0 on 0..255; normalized 15 is 38.25, rounded to 38.
+    assert_eq!(follow_first_write(0.0, 255.0, 100.0, 100.0), Some(255.0));
+    assert_eq!(follow_first_write(0.0, 255.0, 100.0, 0.0), Some(0.0));
+    assert_eq!(follow_first_write(0.0, 255.0, 100.0, 37.5), Some(102.0));
+    assert_eq!(follow_first_write(0.0, 255.0, 100.0, 12.5), Some(38.0));
+}
+
+#[test]
+fn follow_curve_maps_through_a_monitor_minimum_above_zero() {
+    // Normalized 0 is the monitor minimum (20) on a 20..=120 range.
+    assert_eq!(follow_first_write(20.0, 120.0, 100.0, 0.0), Some(20.0));
+    assert_eq!(follow_first_write(20.0, 120.0, 100.0, 25.0), Some(50.0));
+    assert_eq!(follow_first_write(20.0, 120.0, 100.0, 50.0), Some(70.0));
+    assert_eq!(follow_first_write(20.0, 120.0, 100.0, 100.0), Some(120.0));
+}
+
+#[test]
+fn follow_builtin_display_reports_ambient_state_on_success() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    let before = core.snapshot_value().unwrap()["revision"].as_u64().unwrap();
+    let s = follow_builtin(&mut core, json!(44.0), false);
+    assert!(s["revision"].as_u64().unwrap() > before);
+    assert_eq!(s["ambient"]["available"].as_bool(), Some(true));
+    assert_eq!(s["ambient"]["builtin_percent"].as_f64(), Some(44.0));
+    assert_eq!(s["ambient"]["calibrating"].as_bool(), Some(false));
+    // Follow is still off, so an available built-in display alone is not active.
+    assert_eq!(s["ambient"]["enabled"].as_bool(), Some(false));
+    assert_eq!(s["ambient"]["active"].as_bool(), Some(false));
+    let s = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"ambient_follow_enabled":true}}),
+    );
+    assert_eq!(s["ambient"]["active"].as_bool(), Some(true));
+    // An unknown level is accepted and reported as null.
+    let s = follow_builtin(&mut core, Value::Null, true);
+    assert_eq!(s["ambient"]["builtin_percent"], Value::Null);
+    assert_eq!(s["ambient"]["calibrating"].as_bool(), Some(true));
+    assert_eq!(s["ambient"]["active"].as_bool(), Some(true));
+    let s = send(
+        &mut core,
+        json!({"type":"builtin_display","available":false,"brightness":44.0,"calibrating":false}),
+    );
+    assert_eq!(s["ambient"]["available"].as_bool(), Some(false));
+    assert_eq!(s["ambient"]["active"].as_bool(), Some(false));
+}
+
+#[test]
+fn follow_builtin_display_rejects_brightness_outside_0_to_100_without_mutation() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    // Positive control: a valid report is accepted before the invalid ones are tried.
+    let s = follow_builtin(&mut core, json!(50.0), false);
+    assert_eq!(s["ambient"]["builtin_percent"].as_f64(), Some(50.0));
+    for brightness in [-1.0, 101.0] {
+        follow_assert_rejected(
+            &mut core,
+            json!({"type":"builtin_display","available":true,"brightness":brightness,"calibrating":false}),
+        );
+    }
+    let s = follow_builtin(&mut core, json!(100.0), false);
+    assert_eq!(s["ambient"]["builtin_percent"].as_f64(), Some(100.0));
+    let s = follow_builtin(&mut core, json!(0.0), false);
+    assert_eq!(s["ambient"]["builtin_percent"].as_f64(), Some(0.0));
+}
+
+#[test]
+fn follow_builtin_display_rejects_wrong_types_and_bad_keys_without_mutation() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    // Positive control: a valid report is accepted before the invalid ones are tried.
+    let s = follow_builtin(&mut core, json!(44.0), false);
+    assert_eq!(s["ambient"]["builtin_percent"].as_f64(), Some(44.0));
+    follow_assert_rejected(
+        &mut core,
+        json!({"type":"builtin_display","available":true,"brightness":"44","calibrating":false}),
+    );
+    follow_assert_rejected(
+        &mut core,
+        json!({"type":"builtin_display","available":"yes","brightness":44.0,"calibrating":false}),
+    );
+    follow_assert_rejected(
+        &mut core,
+        json!({"type":"builtin_display","available":true,"brightness":44.0,"calibrating":false,"source":"shell"}),
+    );
+    follow_assert_rejected(
+        &mut core,
+        json!({"type":"builtin_display","brightness":44.0,"calibrating":false}),
+    );
+    follow_assert_rejected(
+        &mut core,
+        json!({"type":"builtin_display","available":true,"brightness":44.0}),
+    );
+}
+
+#[test]
+fn follow_writes_only_to_calibrated_supported_monitors() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    send(&mut core, follow_discovery("screen", 0.0, 100.0, 90.0));
+    send(&mut core, follow_discovery("bare", 0.0, 100.0, 90.0));
+    send(
+        &mut core,
+        json!({"type":"monitor_discovered","monitor":{
+            "id":"ddc-less","name":"ddc-less","identity_status":"stable","connection_path":"usb",
+            "brightness":{"supported":false,"value":null,"raw":null,"min":0,"max":100},
+            "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}
+        }}),
+    );
+    send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"ambient_follow_enabled":true,"ambient_curves":{"screen":follow_curve()}}}),
+    );
+    let s = follow_builtin(&mut core, json!(50.0), false);
+    // Positive control: the calibrated monitor is written.
+    let write = follow_pending(&s, "screen", "set_brightness").expect("calibrated monitor follows");
+    assert_eq!(write["value"].as_f64(), Some(50.0));
+    assert_eq!(follow_monitor(&s, "bare")["follow"], "uncalibrated");
+    assert_eq!(follow_monitor(&s, "ddc-less")["follow"], "unsupported");
+    assert!(follow_pending(&s, "bare", "set_brightness").is_none());
+    assert!(follow_pending(&s, "ddc-less", "set_brightness").is_none());
+}
+
+#[test]
+fn follow_writes_do_not_set_manual_override_so_presence_still_dims() {
+    let mut core = follow_core(0.0, 100.0, 90.0);
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true}}),
+    );
+    let s = follow_builtin(&mut core, json!(50.0), false);
+    let write = follow_pending(&s, "screen", "set_brightness").expect("follow write");
+    assert_eq!(write["value"].as_f64(), Some(50.0));
+    let mut s = follow_ack(&mut core, &write, 50.0);
+    s = follow_presence(&mut core, "absent", 10_000, &s);
+    s = follow_presence(&mut core, "absent", 20_000, &s);
+    assert_eq!(follow_monitor(&s, "screen")["presence_dimmed"], true);
+    // The owned monitor is read back before the dim write.
+    let read = follow_pending(&s, "screen", "read_brightness").expect("dim verifies ownership");
+    s = follow_ack(&mut core, &read, 50.0);
+    let dim = follow_pending(&s, "screen", "set_brightness").expect("presence still dims");
+    assert_eq!(dim["value"].as_f64(), Some(0.0));
+}
+
+#[test]
+fn follow_dimmed_monitor_defers_builtin_changes_and_restores_the_new_mapped_value() {
+    let mut core = follow_core(0.0, 100.0, 90.0);
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true}}),
+    );
+    let s = follow_builtin(&mut core, json!(50.0), false);
+    let write = follow_pending(&s, "screen", "set_brightness").expect("follow write");
+    let mut s = follow_ack(&mut core, &write, 50.0);
+    s = follow_presence(&mut core, "absent", 10_000, &s);
+    s = follow_presence(&mut core, "absent", 20_000, &s);
+    let read = follow_pending(&s, "screen", "read_brightness").expect("dim verifies ownership");
+    s = follow_ack(&mut core, &read, 50.0);
+    let dim = follow_pending(&s, "screen", "set_brightness").expect("presence dim");
+    assert_eq!(dim["value"].as_f64(), Some(0.0));
+    s = follow_ack(&mut core, &dim, 0.0);
+    assert_eq!(follow_monitor(&s, "screen")["presence_dimmed"], true);
+    // While dimmed, a built-in change only moves the baseline: nothing is queued.
+    let s = follow_builtin(&mut core, json!(75.0), false);
+    assert_eq!(s["ambient"]["builtin_percent"].as_f64(), Some(75.0));
+    assert!(s["pending_actions"].as_array().unwrap().is_empty());
+    // Presence returns: read back, then restore the new mapped value (70), not the old 50.
+    let mut s = follow_presence(&mut core, "present", 30_000, &s);
+    let read = follow_pending(&s, "screen", "read_brightness").expect("restore verifies ownership");
+    s = follow_ack(&mut core, &read, 0.0);
+    let restore =
+        follow_pending(&s, "screen", "set_brightness").expect("restore after presence returns");
+    assert_eq!(restore["value"].as_f64(), Some(70.0));
+}
+
+#[test]
+fn follow_asleep_monitor_defers_then_reads_before_writing_the_mapped_value() {
+    let mut core = follow_core(0.0, 100.0, 90.0);
+    let generation = core.snapshot_value().unwrap()["monitors"][0]["generation"].clone();
+    send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"screen","generation":generation,"state":"asleep"}),
+    );
+    let s = follow_builtin(&mut core, json!(50.0), false);
+    assert_eq!(s["ambient"]["builtin_percent"].as_f64(), Some(50.0));
+    assert!(s["pending_actions"].as_array().unwrap().is_empty());
+    let s = send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"screen","generation":generation,"state":"awake"}),
+    );
+    let read =
+        follow_pending(&s, "screen", "read_brightness").expect("wake verifies ownership first");
+    assert!(follow_pending(&s, "screen", "set_brightness").is_none());
+    let s = follow_ack(&mut core, &read, 90.0);
+    let write = follow_pending(&s, "screen", "set_brightness").expect("mapped value after wake");
+    assert_eq!(write["value"].as_f64(), Some(50.0));
+}
+
+#[test]
+fn follow_dead_band_ignores_targets_within_one_raw_unit_of_desired() {
+    let mut core = follow_core(0.0, 100.0, 90.0);
+    let s = follow_builtin(&mut core, json!(50.0), false);
+    let write = follow_pending(&s, "screen", "set_brightness").expect("first write");
+    let s = follow_ack(&mut core, &write, 50.0);
+    assert!(s["pending_actions"].as_array().unwrap().is_empty());
+    // 50.5 maps to 50.4 on the 50..75 segment, which rounds to the current raw value 50.
+    let s = follow_builtin(&mut core, json!(50.5), false);
+    assert!(s["pending_actions"].as_array().unwrap().is_empty());
+    // Positive control: a real change reads the owned monitor back, then writes 70.
+    let s = follow_builtin(&mut core, json!(75.0), false);
+    let read =
+        follow_pending(&s, "screen", "read_brightness").expect("owned monitor verifies first");
+    let s = follow_ack(&mut core, &read, 50.0);
+    let write = follow_pending(&s, "screen", "set_brightness").expect("a real change writes");
+    assert_eq!(write["value"].as_f64(), Some(70.0));
+}
+
+#[test]
+fn follow_calibrating_pauses_writes_until_calibration_ends() {
+    let mut core = follow_core(0.0, 100.0, 90.0);
+    let s = follow_builtin(&mut core, json!(50.0), true);
+    assert_eq!(s["ambient"]["calibrating"].as_bool(), Some(true));
+    assert!(s["pending_actions"].as_array().unwrap().is_empty());
+    let s = follow_builtin(&mut core, json!(75.0), true);
+    assert_eq!(s["ambient"]["builtin_percent"].as_f64(), Some(75.0));
+    assert!(s["pending_actions"].as_array().unwrap().is_empty());
+    let s = follow_builtin(&mut core, json!(75.0), false);
+    let write = follow_pending(&s, "screen", "set_brightness").expect("calibration ended");
+    assert_eq!(write["value"].as_f64(), Some(70.0));
+}
+
+#[test]
+fn follow_stops_when_builtin_is_unavailable_or_follow_is_disabled() {
+    let mut core = follow_core(0.0, 100.0, 90.0);
+    let s = send(
+        &mut core,
+        json!({"type":"builtin_display","available":false,"brightness":50.0,"calibrating":false}),
+    );
+    assert_eq!(s["ambient"]["active"].as_bool(), Some(false));
+    assert!(s["pending_actions"].as_array().unwrap().is_empty());
+    // Positive control: the same level writes once the built-in display is available.
+    let s = follow_builtin(&mut core, json!(50.0), false);
+    let write = follow_pending(&s, "screen", "set_brightness").expect("available builtin writes");
+    assert_eq!(write["value"].as_f64(), Some(50.0));
+    follow_ack(&mut core, &write, 50.0);
+    // Follow off: a new level is not written and the monitor keeps its last value.
+    let s = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"ambient_follow_enabled":false}}),
+    );
+    assert_eq!(s["ambient"]["active"].as_bool(), Some(false));
+    let s = follow_builtin(&mut core, json!(25.0), false);
+    assert!(s["pending_actions"].as_array().unwrap().is_empty());
+    // Positive control: follow back on reads the owned monitor, then writes 30.
+    let s = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"ambient_follow_enabled":true}}),
+    );
+    let read =
+        follow_pending(&s, "screen", "read_brightness").expect("owned monitor verifies first");
+    let s = follow_ack(&mut core, &read, 50.0);
+    let write = follow_pending(&s, "screen", "set_brightness").expect("re-enabled follow writes");
+    assert_eq!(write["value"].as_f64(), Some(30.0));
+}
+
+#[test]
+fn follow_reconnect_reapplies_the_curve_only_to_the_same_monitor_id() {
+    let mut core = follow_core(0.0, 100.0, 90.0);
+    let s = follow_builtin(&mut core, json!(50.0), false);
+    let write = follow_pending(&s, "screen", "set_brightness").expect("first write");
+    follow_ack(&mut core, &write, 50.0);
+    send(
+        &mut core,
+        json!({"type":"monitor_disconnected","monitor_id":"screen"}),
+    );
+    let s = send(&mut core, follow_discovery("screen", 0.0, 100.0, 90.0));
+    let write = follow_pending(&s, "screen", "set_brightness").expect("same ID keeps its curve");
+    assert_eq!(write["value"].as_f64(), Some(50.0));
+    let s = send(&mut core, follow_discovery("screen-2", 0.0, 100.0, 90.0));
+    assert_eq!(follow_monitor(&s, "screen-2")["follow"], "uncalibrated");
+    assert!(follow_pending(&s, "screen-2", "set_brightness").is_none());
+}
+
+#[test]
+fn follow_null_builtin_brightness_emits_no_write() {
+    let mut core = follow_core(0.0, 100.0, 90.0);
+    let s = follow_builtin(&mut core, Value::Null, false);
+    assert_eq!(s["ambient"]["available"].as_bool(), Some(true));
+    assert_eq!(s["ambient"]["builtin_percent"], Value::Null);
+    assert!(s["pending_actions"].as_array().unwrap().is_empty());
+    // Positive control: a known level writes.
+    let s = follow_builtin(&mut core, json!(50.0), false);
+    let write = follow_pending(&s, "screen", "set_brightness").expect("known level writes");
+    assert_eq!(write["value"].as_f64(), Some(50.0));
+    follow_ack(&mut core, &write, 50.0);
+    // An unknown level after a known one must not be treated as 0.
+    let s = follow_builtin(&mut core, Value::Null, false);
+    assert_eq!(s["ambient"]["builtin_percent"], Value::Null);
+    assert!(s["pending_actions"].as_array().unwrap().is_empty());
+}

@@ -209,6 +209,13 @@ final class CoreBridge: ObservableObject {
         return submit(["type": "update_settings", "settings": ["selected_camera_id": value]])
     }
 
+    /// Reports the built-in display's level for brightness follow. Callable from any thread and fire-and-forget:
+    /// a rejected report leaves the core's previous state in place.
+    func submitBuiltInDisplay(available: Bool, brightness: Int?, calibrating: Bool) {
+        let level: Any = brightness ?? NSNull()
+        submit(["type": "builtin_display", "available": available, "brightness": level, "calibrating": calibrating])
+    }
+
     func beginShutdown(completion: @escaping () -> Void = {}) {
         #if TELAVIVA_CORE
         guard let core, !isShuttingDown else { DispatchQueue.main.async(execute: completion); return }
@@ -269,6 +276,7 @@ struct CoreSnapshot: Decodable {
     var monitors: [CoreMonitor]?
     var pending_actions: [PendingAction]?
     var camera: CameraSnapshot?
+    var ambient: CoreAmbient?
     static let unavailable = CoreSnapshot(revision: nil, settings: nil, messages: nil, monitors: [], pending_actions: [], camera: nil)
     private init(revision: UInt64?, settings: CoreSettings?, messages: [String: String]?, monitors: [CoreMonitor]?, pending_actions: [PendingAction]?, camera: CameraSnapshot?) {
         self.revision = revision; self.settings = settings; self.messages = messages; self.monitors = monitors
@@ -286,6 +294,10 @@ struct CoreMonitor: Decodable, Identifiable {
     var display_state: String?
     var brightness: VcpValue?
     var volume: VcpValue?
+    /// "eligible", "uncalibrated", "unsupported" or "unstable". Optional so older snapshots still decode.
+    var follow: String?
+    /// False when the monitor ID is in `protection_disabled`.
+    var protected: Bool?
 }
 struct VcpValue: Decodable {
     var supported: Bool
@@ -299,6 +311,22 @@ struct VcpValue: Decodable {
 }
 struct PendingAction: Decodable { var id: UInt64; var generation: UInt64; var monitor_id: String; var kind: String; var value: Double?; var target: Double? }
 struct CameraSnapshot: Decodable { var mode: String?; var capture_mode: String?; var status: String?; var display_status: String?; var next_sample_in_ms: UInt64?; var generation: UInt64? }
+
+/// One monitor's brightness-follow calibration in normalized percent. A nil point means not calibrated yet.
+struct AmbientCurve: Codable, Equatable { var p25, p50, p75, p100: Double? }
+
+struct CoreAmbient: Codable, Equatable {
+    var enabled: Bool
+    var available: Bool
+    var active: Bool
+    var calibrating: Bool
+    var builtinPercent: Double?
+    enum CodingKeys: String, CodingKey { case enabled, available, active, calibrating, builtinPercent = "builtin_percent" }
+    init(enabled: Bool, available: Bool, active: Bool, calibrating: Bool, builtinPercent: Double?) {
+        self.enabled = enabled; self.available = available; self.active = active
+        self.calibrating = calibrating; self.builtinPercent = builtinPercent
+    }
+}
 
 struct CoreSettings: Decodable {
     var locale = "auto"
@@ -316,20 +344,46 @@ struct CoreSettings: Decodable {
     var hardware_keys_enabled: Bool?
     var brightness_key_step: Int?
     var volume_key_step: Int?
+    /// Brightness follow and protection opt-outs. Optional so older snapshots still decode; sent only when set.
+    var ambientFollowEnabled: Bool?
+    var ambientCurves: [String: AmbientCurve]?
+    var protectionDisabled: [String]?
+
+    /// Keys are listed explicitly because the three ambient fields use snake_case raw names.
+    enum CodingKeys: String, CodingKey {
+        case locale, presence_sampling_interval_s, return_sampling_interval_s, suspend_presence_on_battery,
+             presence_protection_enabled, always_on_camera, screensaver_protection_enabled, launch_at_login,
+             screensaver_targets, selected_camera_id, camera_history, hardware_keys_enabled,
+             brightness_key_step, volume_key_step
+        case ambientFollowEnabled = "ambient_follow_enabled", ambientCurves = "ambient_curves"
+        case protectionDisabled = "protection_disabled"
+    }
 
     /// Omits `selected_camera_id` and `camera_history` on purpose: only `selectCamera(_:)` sends the camera, so an
     /// unrelated save never re-sends a fallback camera and promotes it to the front of the history.
-    var json: [String: Any] { [
-        "locale": locale, "presence_sampling_interval_s": presence_sampling_interval_s,
-        "return_sampling_interval_s": return_sampling_interval_s,
-        "suspend_presence_on_battery": suspend_presence_on_battery,
-        "presence_protection_enabled": presence_protection_enabled,
-        "always_on_camera": always_on_camera ?? false,
-        "screensaver_protection_enabled": screensaver_protection_enabled,
-        "launch_at_login": launch_at_login, "screensaver_targets": screensaver_targets,
-        "hardware_keys_enabled": hardware_keys_enabled ?? false,
-        "brightness_key_step": brightness_key_step ?? 5, "volume_key_step": volume_key_step ?? 5
-    ] }
+    var json: [String: Any] {
+        var object: [String: Any] = [
+            "locale": locale, "presence_sampling_interval_s": presence_sampling_interval_s,
+            "return_sampling_interval_s": return_sampling_interval_s,
+            "suspend_presence_on_battery": suspend_presence_on_battery,
+            "presence_protection_enabled": presence_protection_enabled,
+            "always_on_camera": always_on_camera ?? false,
+            "screensaver_protection_enabled": screensaver_protection_enabled,
+            "launch_at_login": launch_at_login, "screensaver_targets": screensaver_targets,
+            "hardware_keys_enabled": hardware_keys_enabled ?? false,
+            "brightness_key_step": brightness_key_step ?? 5, "volume_key_step": volume_key_step ?? 5
+        ]
+        // Ambient keys are added only when set, so an unrelated save leaves the core's stored values untouched.
+        if let ambientFollowEnabled { object["ambient_follow_enabled"] = ambientFollowEnabled }
+        if let ambientCurves {
+            object["ambient_curves"] = ambientCurves.mapValues { (curve: AmbientCurve) -> [String: Any] in
+                ["p25": curve.p25 ?? NSNull(), "p50": curve.p50 ?? NSNull(),
+                 "p75": curve.p75 ?? NSNull(), "p100": curve.p100 ?? NSNull()]
+            }
+        }
+        if let protectionDisabled { object["protection_disabled"] = protectionDisabled.sorted() }
+        return object
+    }
 }
 
 #if TELAVIVA_CORE

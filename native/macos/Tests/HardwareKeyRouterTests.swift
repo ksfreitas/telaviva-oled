@@ -118,6 +118,11 @@ private struct HardwareKeyRouterTests {
         rebaseResumesAfterSettleWindow()
         outstandingActionExpires()
         earlyCompletionLeavesNothingOutstanding()
+        followedBrightnessPassesThrough()
+        followedVolumeAndMuteUnchanged()
+        unfollowedBrightnessStillHandled()
+        emptyFollowedSetRestoresBrightness()
+        followedChangeKeepsInFlightPress()
         print("Hardware-key router and coordinator tests passed")
     }
 
@@ -1242,6 +1247,144 @@ private struct HardwareKeyRouterTests {
         expect(restored.feature == .volume && restored.target == 62, "restore from the remembered 50 adds the 12-point volume step")
         fake.acknowledge(1, accepted: true)
         router.waitForWorkerForTesting()
+        router.shutdown()
+    }
+
+    /// Brightness keys on a followed monitor pass through on press, repeat and release; without the set they are handled.
+    private static func followedBrightnessPassesThrough() {
+        let monitor = display()
+        let control = FakeSubmission()
+        let controlRouter = HardwareKeyRouter(submit: control.submit)
+        expect(hold(controlRouter, keyType: Int(NX_KEYTYPE_BRIGHTNESS_UP), pointer: .zero, displays: [monitor]) == (true, true, true),
+               "control: brightness press is handled before any set is installed")
+        let controlCommand = control.waitForCommands(1)[0]
+        expect(controlCommand.monitorID == "monitor-a" && controlCommand.feature == .brightness,
+               "control: the handled brightness press emits a command")
+        control.acknowledge(0, accepted: true)
+        controlRouter.waitForWorkerForTesting()
+        controlRouter.shutdown()
+
+        let fake = FakeSubmission()
+        let router = HardwareKeyRouter(submit: fake.submit)
+        router.setFollowedBrightnessDisplays(["monitor-a"])
+        expect(hold(router, keyType: Int(NX_KEYTYPE_BRIGHTNESS_UP), pointer: .zero, displays: [monitor]) == (false, false, false),
+               "brightness down, repeat and up on a followed monitor pass through")
+        expect(hold(router, keyType: Int(NX_KEYTYPE_BRIGHTNESS_DOWN), pointer: .zero, displays: [monitor]) == (false, false, false),
+               "brightness-down on a followed monitor passes through")
+        router.waitForWorkerForTesting()
+        expect(fake.commands.isEmpty, "followed brightness keys submit no hardware command")
+        router.shutdown()
+    }
+
+    /// Volume and mute on the same followed monitor are routed exactly as before the set existed.
+    private static func followedVolumeAndMuteUnchanged() {
+        let monitor = display(audioUID: outputUID)
+        let onMonitor = CGPoint(x: 10, y: 10)
+
+        func volumeHold(_ keyType: Int, _ expected: Double, _ label: String) {
+            let fake = FakeSubmission()
+            let router = HardwareKeyRouter(submit: fake.submit)
+            router.setDefaultOutput(uid: outputUID)
+            router.setFollowedBrightnessDisplays(["monitor-a"])
+            expect(router.processForTesting(key(keyType), pointer: onMonitor, displays: [monitor]), "\(label) press is handled")
+            let command = fake.waitForCommands(1)[0]
+            expect(command.monitorID == "monitor-a" && command.feature == .volume && command.target == expected,
+                   "\(label) still steps the followed monitor")
+            expect(router.processForTesting(key(keyType, repeat: true), pointer: onMonitor, displays: [monitor]), "\(label) repeat is handled")
+            expect(router.processForTesting(key(keyType, phase: .up), pointer: onMonitor, displays: [monitor]), "\(label) release is handled")
+            fake.acknowledge(0, accepted: true)
+            router.waitForWorkerForTesting()
+            router.shutdown()
+        }
+        volumeHold(Int(NX_KEYTYPE_SOUND_UP), 55, "followed volume up")
+        volumeHold(Int(NX_KEYTYPE_SOUND_DOWN), 45, "followed volume down")
+
+        let muteFake = FakeSubmission()
+        let muteRouter = HardwareKeyRouter(submit: muteFake.submit)
+        muteRouter.setDefaultOutput(uid: outputUID)
+        muteRouter.setFollowedBrightnessDisplays(["monitor-a"])
+        expect(muteRouter.processForTesting(muteKey(), pointer: onMonitor, displays: [monitor]), "followed mute press is handled")
+        let muted = muteFake.waitForCommands(1)[0]
+        expect(muted.monitorID == "monitor-a" && muted.feature == .volume && muted.target == 0,
+               "followed mute still writes zero to the monitor")
+        expect(muteRouter.processForTesting(muteKey(repeat: true), pointer: onMonitor, displays: [monitor]), "followed mute repeat is handled")
+        expect(muteRouter.processForTesting(muteKey(phase: .up), pointer: onMonitor, displays: [monitor]), "followed mute release is handled")
+        muteFake.acknowledge(0, accepted: true)
+        muteRouter.waitForWorkerForTesting()
+        expect(muteFake.commands.count == 1, "followed mute submits no second command")
+        muteRouter.shutdown()
+    }
+
+    /// A brightness key on a monitor outside the set is still handled, while the followed one next to it passes through.
+    private static func unfollowedBrightnessStillHandled() {
+        let followed = display()
+        let other = display(id: "monitor-b", origin: CGPoint(x: 2000, y: 0))
+        let fake = FakeSubmission()
+        let router = HardwareKeyRouter(submit: fake.submit)
+        router.setFollowedBrightnessDisplays(["monitor-a"])
+        expect(hold(router, keyType: Int(NX_KEYTYPE_BRIGHTNESS_UP), pointer: .zero, displays: [followed, other]) == (false, false, false),
+               "followed monitor under the pointer passes brightness through")
+        let unfollowedPoint = CGPoint(x: 2010, y: 10)
+        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_DOWN)), pointer: unfollowedPoint, displays: [followed, other]),
+               "unfollowed monitor under the pointer still handles brightness")
+        let command = fake.waitForCommands(1)[0]
+        expect(command.monitorID == "monitor-b" && command.feature == .brightness && command.target == 45,
+               "unfollowed brightness steps its own monitor")
+        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_DOWN), repeat: true), pointer: unfollowedPoint, displays: [followed, other]),
+               "unfollowed brightness repeat is handled")
+        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_DOWN), phase: .up), pointer: unfollowedPoint, displays: [followed, other]),
+               "unfollowed brightness release is handled")
+        fake.acknowledge(0, accepted: true)
+        router.waitForWorkerForTesting()
+        router.shutdown()
+    }
+
+    /// Installing an empty set after a pass-through restores normal brightness handling on the next press.
+    private static func emptyFollowedSetRestoresBrightness() {
+        let monitor = display()
+        let fake = FakeSubmission()
+        let router = HardwareKeyRouter(submit: fake.submit)
+        router.setFollowedBrightnessDisplays(["monitor-a"])
+        expect(hold(router, keyType: Int(NX_KEYTYPE_BRIGHTNESS_UP), pointer: .zero, displays: [monitor]) == (false, false, false),
+               "followed brightness passes through before the set is cleared")
+        router.setFollowedBrightnessDisplays([])
+        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), pointer: .zero, displays: [monitor]),
+               "an empty set restores brightness handling")
+        let command = fake.waitForCommands(1)[0]
+        expect(command.monitorID == "monitor-a" && command.feature == .brightness && command.target == 55,
+               "restored brightness press steps the monitor")
+        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up), pointer: .zero, displays: [monitor]),
+               "restored brightness release is consumed")
+        fake.acknowledge(0, accepted: true)
+        router.waitForWorkerForTesting()
+        expect(fake.commands.count == 1, "restored brightness press submits exactly one command")
+        router.shutdown()
+    }
+
+    /// A set change mid-press keeps the latched outcome; the new set decides only the next key-down.
+    private static func followedChangeKeepsInFlightPress() {
+        let monitor = display()
+        let fake = FakeSubmission()
+        let router = HardwareKeyRouter(submit: fake.submit)
+        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), pointer: .zero, displays: [monitor]),
+               "press is handled before the set changes")
+        let first = fake.waitForCommands(1)[0]
+        expect(first.target == 55, "the in-flight press targets 55")
+        router.setFollowedBrightnessDisplays(["monitor-a"])
+        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), repeat: true), pointer: .zero, displays: [monitor]),
+               "held repeat keeps its handled latch after the set changes")
+        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up), pointer: .zero, displays: [monitor]),
+               "release of the handled press is still consumed")
+        expect(!router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), pointer: .zero, displays: [monitor]),
+               "the next key-down follows the new set and passes through")
+        expect(!router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up), pointer: .zero, displays: [monitor]),
+               "release of the passed-through press passes through")
+        fake.acknowledge(0, accepted: true)
+        router.waitForWorkerForTesting()
+        expect(fake.waitForCommands(2)[1].target == 60, "the held repeat's coalesced write still lands")
+        fake.acknowledge(1, accepted: true)
+        router.waitForWorkerForTesting()
+        expect(fake.commands.count == 2, "the new set adds no command")
         router.shutdown()
     }
 }

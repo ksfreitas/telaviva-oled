@@ -1,4 +1,4 @@
-use crate::settings::{self, Settings};
+use crate::settings::{self, AmbientCurve, Settings};
 use serde::{
     de::{MapAccess, SeqAccess, Visitor},
     Deserialize, Deserializer,
@@ -47,6 +47,8 @@ struct Monitor {
     brightness: Feature,
     volume: Feature,
     baseline: Option<f64>,
+    // Ambient follow target for the current built-in level. Runtime only.
+    follow_raw: Option<f64>,
     presence_dimmed: bool,
     saver_dimmed: bool,
     misses: u8,
@@ -84,6 +86,10 @@ pub struct Core {
     resume_pending: bool,
     last_presence_ms: u64,
     closed: bool,
+    // Built-in display state reported by the shell. Runtime only, never persisted.
+    builtin_available: bool,
+    builtin_percent: Option<f64>,
+    calibrating: bool,
 }
 
 impl Core {
@@ -112,6 +118,9 @@ impl Core {
             resume_pending: false,
             last_presence_ms: 0,
             closed: false,
+            builtin_available: false,
+            builtin_percent: None,
+            calibrating: false,
         })
     }
 
@@ -154,6 +163,7 @@ impl Core {
                 ],
                 "update_settings" => &["type", "settings", "revision"],
                 "hardware_result" => &["type", "action_id", "generation", "ok", "value", "error"],
+                "builtin_display" => &["type", "available", "brightness", "calibrating"],
                 "shutdown" => &["type"],
                 _ => return Err(format!("unknown command type: {kind}")),
             },
@@ -239,6 +249,7 @@ impl Core {
             "set_brightness" | "set_volume" => self.manual_set(kind, &value)?,
             "update_settings" => self.update_settings(&value)?,
             "hardware_result" => self.hardware_result(&value)?,
+            "builtin_display" => self.builtin_display(&value)?,
             "shutdown" => self.shutdown_policy()?,
             _ => return Err(format!("unknown command type: {kind}")),
         }
@@ -294,6 +305,7 @@ impl Core {
                 brightness,
                 volume,
                 baseline,
+                follow_raw: None,
                 presence_dimmed: false,
                 saver_dimmed: false,
                 misses: 0,
@@ -302,6 +314,15 @@ impl Core {
                 wake_ownership_check: false,
             },
         );
+        // Follow runs after discovery sets the baseline, so the response carries the write.
+        self.recompute_follow(Some(id));
+        if self
+            .monitors
+            .get(id)
+            .is_some_and(|m| m.follow_raw.is_some())
+        {
+            self.reconcile_all()?;
+        }
         Ok(())
     }
 
@@ -363,6 +384,7 @@ impl Core {
         if !["unknown", "awake", "asleep"].contains(&state) {
             return Err("invalid display state".into());
         }
+        let protected = self.is_protected(&id);
         let monitor = self.monitors.get_mut(&id).ok_or("unknown monitor")?;
         if generation != monitor.generation {
             return Ok(());
@@ -382,13 +404,14 @@ impl Core {
             was_asleep || monitor.wake_ownership_check
         };
         let resumed_display =
-            was_asleep && state == "awake" && Self::monitor_is_camera_eligible(monitor);
+            was_asleep && state == "awake" && Self::monitor_is_camera_eligible(monitor, protected);
         self.actions.retain(|action| action.monitor_id != id);
         self.camera_generation = self.camera_generation.saturating_add(1);
         if resumed_display {
             self.begin_camera_resume();
         }
         self.reconcile_camera();
+        self.recompute_follow(Some(id.as_str()));
         self.reconcile_all()
     }
 
@@ -528,6 +551,17 @@ impl Core {
                     next.screensaver_targets =
                         serde_json::from_value(val.clone()).map_err(|e| e.to_string())?
                 }
+                "ambient_follow_enabled" => {
+                    next.ambient_follow_enabled = val.as_bool().ok_or("setting must be boolean")?
+                }
+                "ambient_curves" => {
+                    next.ambient_curves =
+                        serde_json::from_value(val.clone()).map_err(|e| e.to_string())?
+                }
+                "protection_disabled" => {
+                    next.protection_disabled =
+                        serde_json::from_value(val.clone()).map_err(|e| e.to_string())?
+                }
                 _ => return Err(format!("unknown setting: {key}")),
             }
         }
@@ -541,6 +575,19 @@ impl Core {
         // A save that changes nothing (for example reselecting the current front) keeps the
         // camera generation, so in-flight samples and the camera session are not restarted.
         let settings_changed = next != self.settings;
+        // Per-monitor protection: a monitor that becomes unprotected drops its dims (reconcile_all
+        // restores it), and any change of its protection restarts the presence miss count.
+        for m in self.monitors.values_mut() {
+            let was_protected = !self.settings.protection_disabled.contains(&m.id);
+            let now_protected = !next.protection_disabled.contains(&m.id);
+            if was_protected != now_protected {
+                m.misses = 0;
+            }
+            if was_protected && !now_protected {
+                m.presence_dimmed = false;
+                m.saver_dimmed = false;
+            }
+        }
         self.settings = next;
         if settings_changed {
             self.camera_generation += 1;
@@ -555,6 +602,7 @@ impl Core {
             self.begin_camera_resume();
         }
         self.reconcile_camera();
+        self.recompute_follow(None);
         self.reconcile_all()
     }
 
@@ -616,12 +664,13 @@ impl Core {
                 if self.camera_mode() != "face" {
                     return Ok(());
                 }
+                let protection_disabled = &self.settings.protection_disabled;
                 for m in self.monitors.values_mut() {
                     if m.display_state == "asleep" {
                         continue;
                     }
                     m.misses = m.misses.saturating_add(1);
-                    if m.misses >= 2 {
+                    if m.misses >= 2 && !protection_disabled.contains(&m.id) {
                         m.presence_dimmed = true;
                     }
                 }
@@ -701,7 +750,10 @@ impl Core {
         if self.closed || !self.settings.presence_protection_enabled {
             "disabled"
         } else if (self.settings.suspend_presence_on_battery && self.on_battery != Some(false))
-            || !self.monitors.values().any(Self::monitor_is_camera_eligible)
+            || !self
+                .monitors
+                .values()
+                .any(|m| Self::monitor_is_camera_eligible(m, self.is_protected(&m.id)))
             || self.all_eligible_displays_asleep()
             || (self.camera_status != "unknown"
                 && ["unavailable", "busy", "permission", "error"]
@@ -715,15 +767,22 @@ impl Core {
         }
     }
 
-    fn monitor_is_camera_eligible(m: &Monitor) -> bool {
-        m.identity == "stable" && m.brightness.supported && m.baseline.is_some()
+    // Absence from protection_disabled means protection is on for that monitor.
+    fn is_protected(&self, id: &str) -> bool {
+        !self.settings.protection_disabled.contains(id)
+    }
+
+    fn monitor_is_camera_eligible(m: &Monitor, protected: bool) -> bool {
+        protected && m.identity == "stable" && m.brightness.supported && m.baseline.is_some()
     }
 
     fn all_eligible_displays_asleep(&self) -> bool {
         let mut eligible = self
             .monitors
             .values()
-            .filter(|monitor| Self::monitor_is_camera_eligible(monitor))
+            .filter(|monitor| {
+                Self::monitor_is_camera_eligible(monitor, self.is_protected(&monitor.id))
+            })
             .peekable();
         eligible.peek().is_some() && eligible.all(|monitor| monitor.display_state == "asleep")
     }
@@ -756,14 +815,18 @@ impl Core {
         let saver_active =
             self.settings.screensaver_protection_enabled && self.saver_state == "active";
         let targets = self.settings.screensaver_targets.clone();
+        let protection_disabled = &self.settings.protection_disabled;
         let action_generation = self.revision.saturating_add(1);
         for m in self.monitors.values_mut() {
             if m.identity != "stable" || !m.brightness.supported {
                 continue;
             }
-            m.saver_dimmed = saver_active;
+            // Unprotected monitors get no reasons, so the no-reason branch below restores them.
+            let protected = !protection_disabled.contains(&m.id);
+            let presence_dimmed = m.presence_dimmed && protected;
+            m.saver_dimmed = saver_active && protected;
             let mut reasons = Vec::new();
-            if m.presence_dimmed {
+            if presence_dimmed {
                 reasons.push("presence".to_owned());
             }
             if m.saver_dimmed {
@@ -773,7 +836,7 @@ impl Core {
             if m.display_state == "asleep" {
                 continue;
             }
-            if m.presence_dimmed && m.baseline.is_none() {
+            if presence_dimmed && m.baseline.is_none() {
                 m.brightness.status = "read_required".into();
                 continue;
             }
@@ -783,10 +846,16 @@ impl Core {
             if m.manual_override {
                 continue;
             }
+            // Follow applies only when no protection reason holds. A full queue defers it to the
+            // next reconcile instead of failing the command.
+            let following = m.follow_raw.filter(|_| m.brightness.reasons.is_empty());
+            if following.is_some() && self.actions.len() >= MAX_ACTIONS {
+                continue;
+            }
             let target = if !m.brightness.reasons.is_empty() {
                 let base = m.baseline.unwrap_or(m.brightness.observed.unwrap_or(0.0));
                 let mut desired = base;
-                if m.presence_dimmed {
+                if presence_dimmed {
                     desired = desired.min(m.brightness.min);
                 }
                 if m.saver_dimmed {
@@ -797,6 +866,8 @@ impl Core {
                     ));
                 }
                 Some(desired)
+            } else if following.is_some() {
+                following
             } else if m.brightness.owned {
                 m.baseline
             } else {
@@ -817,6 +888,15 @@ impl Core {
                         target,
                         &mut m.brightness.status,
                     )?;
+                    continue;
+                }
+                // Follow stops once the last desired value matches, so a monitor that reports a
+                // slightly different level is not rewritten in a loop.
+                if following.is_some()
+                    && m.brightness
+                        .desired
+                        .is_some_and(|desired| (desired - target).abs() < 0.0001)
+                {
                     continue;
                 }
                 if m.brightness.owned
@@ -942,8 +1022,13 @@ impl Core {
                     feature.raw = Some(value);
                     feature.owned = false;
                     feature.ownership_checked_target = None;
-                    m.baseline = Some(value);
-                    m.manual_override = !feature.reasons.is_empty();
+                    // Follow is authoritative: a differing readback is overwritten, not adopted.
+                    if m.follow_raw.is_some() {
+                        feature.desired = None;
+                    } else {
+                        m.baseline = Some(value);
+                        m.manual_override = !feature.reasons.is_empty();
+                    }
                 }
             } else {
                 feature.status = v
@@ -1043,9 +1128,89 @@ impl Core {
         Ok(())
     }
 
+    // Shell report of the built-in display. Every field is validated before any state changes.
+    fn builtin_display(&mut self, v: &Value) -> Result<(), String> {
+        let available = v
+            .get("available")
+            .and_then(Value::as_bool)
+            .ok_or("available must be boolean")?;
+        let calibrating = v
+            .get("calibrating")
+            .and_then(Value::as_bool)
+            .ok_or("calibrating must be boolean")?;
+        let percent = match v.get("brightness") {
+            None => return Err("brightness is required".into()),
+            Some(Value::Null) => None,
+            Some(level) => match level.as_f64() {
+                Some(n) if n.is_finite() && (0.0..=100.0).contains(&n) => Some(n),
+                _ => return Err("brightness must be a number in 0..=100 or null".into()),
+            },
+        };
+        self.builtin_available = available;
+        self.builtin_percent = percent;
+        self.calibrating = calibrating;
+        self.recompute_follow(None);
+        self.reconcile_all()
+    }
+
+    // Recomputes follow targets for one monitor or all of them. A target also becomes the
+    // baseline so protection restores the mapped value. manual_override and restore_failures
+    // stay untouched because follow is not a manual change.
+    fn recompute_follow(&mut self, monitor_id: Option<&str>) {
+        let targets: Vec<(String, Option<f64>)> = self
+            .monitors
+            .values()
+            .filter(|m| monitor_id.is_none() || monitor_id == Some(m.id.as_str()))
+            .map(|m| (m.id.clone(), self.follow_target(m)))
+            .collect();
+        for (id, raw) in targets {
+            if let Some(m) = self.monitors.get_mut(&id) {
+                m.follow_raw = raw;
+                if let Some(raw) = raw {
+                    m.baseline = Some(raw);
+                }
+            }
+        }
+    }
+
+    // Mapped raw target for one monitor, or None while follow is not applying to it.
+    fn follow_target(&self, m: &Monitor) -> Option<f64> {
+        if !self.settings.ambient_follow_enabled
+            || !self.builtin_available
+            || self.calibrating
+            || self.follow_eligibility(m) != "eligible"
+        {
+            return None;
+        }
+        let curve = self.settings.ambient_curves.get(&m.id)?;
+        let percent = curve_percent(curve, self.builtin_percent?)?;
+        let raw = map_normalized(percent, m.brightness.min, m.brightness.max).round();
+        Some(raw.clamp(m.brightness.min, m.brightness.max))
+    }
+
+    // Ambient follow eligibility, regardless of whether follow is switched on. Later follow
+    // targets match on "eligible".
+    fn follow_eligibility(&self, m: &Monitor) -> &'static str {
+        if m.identity != "stable" {
+            "unstable"
+        } else if !m.brightness.supported {
+            "unsupported"
+        } else if self
+            .settings
+            .ambient_curves
+            .get(&m.id)
+            .is_some_and(AmbientCurve::is_complete)
+        {
+            "eligible"
+        } else {
+            "uncalibrated"
+        }
+    }
+
     pub fn snapshot_value(&self) -> Result<Value, String> {
         let monitors:Vec<Value>=self.monitors.values().map(|m|json!({"id":m.id,"name":m.name,"identity_status":m.identity,"connection_path":m.path,"generation":m.generation,"display_state":m.display_state,
-            "presence_dimmed":m.presence_dimmed,"brightness":feature_json(&m.brightness),"volume":feature_json(&m.volume)})).collect();
+            "presence_dimmed":m.presence_dimmed,"brightness":feature_json(&m.brightness),"volume":feature_json(&m.volume),
+            "follow":self.follow_eligibility(m),"protected":!self.settings.protection_disabled.contains(&m.id)})).collect();
         let mut scheduled_monitors = std::collections::BTreeSet::new();
         let actions: Vec<Value> = self.actions.iter()
             .filter(|a| scheduled_monitors.insert(a.monitor_id.as_str()))
@@ -1077,6 +1242,7 @@ impl Core {
         };
         let display_status = self.camera_display_status(camera_mode);
         let value = json!({"revision":self.revision,"settings":self.settings,"messages":self.localized_messages(),"monitors":monitors,"pending_actions":actions,
+            "ambient":{"enabled":self.settings.ambient_follow_enabled,"available":self.builtin_available,"active":self.settings.ambient_follow_enabled&&self.builtin_available,"calibrating":self.calibrating,"builtin_percent":self.builtin_percent},
             "camera":{"mode":camera_mode,"capture_mode":capture_mode,"status":self.camera_status,"display_status":display_status,"next_sample_in_ms":if camera_mode=="disabled"||camera_mode=="suspended"{Value::Null}else{json!(cadence)},"generation":self.camera_generation},
             "power":{"on_battery":self.on_battery},"screensaver":{"state":self.saver_state},"status":"ready"});
         let bytes = serde_json::to_vec(&value).map_err(|e| e.to_string())?;
@@ -1309,6 +1475,21 @@ fn enqueue_brightness_read(
         None,
         Some(target),
     )
+}
+// Monitor percent for a built-in level: piecewise linear through (0, 0) and the curve points.
+// None while the curve is incomplete.
+fn curve_percent(curve: &AmbientCurve, level: f64) -> Option<f64> {
+    let knots = [
+        (0.0, 0.0),
+        (25.0, curve.p25?),
+        (50.0, curve.p50?),
+        (75.0, curve.p75?),
+        (100.0, curve.p100?),
+    ];
+    let x = level.clamp(0.0, 100.0);
+    let segment = knots.windows(2).find(|pair| x <= pair[1].0)?;
+    let ((x0, y0), (x1, y1)) = (segment[0], segment[1]);
+    Some(y0 + (x - x0) * (y1 - y0) / (x1 - x0))
 }
 fn map_normalized(v: f64, min: f64, max: f64) -> f64 {
     min + (v / 100.0) * (max - min)

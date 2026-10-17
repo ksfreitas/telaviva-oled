@@ -9,6 +9,8 @@ struct SettingsView: View {
     var requestHardwareKeyPermission: () -> Void = {
         (NSApp.delegate as? MenuBarController)?.requestHardwareKeyPermission()
     }
+    @ObservedObject var ambientAvailability: AmbientAvailability = AmbientAvailability()
+    var calibration: AmbientCalibrationController? = nil
     @State private var locale = "auto"
     @State private var presence = false
     @State private var alwaysOnCamera = false
@@ -32,12 +34,46 @@ struct SettingsView: View {
     private var cameraSelection: Binding<String?> {
         Binding(get: { effectiveCameraID }, set: { core.selectCamera($0) })
     }
+    /// Monitors listed in the protection section, from the latest core snapshot.
+    private var connectedMonitors: [CoreMonitor] { core.snapshot.monitors ?? [] }
 
     private func refreshCameras() {
         cameras = AVCaptureDevice.DiscoverySession(deviceTypes: [.builtInWideAngleCamera, .external], mediaType: .video, position: .unspecified).devices
     }
 
     var body: some View {
+        // Tabs read and write the drafts owned here; save() and load() stay in this view.
+        TabView {
+            generalTab
+                .tabItem { Text(AppText.string("settings.tab.general", locale: locale)) }
+            keyboardTab
+                .tabItem { Text(AppText.string("settings.tab.keyboard", locale: locale)) }
+            AmbientBrightnessView(core: core, availability: ambientAvailability, calibration: calibration)
+                .tabItem { Text(AppText.string("settings.tab.ambient", locale: locale)) }
+        }
+        .onAppear { refreshCameras(); load() }
+        .onReceive(NotificationCenter.default.publisher(for: AVCaptureDevice.wasConnectedNotification)) { _ in refreshCameras() }
+        .onReceive(NotificationCenter.default.publisher(for: AVCaptureDevice.wasDisconnectedNotification)) { _ in refreshCameras() }
+        .onChange(of: core.snapshot.revision) { _, _ in if !didLoad { load() } }
+        .onChange(of: locale) { _, _ in save() }
+        .onChange(of: presence) { _, _ in save() }
+        .onChange(of: hardwareKeys) { _, _ in save() }
+        .onChange(of: alwaysOnCamera) { _, _ in save() }
+        .onChange(of: screensaver) { _, _ in save() }
+        .onChange(of: battery) { _, _ in save() }
+        .onChange(of: presentInterval) { _, _ in save() }
+        .onChange(of: returnInterval) { _, _ in save() }
+        .onChange(of: brightnessKeyStep) { _, _ in save() }
+        .onChange(of: volumeKeyStep) { _, _ in save() }
+        .alert(AppText.string("loginItemFailureTitle", locale: locale), isPresented: $showLoginItemError) {
+            Button(AppText.string("ok", locale: locale), role: .cancel) { }
+        } message: {
+            Text(loginItemError)
+        }
+    }
+
+    /// General tab: language and login, OLED protection, and camera availability.
+    private var generalTab: some View {
         Form {
             Section(AppText.string("general", locale: locale)) {
                 Picker(AppText.string("language", locale: locale), selection: $locale) {
@@ -72,7 +108,42 @@ struct SettingsView: View {
                 LabeledContent(AppText.string("return", locale: locale)) {
                     HStack { Slider(value: $returnInterval, in: 0.25...5, step: 0.25); Text(String(format: "%.2g s", returnInterval)).monospacedDigit() }
                 }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(AppText.string("protection.monitors.title", locale: locale))
+                        .font(.subheadline.weight(.semibold))
+                    Text(AppText.string("protection.monitors.help", locale: locale))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if connectedMonitors.isEmpty {
+                    Text(AppText.string("protection.monitors.none", locale: locale))
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(connectedMonitors) { monitor in
+                    Toggle(monitor.name, isOn: Binding(
+                        get: { monitor.protected ?? true },
+                        set: { setMonitorProtection(monitor.id, enabled: $0) }
+                    ))
+                }
             }
+            Section(AppText.string("availability", locale: locale)) {
+                Picker(AppText.string("camera", locale: locale), selection: cameraSelection) {
+                    Text(AppText.string("cameraPicker", locale: locale)).tag(String?.none)
+                    ForEach(cameras, id: \.uniqueID) { device in Text(device.localizedName).tag(Optional(device.uniqueID)) }
+                }
+                Label(AppText.cameraInlineStatus(core.snapshot, locale: locale), systemImage: "camera")
+                Text(AppText.string("cameraHelp", locale: locale))
+                    .font(.caption).foregroundStyle(.secondary)
+                Text(AppText.string("displayHelp", locale: locale))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .padding(20)
+    }
+
+    /// Keyboard tab: hardware keys, step sizes, and the permissions they need.
+    private var keyboardTab: some View {
+        Form {
             Section(AppText.string("hardwareKeys.title", locale: locale)) {
                 Toggle(AppText.string("hardwareKeys.toggle", locale: locale), isOn: Binding(
                     get: { hardwareKeys },
@@ -109,39 +180,9 @@ struct SettingsView: View {
                         openURL: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")
                 }
             }
-            Section(AppText.string("availability", locale: locale)) {
-                Picker(AppText.string("camera", locale: locale), selection: cameraSelection) {
-                    Text(AppText.string("cameraPicker", locale: locale)).tag(String?.none)
-                    ForEach(cameras, id: \.uniqueID) { device in Text(device.localizedName).tag(Optional(device.uniqueID)) }
-                }
-                Label(AppText.cameraInlineStatus(core.snapshot, locale: locale), systemImage: "camera")
-                Text(AppText.string("cameraHelp", locale: locale))
-                    .font(.caption).foregroundStyle(.secondary)
-                Text(AppText.string("displayHelp", locale: locale))
-                    .font(.caption).foregroundStyle(.secondary)
-            }
         }
         .formStyle(.grouped)
         .padding(20)
-        .onAppear { refreshCameras(); load() }
-        .onReceive(NotificationCenter.default.publisher(for: AVCaptureDevice.wasConnectedNotification)) { _ in refreshCameras() }
-        .onReceive(NotificationCenter.default.publisher(for: AVCaptureDevice.wasDisconnectedNotification)) { _ in refreshCameras() }
-        .onChange(of: core.snapshot.revision) { _, _ in if !didLoad { load() } }
-        .onChange(of: locale) { _, _ in save() }
-        .onChange(of: presence) { _, _ in save() }
-        .onChange(of: hardwareKeys) { _, _ in save() }
-        .onChange(of: alwaysOnCamera) { _, _ in save() }
-        .onChange(of: screensaver) { _, _ in save() }
-        .onChange(of: battery) { _, _ in save() }
-        .onChange(of: presentInterval) { _, _ in save() }
-        .onChange(of: returnInterval) { _, _ in save() }
-        .onChange(of: brightnessKeyStep) { _, _ in save() }
-        .onChange(of: volumeKeyStep) { _, _ in save() }
-        .alert(AppText.string("loginItemFailureTitle", locale: locale), isPresented: $showLoginItemError) {
-            Button(AppText.string("ok", locale: locale), role: .cancel) { }
-        } message: {
-            Text(loginItemError)
-        }
     }
 
     /// One permission row: the state on top, and request and open-settings buttons disabled once granted.
@@ -191,6 +232,15 @@ struct SettingsView: View {
         settings.brightness_key_step = Int(brightnessKeyStep.rounded())
         settings.volume_key_step = Int(volumeKeyStep.rounded())
         core.updateSettings(settings)
+    }
+
+    /// Writes one monitor's protection opt-out directly, with no draft: save() keeps this field from the latest snapshot.
+    private func setMonitorProtection(_ monitorID: String, enabled: Bool) {
+        guard var next = core.snapshot.settings else { return }
+        var disabled = Set(next.protectionDisabled ?? [])
+        if enabled { disabled.remove(monitorID) } else { disabled.insert(monitorID) }
+        next.protectionDisabled = disabled.sorted()
+        core.updateSettings(next)
     }
 }
 

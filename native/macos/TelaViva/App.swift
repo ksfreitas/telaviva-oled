@@ -44,7 +44,7 @@ struct TelaVivaApp: App {
     var body: some Scene {
         Settings {
             SettingsView(core: appDelegate.core)
-                .frame(minWidth: 420, minHeight: 420)
+                .frame(minWidth: 560, minHeight: 560)
         }
         .commands { CommandGroup(replacing: .newItem) {} }
     }

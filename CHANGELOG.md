@@ -10,15 +10,21 @@
 - Brightness keys that the keyboard sends as plain key codes 144 and 145 are now recognized and routed to the external monitor under the cursor; they were ignored before.
 - Hardware brightness and volume keys pressed quickly no longer make the target jump back: the key router now ignores monitor readbacks while its own DDC writes are in flight and for one second afterwards, then compares again, so external changes and monitor clamping are still followed.
 - A dimmed monitor that wakes while its DDC channel is not ready is now restored: a failed wake readback or restore write is retried up to three times while ownership of the dimmed value is kept, instead of dropping ownership and leaving the monitor at its dimmed brightness.
+- The camera status shown when display sleep suspends monitoring was missing its pt-BR text and now has it.
 
 ### Changed
 
+- macOS popup height follows the number of monitors and scrolls beyond three; hardware checks are pending acceptance.
+- macOS Settings is a larger, resizable window with General, Keyboard and Automatic brightness tabs; hardware checks are pending acceptance.
+- Brightness keys pass through to macOS for monitors that follow the MacBook screen brightness; hardware checks are pending acceptance.
 - Faster first presence reading after wake on macOS: the first face sample is taken about one second after an eligible display wakes, power returns to AC while battery suspension is on, or presence protection is re-enabled, instead of after a full sampling interval. Stale low-light and busy or unavailable camera status is cleared on resume. Hardware timing is pending acceptance.
 - Dark frames in single-frame face checks on macOS now keep the camera on for five seconds and report only the settled sample, so a dark frame taken during auto-exposure no longer starts the low-light cycle. In dark rooms the camera stays on about five seconds longer per single-frame face check. Continuous capture modes keep reporting an insufficient-light frame immediately. Hardware acceptance is pending.
 - Default hardware-key step is now 5 points (was 6.25) and Shift+Option moves 1 point (was 1.5625).
 
 ### Added
 
+- On macOS, external monitors follow the MacBook screen brightness through per-monitor four-point curves, with a calibration tab; hardware checks are pending acceptance.
+- Per-monitor OLED protection participation toggle in the popup and in Settings, so each external monitor can opt in or out; hardware checks are pending acceptance.
 - Camera selection history on macOS: the app remembers the cameras you select, up to eight, most recent first, and uses the first one that is connected. When none is connected it falls back to the system default camera, and "Use default camera" clears the history. Hardware checks with two webcams are pending.
 - Configurable hardware-key step for brightness and volume (1 to 15 points each, default 5) in Settings; Settings window is taller.
 - Optional macOS keyboard brightness and volume routing to the supported external monitor under the cursor, with Accessibility status and settings.

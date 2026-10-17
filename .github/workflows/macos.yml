@@ -39,6 +39,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Test manual monitor controls
         run: tools/tests/test-manual-monitor-controls.sh
+      - name: Test popup layout
+        run: tools/tests/test-popup-layout.sh
+      - name: Test built-in brightness monitor
+        run: tools/tests/test-builtin-brightness-monitor.sh
+      - name: Test ambient calibration
+        run: tools/tests/test-ambient-calibration.sh
       - name: Test DDC transactions
         run: tools/tests/test-ddc-transaction.sh
       - name: Test hardware-key routing

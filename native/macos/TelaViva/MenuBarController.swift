@@ -18,6 +18,40 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         }
     })
     private let defaultAudioOutput = DefaultAudioOutputMonitor()
+    private let ambientAvailability = AmbientAvailability()
+    private let builtInBackend = DisplayServicesBackend()
+    private lazy var builtInMonitor = BuiltInBrightnessMonitor(backend: builtInBackend, scheduler: DispatchBuiltInScheduler(), submit: { [weak self] report in
+        self?.core.submitBuiltInDisplay(available: report.available, brightness: report.brightness, calibrating: report.calibrating)
+        DispatchQueue.main.async { [weak self] in
+            self?.ambientAvailability.reason = report.available ? nil : report.reason
+            if !report.available { self?.calibration.end(.builtInUnavailable) }
+        }
+    })
+    private lazy var calibration: AmbientCalibrationController = {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("TelaVivaOLED", isDirectory: true)
+        let hooks = CalibrationHooks(
+            monitorBrightness: { [weak self] id in
+                guard let value = self?.core.snapshot.monitors?.first(where: { $0.id == id })?.brightness, value.supported else { return nil }
+                return value.value
+            },
+            setMonitorBrightness: { [weak self] id, value in
+                guard let self, let monitor = self.core.snapshot.monitors?.first(where: { $0.id == id }) else { return }
+                self.manualControls.setValue(value, monitor: monitor, feature: .brightness)
+            },
+            curve: { [weak self] id in self?.core.snapshot.settings?.ambientCurves?[id] ?? AmbientCurve() },
+            saveCurve: { [weak self] id, curve in
+                guard let self, var settings = self.core.snapshot.settings else { return }
+                var curves = settings.ambientCurves ?? [:]
+                curves[id] = curve
+                settings.ambientCurves = curves
+                self.core.updateSettings(settings)
+            },
+            setCalibrating: { [weak self] flag in self?.builtInMonitor.setCalibrating(flag) },
+            now: { ISO8601DateFormatter().string(from: Date()) }
+        )
+        return AmbientCalibrationController(backend: builtInBackend, store: CalibrationSessionStore(directory: appSupport), hooks: hooks)
+    }()
     private var hardwareKeyDisplays: [HardwareKeyDisplay] = []
     private var externalKeyboardDrafts: [UInt64: (monitorID: String, generation: UInt64, feature: HardwareKeyFeature, revision: UInt64)] = [:]
     private var statusItem: NSStatusItem!
@@ -29,8 +63,13 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     private var terminationDeadline: DispatchWorkItem?
     private var terminationPoll: DispatchWorkItem?
     private var terminating = false
+    private var lastFollowedIDs: Set<String> = []
     private var activationObserver: NSObjectProtocol?
     private var accessibilityObserver: NSObjectProtocol?
+    private var screenObserver: NSObjectProtocol?
+    private var wakeObserver: NSObjectProtocol?
+    private var displaySleepObserver: NSObjectProtocol?
+    private var settingsCloseObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -41,12 +80,14 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         popover = NSPopover()
         popover.behavior = .transient
-        popover.contentSize = NSSize(width: 360, height: 420)
         let openSettingsAction: () -> Void = openSettings
         let refreshDisplaysAction: () -> Void = ddc.refresh
         let popupView = MonitorPopup(core: core, controls: manualControls, openSettings: openSettingsAction,
                                      refreshDisplays: refreshDisplaysAction)
-        popover.contentViewController = NSHostingController(rootView: popupView)
+        // The popover now follows the SwiftUI content size; a hardware check of the resize is pending.
+        let host = NSHostingController(rootView: popupView)
+        host.sizingOptions = [.preferredContentSize]
+        popover.contentViewController = host
         snapshotSubscription = core.$snapshot.receive(on: DispatchQueue.main).sink { [weak self] snapshot in
             guard let self else { return }
             self.pruneExternalKeyboardDrafts(using: snapshot)
@@ -58,11 +99,19 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                                             volume: Double(snapshot.settings?.volume_key_step ?? 5))
             self.hardwareKeyRouter.apply(enabled: snapshot.settings?.hardware_keys_enabled ?? false,
                                          displays: self.hardwareKeyDisplays)
+            let followedIDs: Set<String> = snapshot.ambient?.active == true
+                ? Set((snapshot.monitors ?? []).filter { $0.follow == "eligible" }.map(\.id))
+                : []
+            if followedIDs != self.lastFollowedIDs {
+                self.lastFollowedIDs = followedIDs
+                self.hardwareKeyRouter.setFollowedBrightnessDisplays(followedIDs)
+            }
             if snapshot.settings?.hardware_keys_enabled ?? false {
                 self.defaultAudioOutput.start()
             } else {
                 self.defaultAudioOutput.stop()
             }
+            self.builtInMonitor.setEnabled(snapshot.settings?.ambientFollowEnabled ?? false)
         }
         core.hardwareKeyValidator = { [weak self] command in
             guard let self, !self.terminating, AXIsProcessTrusted() else { return false }
@@ -158,6 +207,18 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                                          displays: displays)
         }
         ddc.start()
+        builtInMonitor.start()
+        calibration.recoverIfNeeded()
+        // Availability is re-read on display changes and wake; there is no polling for it.
+        screenObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.builtInMonitor.refreshAvailability()
+        }
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.builtInMonitor.refreshAvailability()
+        }
+        displaySleepObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.calibration.end(.displaySleep)
+        }
         observeScreensaver()
         powerSource = IOPSNotificationCreateRunLoopSource(powerSourceChanged, Unmanaged.passUnretained(self).toOpaque())?.takeRetainedValue()
         if let powerSource { CFRunLoopAddSource(CFRunLoopGetMain(), powerSource, .defaultMode) }
@@ -180,6 +241,19 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         if let accessibilityObserver { DistributedNotificationCenter.default().removeObserver(accessibilityObserver) }
         activationObserver = nil
         accessibilityObserver = nil
+    }
+
+    /// Stops the built-in monitor and removes its observers; safe to call more than once.
+    private func stopBuiltInMonitor() {
+        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
+        if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
+        if let displaySleepObserver { NSWorkspace.shared.notificationCenter.removeObserver(displaySleepObserver) }
+        if let settingsCloseObserver { NotificationCenter.default.removeObserver(settingsCloseObserver) }
+        screenObserver = nil
+        wakeObserver = nil
+        displaySleepObserver = nil
+        settingsCloseObserver = nil
+        builtInMonitor.stop()
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
@@ -205,14 +279,18 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         } else {
             let settingsView = SettingsView(core: core, requestHardwareKeyPermission: { [weak self] in
                 self?.requestHardwareKeyPermission()
-            })
-                .frame(minWidth: 420, minHeight: 420)
-            let created = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 640),
-                                   styleMask: [.titled, .closable, .miniaturizable],
+            }, ambientAvailability: ambientAvailability, calibration: calibration)
+                .frame(minWidth: 560, minHeight: 560)
+            let created = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 720),
+                                   styleMask: [.titled, .closable, .miniaturizable, .resizable],
                                    backing: .buffered, defer: false)
+            created.contentMinSize = NSSize(width: 560, height: 560)
             created.title = "TelaViva OLED"
             created.contentViewController = NSHostingController(rootView: settingsView)
             created.isReleasedWhenClosed = false
+            settingsCloseObserver = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: created, queue: .main) { [weak self] _ in
+                self?.calibration.end(.windowClosed)
+            }
             settingsWindow = created
             window = created
         }
@@ -263,6 +341,8 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         defaultAudioOutput.stop()
         hardwareKeyRouter.shutdown()
         removePermissionObservers()
+        calibration.end(.appQuit)
+        stopBuiltInMonitor()
         manualControls.shutdown()
         camera.shutdown()
         let deadline = DispatchWorkItem { [weak self] in
@@ -304,11 +384,13 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        calibration.end(.appQuit)
         if let powerSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), powerSource, .defaultMode) }
         camera.shutdown()
         defaultAudioOutput.stop()
         hardwareKeyRouter.shutdown()
         removePermissionObservers()
+        stopBuiltInMonitor()
         ddc.shutdown()
     }
 }

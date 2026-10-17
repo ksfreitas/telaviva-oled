@@ -49,6 +49,9 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 tools/tests/test-camera-lifecycle.sh
 tools/tests/test-ddc-transaction.sh
 tools/tests/test-manual-monitor-controls.sh
+tools/tests/test-popup-layout.sh
+tools/tests/test-builtin-brightness-monitor.sh
+tools/tests/test-ambient-calibration.sh
 tools/tests/test-core-bridge.sh
 tools/tests/test-hardware-key-router.sh
 tools/tests/test-default-audio-output.sh

@@ -145,3 +145,20 @@ The router also no longer rebases a key's intent while one of its own accepted h
 The core's restore retry is bounded. When a wake verification readback or a restore write fails while no protection reason is active and the app still owns the dimmed value, `Monitor.restore_failures` counts the failure and ownership, baseline and error status are kept; `reconcile_all` then re-reads before any retry write. After `MAX_RESTORE_FAILURES` (3) failures, ownership is dropped as before. Dim, manual and volume writes keep their failure behavior. Once shutdown has started, retries are disabled: a failed read or restore write on the shutdown path drops ownership as before, so quitting never waits on retries.
 
 The counter is internal and is not in the snapshot. It resets on a successful `set_brightness`, a display-state change, a manual brightness set and monitor discovery. A successful readback does not reset it, because a restore write that keeps failing while readbacks succeed would otherwise retry without limit. A restore write is still enqueued only after a readback matches the value the app last set. No native shell or ABI change is part of this feature. The decision is recorded in [ADR 0006](adr/0006-keep-brightness-restore-pending-after-failed-wake-readback.md), and the archived spec is at [specs/archived/restore-brightness-on-monitor-wake/spec.md](specs/archived/restore-brightness-on-monitor-wake/spec.md). Hardware behavior on the physical monitor is not verified.
+
+## macbook-brightness-follow — 2026-10-16
+
+The macbook-brightness-follow extension makes external monitors follow the brightness of a MacBook's built-in display. The core owns the follow policy and the mapping from built-in brightness to each monitor's target through a per-monitor four-point curve, exposed to the native shell as a `builtin_display` command. The macOS shell reads and writes built-in brightness through one protocol, implemented by a private DisplayServices/CoreBrightness backend kept behind that protocol. The shell polls the built-in brightness every second, and readings are quantized and debounced before they reach the core. A calibration session fits each monitor's curve and writes a crash-recovery file so that an interrupted session can be recovered. Per-monitor OLED protection participation is a separate setting, so each monitor can opt in or out. The popup height is measured from its content and scrolls beyond three monitors. Settings is a larger, resizable window with General, Keyboard and Automatic brightness tabs. Brightness keys pass through to macOS for monitors that follow the MacBook.
+
+[ADR 0007](adr/0007-private-display-apis-for-built-in-brightness.md) records the use of private display APIs for built-in brightness, [ADR 0008](adr/0008-core-owned-ambient-follow-and-per-monitor-protection.md) records the core-owned follow policy and per-monitor protection, and the [feature specification](specs/archived/macbook-brightness-follow/spec.md) defines the requirements.
+
+Nothing in this section is verified on hardware. The following remain unverified:
+
+- the built-in brightness setter and the automatic-brightness setter on the private backend;
+- the brightness-change callback, which the polling design does not use;
+- monitor ID stability across ports and docks;
+- NSPopover content sizing for the measured popup height;
+- behavior on a Mac without a built-in display;
+- lid-closed behavior;
+- notarization with private frameworks;
+- macOS 14, 15 and 26.

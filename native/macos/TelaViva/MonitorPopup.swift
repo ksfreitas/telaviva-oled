@@ -5,6 +5,7 @@ struct MonitorPopup: View {
     @ObservedObject var controls: ManualMonitorControls
     let openSettings: () -> Void
     let refreshDisplays: () -> Void
+    @State private var cardHeights: [String: CGFloat] = [:]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -19,9 +20,14 @@ struct MonitorPopup: View {
             if let monitors = core.snapshot.monitors, !monitors.isEmpty {
                 ScrollView {
                     VStack(spacing: 12) {
-                        ForEach(monitors) { MonitorControls(monitor: $0, core: core, controls: controls) }
+                        ForEach(monitors) { MonitorControls(monitor: $0, core: core, controls: controls).reportPopupCardHeight(id: $0.id) }
                     }
                 }
+                .frame(height: PopupLayout.listHeight(
+                    cardHeights: monitors.map { cardHeights[$0.id] ?? PopupLayout.estimatedCardHeight },
+                    spacing: 12,
+                    screenCap: PopupLayout.listCap(visibleScreenHeight: NSScreen.main?.visibleFrame.height ?? 800)))
+                .onPreferenceChange(PopupCardHeightsKey.self) { cardHeights = $0 }
             } else {
                 ContentUnavailableView(AppText.string("noDisplays", locale: core.snapshot.settings?.locale, messages: core.snapshot.messages), systemImage: "display", description: Text(AppText.string("ddcUnavailable", locale: core.snapshot.settings?.locale, messages: core.snapshot.messages)))
                     .frame(maxWidth: .infinity, minHeight: 210)
@@ -38,7 +44,7 @@ struct MonitorPopup: View {
             }
         }
         .padding(16)
-        .frame(width: 360, height: 420)
+        .frame(width: 360)
     }
 
     private var cameraStatus: String {
@@ -53,16 +59,29 @@ private struct MonitorControls: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(monitor.name).font(.subheadline.weight(.semibold))
-            control(AppText.string("brightness", locale: core.snapshot.settings?.locale, messages: core.snapshot.messages), value: monitor.brightness, feature: .brightness)
+            HStack(spacing: 8) {
+                Text(monitor.name).font(.subheadline.weight(.semibold))
+                Spacer()
+                if core.snapshot.settings?.presence_protection_enabled == true || core.snapshot.settings?.screensaver_protection_enabled == true {
+                    protectionToggle
+                }
+            }
+            if !isFollowed {
+                control(AppText.string("brightness", locale: core.snapshot.settings?.locale, messages: core.snapshot.messages), value: monitor.brightness, feature: .brightness)
+            }
             control(AppText.string("volume", locale: core.snapshot.settings?.locale, messages: core.snapshot.messages), value: monitor.volume, feature: .volume)
-            if core.snapshot.settings?.screensaver_protection_enabled == true {
+            if core.snapshot.settings?.screensaver_protection_enabled == true, monitor.protected != false {
                 screensaverTarget
             }
         }
         .onAppear(perform: clampScreensaverTarget)
         .onChange(of: monitor.brightness?.value) { _, _ in clampScreensaverTarget() }
         .padding(12).background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    /// Followed monitors are driven by the ambient sensor, so the card hides the manual brightness control.
+    private var isFollowed: Bool {
+        core.snapshot.ambient?.active == true && monitor.follow == "eligible"
     }
 
     private var screensaverTarget: some View {
@@ -81,6 +100,29 @@ private struct MonitorControls: View {
             .disabled(!enabled)
             Text("\(Int(target.rounded()))%").monospacedDigit().frame(width: 42, alignment: .trailing).font(.caption)
         }
+    }
+
+    private var protectionToggle: some View {
+        let title = AppText.string("protection.monitor.toggle", locale: core.snapshot.settings?.locale, messages: core.snapshot.messages)
+        return Toggle(isOn: Binding(get: {
+            monitor.protected ?? true
+        }, set: { enabled in
+            setProtection(enabled)
+        })) {
+            Text(title)
+        }
+        .toggleStyle(.switch).controlSize(.mini).labelsHidden()
+        .help(title)
+        .accessibilityLabel(title)
+    }
+
+    /// Writes the full `protection_disabled` set; the core treats a monitor as unprotected while its ID is listed.
+    private func setProtection(_ enabled: Bool) {
+        guard var settings = core.snapshot.settings else { return }
+        var disabled = Set(settings.protectionDisabled ?? [])
+        if enabled { disabled.remove(monitor.id) } else { disabled.insert(monitor.id) }
+        settings.protectionDisabled = disabled.sorted()
+        core.updateSettings(settings)
     }
 
     @ViewBuilder private func control(_ title: String, value: VcpValue?, feature: HardwareKeyFeature) -> some View {
@@ -115,7 +157,8 @@ private struct MonitorControls: View {
         guard let brightness = monitor.brightness, brightness.supported,
               let value = brightness.value else { return nil }
         let confirmed = min(max(value, 0), 100)
-        guard let draft = controls.displayValue(monitor: monitor, feature: .brightness) else { return confirmed }
+        // A followed monitor has no brightness control, so any leftover draft is ignored.
+        guard !isFollowed, let draft = controls.displayValue(monitor: monitor, feature: .brightness) else { return confirmed }
         return min(confirmed, max(0, draft))
     }
 

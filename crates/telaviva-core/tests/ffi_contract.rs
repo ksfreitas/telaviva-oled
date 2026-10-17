@@ -135,3 +135,42 @@ fn ffi_transports_display_state_and_always_on_setting_without_abi_change() {
         ffi::tv_destroy(core);
     }
 }
+
+#[test]
+fn ffi_builtin_display_reaches_the_snapshot() {
+    unsafe {
+        let mut core: *mut TvCore = ptr::null_mut();
+        assert_eq!(
+            ffi::tv_create(1, ptr::null(), 0, None, ptr::null_mut(), &mut core),
+            ffi::TV_OK
+        );
+        let cmd =
+            br#"{"type":"builtin_display","available":true,"brightness":44,"calibrating":false}"#;
+        assert_eq!(ffi::tv_submit(core, cmd.as_ptr(), cmd.len()), ffi::TV_OK);
+        let mut buffer = TvBuffer {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        assert_eq!(ffi::tv_snapshot(core, &mut buffer), ffi::TV_OK);
+        let snapshot: serde_json::Value =
+            serde_json::from_slice(std::slice::from_raw_parts(buffer.data, buffer.len)).unwrap();
+        ffi::tv_buffer_free(&mut buffer);
+        assert_eq!(snapshot["ambient"]["available"], true);
+        assert_eq!(snapshot["ambient"]["builtin_percent"].as_f64(), Some(44.0));
+        assert_eq!(snapshot["ambient"]["calibrating"], false);
+
+        // A rejected command must leave the snapshot untouched.
+        let invalid =
+            br#"{"type":"builtin_display","available":true,"brightness":101,"calibrating":false}"#;
+        assert_eq!(
+            ffi::tv_submit(core, invalid.as_ptr(), invalid.len()),
+            ffi::TV_INVALID_ARGUMENT
+        );
+        assert_eq!(ffi::tv_snapshot(core, &mut buffer), ffi::TV_OK);
+        let unchanged: serde_json::Value =
+            serde_json::from_slice(std::slice::from_raw_parts(buffer.data, buffer.len)).unwrap();
+        ffi::tv_buffer_free(&mut buffer);
+        assert_eq!(unchanged, snapshot);
+        ffi::tv_destroy(core);
+    }
+}
