@@ -2,6 +2,12 @@ import AVFoundation
 import CoreMedia
 import CoreVideo
 import Foundation
+import os
+
+private let wakeLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "br.com.codebit.telaviva", category: "wake")
+
+/// Wall-clock milliseconds for wake timing logs, on the same clock as `captured_at_ms`.
+private func wakeMilliseconds() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
 
 /// Uses one-frame sessions by default and can retain a healthy session in opt-in always-on mode.
 /// Return frames are discarded between deadlines; frame bytes never enter the ABI.
@@ -30,6 +36,37 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var sampleStartedAt: TimeInterval = 0
     private var timeoutAssessmentToken: UInt64?
     private var latestSnapshotRevision: UInt64?
+    private var cameraHistory: [String] = []
+    private var activeCameraID: String?
+    private var lastReportedCameraStatus: String?
+    private var deviceObservers: [NSObjectProtocol] = []
+
+    /// The effective selection history; a legacy selection without a history counts as a one-entry history.
+    private var selectionHistory: [String] {
+        cameraHistory.isEmpty ? (selectedCameraID.map { [$0] } ?? []) : cameraHistory
+    }
+
+    override init() {
+        super.init()
+        let center = NotificationCenter.default
+        // Registered once. Both handlers hop to the camera queue before touching capture state.
+        deviceObservers.append(center.addObserver(
+            forName: AVCaptureDevice.wasConnectedNotification, object: nil, queue: nil
+        ) { [weak self] notification in
+            guard let device = notification.object as? AVCaptureDevice else { return }
+            self?.queue.async { [weak self] in self?.cameraDeviceChanged(device, connected: true) }
+        })
+        deviceObservers.append(center.addObserver(
+            forName: AVCaptureDevice.wasDisconnectedNotification, object: nil, queue: nil
+        ) { [weak self] notification in
+            guard let device = notification.object as? AVCaptureDevice else { return }
+            self?.queue.async { [weak self] in self?.cameraDeviceChanged(device, connected: false) }
+        })
+    }
+
+    deinit {
+        for token in deviceObservers { NotificationCenter.default.removeObserver(token) }
+    }
 
     func apply(_ snapshot: CoreSnapshot, core: CoreBridge) {
         self.core = core
@@ -37,6 +74,10 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         let nextCaptureMode = snapshot.camera?.capture_mode ?? "single_frame"
         let nextGeneration = snapshot.camera?.generation ?? 0
         let nextCameraID = snapshot.settings?.selected_camera_id
+        let nextCameraHistory = snapshot.settings?.camera_history ?? []
+        // A history change counts as a camera change, like a changed selected_camera_id. With no history,
+        // the legacy ID is the key, which matches the one-entry history it implies.
+        let nextCameraKey = nextCameraHistory.isEmpty ? nextCameraID : nextCameraHistory.joined(separator: "\n")
         let nextAlwaysOn = snapshot.settings?.always_on_camera ?? false
         queue.async { [weak self] in
             guard let self, !self.stopped else { return }
@@ -50,7 +91,7 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             let policyChanged = nextGeneration != previousGeneration || nextMode != previousMode
                 || nextCaptureMode != previousCaptureMode
             let stop = self.lifecycle.reconcile(mode: nextMode, captureMode: nextCaptureMode,
-                generation: nextGeneration, cameraID: nextCameraID, alwaysOn: nextAlwaysOn)
+                generation: nextGeneration, cameraID: nextCameraKey, alwaysOn: nextAlwaysOn)
             if stop { self.stopCapture() }
             if !stop && policyChanged {
                 self.sampleTimer?.cancel()
@@ -67,11 +108,16 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             self.captureMode = nextCaptureMode
             self.generation = nextGeneration
             self.selectedCameraID = nextCameraID
+            self.cameraHistory = nextCameraHistory
             if self.mode == "face" {
                 self.cancelDetectorRelease()
             } else {
                 self.scheduleDetectorRelease()
             }
+            // Pre-warm after scheduleSample: the deferred call runs at closure exit, so the sample deadline is
+            // already set and detector creation falls inside the first-sample wait, on every exit path.
+            let shouldPrewarmDetector = self.mode == "face" && previousMode != "face" && self.detector == nil
+            defer { if shouldPrewarmDetector { _ = self.ensureDetector() } }
             guard self.mode == "face" || self.mode == "light_only" else {
                 self.stopCapture()
                 return
@@ -80,18 +126,24 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                 ? !self.inferenceRequested
                 : !self.sampling
             guard canSchedule, self.sampleTimer == nil else { return }
-            let delay = Double(snapshot.camera?.next_sample_in_ms ?? 0) / 1000.0
-            self.sampleTimerEpoch &+= 1
-            let expectedTimerEpoch = self.sampleTimerEpoch
-            let expectedGeneration = self.generation
-            let work = DispatchWorkItem { [weak self] in
-                guard let self, !self.stopped, self.sampleTimerEpoch == expectedTimerEpoch,
-                      self.generation == expectedGeneration else { return }
-                self.requestSample()
-            }
-            self.sampleTimer = work
-            self.queue.asyncAfter(deadline: .now() + max(0, delay), execute: work)
+            let nextSampleMs = snapshot.camera?.next_sample_in_ms ?? 0
+            wakeLog.debug("sample_scheduled next_sample_ms=\(nextSampleMs, privacy: .public) mode=\(self.mode, privacy: .public) at_ms=\(wakeMilliseconds(), privacy: .public)")
+            self.scheduleSample(after: Double(nextSampleMs) / 1000.0)
         }
+    }
+
+    /// Replaces the pending sample timer. A newer schedule or a generation change drops the older timer.
+    private func scheduleSample(after delay: TimeInterval) {
+        sampleTimerEpoch &+= 1
+        let expectedTimerEpoch = sampleTimerEpoch
+        let expectedGeneration = generation
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, !self.stopped, self.sampleTimerEpoch == expectedTimerEpoch,
+                  self.generation == expectedGeneration else { return }
+            self.requestSample()
+        }
+        sampleTimer = work
+        queue.asyncAfter(deadline: .now() + max(0, delay), execute: work)
     }
 
     private func requestSample() {
@@ -144,7 +196,10 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         let capture = AVCaptureSession()
         capture.beginConfiguration()
         capture.sessionPreset = .vga640x480
-        let selected = selectedCameraID.flatMap { AVCaptureDevice(uniqueID: $0) }
+        // Enumerated on every sample, so a reconnected camera is used without a settings change.
+        let devices = AVCaptureDevice.DiscoverySession(deviceTypes: [.builtInWideAngleCamera, .external], mediaType: .video, position: .unspecified).devices
+        let resolvedID = resolveCamera(history: selectionHistory, connected: Set(devices.map(\.uniqueID)))
+        let selected = devices.first { $0.uniqueID == resolvedID }
         guard let camera = selected ?? AVCaptureDevice.default(for: .video),
               let input = try? AVCaptureDeviceInput(device: camera), capture.canAddInput(input) else {
             capture.commitConfiguration(); report(status: "unavailable", cameraStatus: "unavailable"); return
@@ -160,9 +215,11 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         capture.addOutput(frames)
         capture.commitConfiguration()
         session = capture; output = frames; sampling = true; receivedFirstFrame = false
+        activeCameraID = camera.uniqueID
         if captureMode == "continuous_return" || captureMode == "continuous_monitoring" { inferenceRequested = true }
         lifecycle.beginAcquisition(now: cameraClockNow())
         armCaptureTimeout()
+        wakeLog.debug("start_running at_ms=\(wakeMilliseconds(), privacy: .public)")
         capture.startRunning()
     }
 
@@ -177,7 +234,9 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         let timeout = DispatchWorkItem { [weak self] in
             guard let self, self.sampling, self.generation == expectedGeneration,
                   self.timeoutEpoch == expectedTimeoutEpoch else { return }
-            if self.mode == "light_only" {
+            // Token-bound deadlines (light-only settle, face dark settle) are bounded by their assessment
+            // deadline. The acquisition watchdog without a token still only fires before the first frame.
+            if self.mode == "light_only" || assessmentToken != nil {
                 if let assessmentToken {
                     guard self.lifecycle.isCurrentAssessment(assessmentToken) else { return }
                 }
@@ -206,9 +265,10 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         let frameTime = CMSyncConvertTime(presentationTime, from: synchronizationClock,
                                           to: CMClockGetHostTimeClock()).seconds
         guard frameTime.isFinite, frameTime >= sampleStartedAt else { return }
+        if !receivedFirstFrame { wakeLog.debug("first_frame at_ms=\(wakeMilliseconds(), privacy: .public)") }
         receivedFirstFrame = true
         lifecycle.acquiredFrame()
-        let keepSessionOpen = lifecycle.shouldKeepSession || captureMode == "continuous_return"
+        var keepSessionOpen = lifecycle.shouldKeepSession || captureMode == "continuous_return"
         let decision = lifecycle.frame(at: frameTime)
         if decision == .assessmentExpired {
             stopCapture()
@@ -257,6 +317,12 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         case 2: status = "insufficient_light"
         default: status = "unavailable"
         }
+        // A dark single-frame sample gets one settle window; insufficient_light is reported only if it stays dark.
+        if status == "insufficient_light", captureMode == "single_frame", lifecycle.beginDarkSettle(now: cameraClockNow()) {
+            keepSessionOpen = true
+            scheduleDarkSettleCheck()
+            return
+        }
         report(status: status, cameraStatus: status == "unavailable" ? "error" : "ready")
     }
 
@@ -270,6 +336,7 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
         guard result == 0, let created else { return false }
         detector = created
+        wakeLog.debug("detector_ready at_ms=\(wakeMilliseconds(), privacy: .public)")
         return true
     }
 
@@ -299,6 +366,8 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private func report(status: String, cameraStatus: String) {
         guard !stopped, lifecycle.acceptsCallback(generation: sampleGeneration) else { return }
         let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
+        lastReportedCameraStatus = cameraStatus
+        wakeLog.debug("presence_report status=\(status, privacy: .public) camera_status=\(cameraStatus, privacy: .public) at_ms=\(timestamp, privacy: .public)")
         core?.submit(["type": "presence_observation", "status": status,
                       "captured_at_ms": timestamp, "camera_generation": sampleGeneration,
                       "camera_status": cameraStatus])
@@ -306,6 +375,45 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
     private func cameraClockNow() -> TimeInterval {
         CMClockGetTime(CMClockGetHostTimeClock()).seconds
+    }
+
+    /// Ends a face-mode dark settle on the camera queue. Frames stay discarded until the policy deadline;
+    /// after it, a stalled stream is bounded by the assessment deadline through the token-checked watchdog.
+    private func scheduleDarkSettleCheck() {
+        settleTimer?.cancel()
+        let delay = max(0, (lifecycle.settlingUntil ?? cameraClockNow()) - cameraClockNow())
+        let assessmentToken = lifecycle.assessmentToken
+        let expectedGeneration = generation
+        let settle = DispatchWorkItem { [weak self] in
+            guard let self, !self.stopped, self.sampling, self.generation == expectedGeneration,
+                  self.mode == "face", self.lifecycle.isCurrentAssessment(assessmentToken) else { return }
+            self.armCaptureTimeout(assessmentToken: assessmentToken)
+        }
+        settleTimer = settle
+        queue.asyncAfter(deadline: .now() + delay, execute: settle)
+    }
+
+    /// Runs on the camera queue. Restarts capture when the active camera leaves or a camera that outranks
+    /// it in the history joins. Also resends an unknown camera status after a busy or unavailable report,
+    /// so a camera that re-enumerates after wake is not held back by a sticky status.
+    private func cameraDeviceChanged(_ device: AVCaptureDevice, connected: Bool) {
+        guard !stopped else { return }
+        if sampling, let activeID = activeCameraID {
+            let history = selectionHistory
+            let activeRank = history.firstIndex(of: activeID) ?? Int.max
+            let affectsCapture = connected
+                ? (history.firstIndex(of: device.uniqueID).map { $0 < activeRank } ?? false)
+                : device.uniqueID == activeID
+            if affectsCapture {
+                stopCapture()
+                if mode == "face" || mode == "light_only" { scheduleSample(after: 0) }
+            }
+        }
+        if let status = lastReportedCameraStatus, status == "busy" || status == "unavailable" {
+            lastReportedCameraStatus = "unknown"
+            // presence_observation rejects status "unknown", so this uses the existing camera_status command.
+            core?.submit(["type": "camera_status", "status": "unknown", "generation": generation])
+        }
     }
 
     private func stopCapture() {
@@ -316,7 +424,7 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         settleTimer?.cancel(); settleTimer = nil
         output?.setSampleBufferDelegate(nil, queue: nil)
         if session?.isRunning == true { session?.stopRunning() }
-        output = nil; session = nil; sampling = false
+        output = nil; session = nil; sampling = false; activeCameraID = nil
         inferenceRequested = false; receivedFirstFrame = false
         lifecycle.cancelDeadlines()
     }

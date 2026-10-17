@@ -13,6 +13,8 @@ use std::{
 const MAX_ACTIONS: usize = 128;
 const MAX_MONITORS: usize = 64;
 const MAX_RESTORE_FAILURES: u8 = 3;
+// First face sample after a resume edge (display wake, battery to AC, protection re-enabled).
+const RESUME_FIRST_SAMPLE_MS: f64 = 1000.0;
 
 #[derive(Clone, Debug, Default)]
 pub struct CoreOptions {
@@ -79,6 +81,7 @@ pub struct Core {
     saver_state: String,
     low_light: bool,
     usable_light_samples: u8,
+    resume_pending: bool,
     last_presence_ms: u64,
     closed: bool,
 }
@@ -106,6 +109,7 @@ impl Core {
             saver_state: "unknown".into(),
             low_light: false,
             usable_light_samples: 0,
+            resume_pending: false,
             last_presence_ms: 0,
             closed: false,
         })
@@ -171,6 +175,7 @@ impl Core {
                 {
                     return Err("on_battery must be boolean or null".into());
                 }
+                let was_on_battery = self.on_battery == Some(true);
                 self.on_battery = value.get("on_battery").and_then(Value::as_bool);
                 self.camera_generation += 1;
                 if self.settings.suspend_presence_on_battery && self.on_battery != Some(false) {
@@ -178,6 +183,12 @@ impl Core {
                         m.presence_dimmed = false;
                         m.misses = 0;
                     }
+                }
+                if was_on_battery
+                    && self.on_battery == Some(false)
+                    && self.settings.suspend_presence_on_battery
+                {
+                    self.begin_camera_resume();
                 }
                 self.reconcile_camera();
                 self.reconcile_all()?;
@@ -370,8 +381,13 @@ impl Core {
         } else {
             was_asleep || monitor.wake_ownership_check
         };
+        let resumed_display =
+            was_asleep && state == "awake" && Self::monitor_is_camera_eligible(monitor);
         self.actions.retain(|action| action.monitor_id != id);
         self.camera_generation = self.camera_generation.saturating_add(1);
+        if resumed_display {
+            self.begin_camera_resume();
+        }
         self.reconcile_camera();
         self.reconcile_all()
     }
@@ -492,16 +508,22 @@ impl Core {
                     next.volume_key_step = u8::try_from(n).map_err(|_| "key step out of range")?;
                 }
                 "selected_camera_id" => {
-                    next.selected_camera_id = if val.is_null() {
-                        None
+                    if val.is_null() {
+                        next.selected_camera_id = None;
+                        next.camera_history.clear();
                     } else {
-                        Some(
-                            val.as_str()
-                                .ok_or("selected_camera_id must be string or null")?
-                                .to_owned(),
-                        )
+                        let id = val
+                            .as_str()
+                            .ok_or("selected_camera_id must be string or null")?;
+                        // Most recent first, deduplicated and bounded. The history is derived
+                        // from selections only, so clients cannot set it directly.
+                        next.camera_history.retain(|known| known.as_str() != id);
+                        next.camera_history.insert(0, id.to_owned());
+                        next.camera_history.truncate(settings::MAX_CAMERA_HISTORY);
+                        next.selected_camera_id = Some(id.to_owned());
                     }
                 }
+                "camera_history" => return Err("camera_history is read-only".into()),
                 "screensaver_targets" => {
                     next.screensaver_targets =
                         serde_json::from_value(val.clone()).map_err(|e| e.to_string())?
@@ -514,13 +536,23 @@ impl Core {
             settings::store(path, &next)?;
         }
         let camera_changed = next.selected_camera_id != self.settings.selected_camera_id;
+        let presence_reenabled =
+            !self.settings.presence_protection_enabled && next.presence_protection_enabled;
+        // A save that changes nothing (for example reselecting the current front) keeps the
+        // camera generation, so in-flight samples and the camera session are not restarted.
+        let settings_changed = next != self.settings;
         self.settings = next;
-        self.camera_generation += 1;
+        if settings_changed {
+            self.camera_generation += 1;
+        }
         if camera_changed {
             self.camera_status = "unknown".into();
             self.last_presence_ms = 0;
             self.low_light = false;
             self.usable_light_samples = 0;
+        }
+        if presence_reenabled {
+            self.begin_camera_resume();
         }
         self.reconcile_camera();
         self.reconcile_all()
@@ -563,6 +595,7 @@ impl Core {
             return Ok(());
         }
         self.last_presence_ms = ts;
+        self.resume_pending = false;
         if status != "unavailable" {
             self.camera_status = "ready".into();
         }
@@ -651,6 +684,19 @@ impl Core {
             }
         }
     }
+    // Clears state that a suspended period leaves behind so the first sample after a resume
+    // starts clean. Permission and error need user action and are kept.
+    fn begin_camera_resume(&mut self) {
+        if !self.settings.presence_protection_enabled {
+            return;
+        }
+        self.low_light = false;
+        if ["busy", "unavailable"].contains(&self.camera_status.as_str()) {
+            self.camera_status = "unknown".into();
+        }
+        self.resume_pending = true;
+    }
+
     fn camera_mode(&self) -> &'static str {
         if self.closed || !self.settings.presence_protection_enabled {
             "disabled"
@@ -1007,8 +1053,9 @@ impl Core {
             .map(|a| json!({"id":a.id,"monitor_id":a.monitor_id,"generation":a.generation,"kind":a.kind,"value":a.value,"target":a.target}))
             .collect();
         let camera_mode = self.camera_mode();
-        let cadence = if camera_mode == "face" && self.monitors.values().any(|m| m.presence_dimmed)
-        {
+        let cadence = if camera_mode == "face" && self.resume_pending {
+            RESUME_FIRST_SAMPLE_MS
+        } else if camera_mode == "face" && self.monitors.values().any(|m| m.presence_dimmed) {
             self.settings.return_sampling_interval_s * 1000.0
         } else if camera_mode == "face" {
             self.settings.presence_sampling_interval_s * 1000.0

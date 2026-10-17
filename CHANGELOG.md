@@ -13,10 +13,13 @@
 
 ### Changed
 
+- Faster first presence reading after wake on macOS: the first face sample is taken about one second after an eligible display wakes, power returns to AC while battery suspension is on, or presence protection is re-enabled, instead of after a full sampling interval. Stale low-light and busy or unavailable camera status is cleared on resume. Hardware timing is pending acceptance.
+- Dark frames in single-frame face checks on macOS now keep the camera on for five seconds and report only the settled sample, so a dark frame taken during auto-exposure no longer starts the low-light cycle. In dark rooms the camera stays on about five seconds longer per single-frame face check. Continuous capture modes keep reporting an insufficient-light frame immediately. Hardware acceptance is pending.
 - Default hardware-key step is now 5 points (was 6.25) and Shift+Option moves 1 point (was 1.5625).
 
 ### Added
 
+- Camera selection history on macOS: the app remembers the cameras you select, up to eight, most recent first, and uses the first one that is connected. When none is connected it falls back to the system default camera, and "Use default camera" clears the history. Hardware checks with two webcams are pending.
 - Configurable hardware-key step for brightness and volume (1 to 15 points each, default 5) in Settings; Settings window is taller.
 - Optional macOS keyboard brightness and volume routing to the supported external monitor under the cursor, with Accessibility status and settings.
 - Hardware mute key for the external monitor that is the Mac's sound output: it sets the monitor volume to zero and the next press restores the previous level (emulated through the volume control; the monitor's own mute is not used). Other outputs keep macOS mute.

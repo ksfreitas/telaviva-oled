@@ -1829,3 +1829,357 @@ fn insufficient_light_removes_presence_reason_and_requires_two_usable_samples() 
     );
     assert_eq!(second["camera"]["mode"], "face");
 }
+
+#[test]
+fn camera_history_defaults_empty_and_validation_rejects_invalid_entries() {
+    let defaults = Settings::default();
+    assert!(defaults.camera_history.is_empty());
+    assert!(defaults.validate().is_ok());
+    let with_history = |history: &[&str]| Settings {
+        selected_camera_id: history.first().map(|id| id.to_string()),
+        camera_history: history.iter().map(|id| id.to_string()).collect(),
+        ..Default::default()
+    };
+    assert!(with_history(&["camera-a", "camera-b"]).validate().is_ok());
+    assert!(with_history(&["camera-a", "camera-a"]).validate().is_err());
+    assert!(with_history(&[""]).validate().is_err());
+    let longest = "x".repeat(512);
+    let oversized = "x".repeat(513);
+    assert!(with_history(&[longest.as_str()]).validate().is_ok());
+    assert!(with_history(&[oversized.as_str()]).validate().is_err());
+    let ids: Vec<String> = (0..8).map(|i| format!("camera-{i}")).collect();
+    let mut full = Settings {
+        selected_camera_id: ids.first().cloned(),
+        camera_history: ids,
+        ..Default::default()
+    };
+    assert!(full.validate().is_ok());
+    full.camera_history.push("camera-8".into());
+    assert!(full.validate().is_err());
+    let mut mismatch = with_history(&["camera-a", "camera-b"]);
+    mismatch.selected_camera_id = Some("camera-b".into());
+    assert!(mismatch.validate().is_err());
+    mismatch.selected_camera_id = None;
+    assert!(mismatch.validate().is_err());
+}
+
+#[test]
+fn camera_history_legacy_selected_camera_loads_as_one_entry_without_corrupt_backup() {
+    let root = std::env::temp_dir().join(format!("telaviva-camera-legacy-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&root);
+    let path = root.join("settings.json");
+    std::fs::write(
+        &path,
+        br#"{"schema_version":1,"selected_camera_id":"camera-1"}"#,
+    )
+    .unwrap();
+    let core = Core::new(CoreOptions {
+        config_path: Some(path.clone()),
+        ..CoreOptions::default()
+    })
+    .unwrap();
+    let settings = core.settings().unwrap();
+    assert_eq!(settings.selected_camera_id.as_deref(), Some("camera-1"));
+    assert_eq!(settings.camera_history, vec!["camera-1"]);
+    assert!(path.exists());
+    assert!(!root.join("settings.json.corrupt").exists());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn camera_history_update_settings_moves_selection_to_front_and_null_clears_it() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    let a = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"selected_camera_id":"camera-a"}}),
+    );
+    assert_eq!(a["settings"]["camera_history"], json!(["camera-a"]));
+    let b = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"selected_camera_id":"camera-b"}}),
+    );
+    assert_eq!(b["settings"]["selected_camera_id"], "camera-b");
+    assert_eq!(
+        b["settings"]["camera_history"],
+        json!(["camera-b", "camera-a"])
+    );
+    let reselected = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"selected_camera_id":"camera-a"}}),
+    );
+    assert_eq!(reselected["settings"]["selected_camera_id"], "camera-a");
+    assert_eq!(
+        reselected["settings"]["camera_history"],
+        json!(["camera-a", "camera-b"])
+    );
+    let cleared = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"selected_camera_id":null}}),
+    );
+    assert_eq!(cleared["settings"]["selected_camera_id"], Value::Null);
+    assert_eq!(cleared["settings"]["camera_history"], json!([]));
+}
+
+#[test]
+fn camera_history_reselecting_current_front_keeps_generation_and_camera_status() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    send(
+        &mut core,
+        json!({"type":"monitor_discovered","monitor":{
+            "id":"screen","name":"Display","identity_status":"stable","connection_path":"usb",
+            "brightness":{"supported":true,"value":70,"raw":70,"min":0,"max":100},
+            "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}
+        }}),
+    );
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    let selected = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"selected_camera_id":"camera-a","presence_protection_enabled":true}}),
+    );
+    let ready = send(
+        &mut core,
+        json!({"type":"presence_observation","status":"present","captured_at_ms":capture_time(10_000),"camera_generation":selected["camera"]["generation"]}),
+    );
+    assert_eq!(ready["camera"]["status"], "ready");
+    let same = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"selected_camera_id":"camera-a"}}),
+    );
+    assert_eq!(same["camera"]["generation"], ready["camera"]["generation"]);
+    assert_eq!(same["camera"]["status"], "ready");
+    assert_eq!(same["settings"]["camera_history"], json!(["camera-a"]));
+}
+
+#[test]
+fn camera_history_is_capped_at_eight_most_recent_cameras() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    let mut last = Value::Null;
+    for i in 0..9 {
+        last = send(
+            &mut core,
+            json!({"type":"update_settings","settings":{"selected_camera_id":format!("camera-{i}")}}),
+        );
+    }
+    let expected: Vec<String> = (1..=8).rev().map(|i| format!("camera-{i}")).collect();
+    assert_eq!(last["settings"]["camera_history"], json!(expected));
+    assert_eq!(last["settings"]["selected_camera_id"], "camera-8");
+}
+
+#[test]
+fn camera_history_payload_is_read_only_and_leaves_history_unchanged() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"selected_camera_id":"camera-a"}}),
+    );
+    let before = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"selected_camera_id":"camera-b"}}),
+    );
+    let forged = json!({
+        "type": "update_settings",
+        "settings": {"camera_history": ["camera-x"]}
+    });
+    assert!(core
+        .submit_json(&serde_json::to_vec(&forged).unwrap())
+        .is_err());
+    let forged_selection = json!({
+        "type": "update_settings",
+        "settings": {"selected_camera_id": "camera-c", "camera_history": ["camera-x"]}
+    });
+    assert!(core
+        .submit_json(&serde_json::to_vec(&forged_selection).unwrap())
+        .is_err());
+    let after = core.snapshot_value().unwrap();
+    assert_eq!(
+        after["settings"]["camera_history"],
+        json!(["camera-b", "camera-a"])
+    );
+    assert_eq!(after["settings"]["selected_camera_id"], "camera-b");
+    assert_eq!(after["revision"], before["revision"]);
+    assert_eq!(
+        after["camera"]["generation"],
+        before["camera"]["generation"]
+    );
+}
+
+#[test]
+fn camera_history_round_trips_through_persisted_settings_file() {
+    let root = std::env::temp_dir().join(format!("telaviva-history-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&root);
+    let path = root.join("settings.json");
+    let mut core = Core::new(CoreOptions {
+        config_path: Some(path.clone()),
+        ..CoreOptions::default()
+    })
+    .unwrap();
+    send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"selected_camera_id":"camera-a"}}),
+    );
+    send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"selected_camera_id":"camera-b"}}),
+    );
+    let persisted: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(persisted["selected_camera_id"], "camera-b");
+    assert_eq!(persisted["camera_history"], json!(["camera-b", "camera-a"]));
+    let reloaded = Core::new(CoreOptions {
+        config_path: Some(path.clone()),
+        ..CoreOptions::default()
+    })
+    .unwrap();
+    assert_eq!(
+        reloaded.settings().unwrap().camera_history,
+        vec!["camera-b", "camera-a"]
+    );
+    assert_eq!(
+        reloaded.settings().unwrap().selected_camera_id.as_deref(),
+        Some("camera-b")
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn resume_after_display_wake_samples_after_one_second_then_configured_interval() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    send(
+        &mut core,
+        json!({"type":"monitor_discovered","monitor":{
+            "id":"screen","name":"Display","identity_status":"stable","connection_path":"usb",
+            "brightness":{"supported":true,"value":70,"raw":70,"min":0,"max":100},
+            "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}
+        }}),
+    );
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    let active = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true}}),
+    );
+    let screen_generation = active["monitors"][0]["generation"].as_u64().unwrap();
+    let asleep = send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"screen","generation":screen_generation,"state":"asleep"}),
+    );
+    assert_eq!(asleep["camera"]["mode"], "suspended");
+    let awake = send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"screen","generation":screen_generation,"state":"awake"}),
+    );
+    assert_eq!(awake["camera"]["mode"], "face");
+    assert_eq!(awake["camera"]["next_sample_in_ms"].as_f64(), Some(1000.0));
+    let waiting = core.snapshot_value().unwrap();
+    assert_eq!(
+        waiting["camera"]["next_sample_in_ms"].as_f64(),
+        Some(1000.0)
+    );
+    let reported = send(
+        &mut core,
+        json!({"type":"presence_observation","status":"present","captured_at_ms":capture_time(10_000),"camera_generation":awake["camera"]["generation"]}),
+    );
+    assert_eq!(
+        reported["camera"]["next_sample_in_ms"].as_f64(),
+        Some(10_000.0)
+    );
+}
+
+#[test]
+fn resume_after_power_return_and_protection_reenable_restarts_at_one_second() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    send(
+        &mut core,
+        json!({"type":"monitor_discovered","monitor":{
+            "id":"screen","name":"Display","identity_status":"stable","connection_path":"usb",
+            "brightness":{"supported":true,"value":70,"raw":70,"min":0,"max":100},
+            "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}
+        }}),
+    );
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    let enabled = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true}}),
+    );
+    assert_eq!(enabled["camera"]["mode"], "face");
+    assert_eq!(
+        enabled["camera"]["next_sample_in_ms"].as_f64(),
+        Some(1000.0)
+    );
+    let reported = send(
+        &mut core,
+        json!({"type":"presence_observation","status":"present","captured_at_ms":capture_time(10_000),"camera_generation":enabled["camera"]["generation"]}),
+    );
+    assert_eq!(
+        reported["camera"]["next_sample_in_ms"].as_f64(),
+        Some(10_000.0)
+    );
+    let battery = send(&mut core, json!({"type":"power","on_battery":true}));
+    assert_eq!(battery["camera"]["mode"], "suspended");
+    let ac = send(&mut core, json!({"type":"power","on_battery":false}));
+    assert_eq!(ac["camera"]["mode"], "face");
+    assert_eq!(ac["camera"]["next_sample_in_ms"].as_f64(), Some(1000.0));
+}
+
+#[test]
+fn resume_clears_low_light_and_busy_status_but_keeps_permission() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    send(
+        &mut core,
+        json!({"type":"monitor_discovered","monitor":{
+            "id":"screen","name":"Display","identity_status":"stable","connection_path":"usb",
+            "brightness":{"supported":true,"value":70,"raw":70,"min":0,"max":100},
+            "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}
+        }}),
+    );
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    let enabled = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true}}),
+    );
+    let screen_generation = enabled["monitors"][0]["generation"].as_u64().unwrap();
+    let dark = send(
+        &mut core,
+        json!({"type":"presence_observation","status":"insufficient_light","captured_at_ms":capture_time(10_000),"camera_generation":enabled["camera"]["generation"]}),
+    );
+    assert_eq!(dark["camera"]["mode"], "light_only");
+    send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"screen","generation":screen_generation,"state":"asleep"}),
+    );
+    let woke = send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"screen","generation":screen_generation,"state":"awake"}),
+    );
+    assert_eq!(woke["camera"]["mode"], "face");
+    let busy = send(
+        &mut core,
+        json!({"type":"camera_status","status":"busy","generation":woke["camera"]["generation"]}),
+    );
+    assert_eq!(busy["camera"]["mode"], "suspended");
+    send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"screen","generation":screen_generation,"state":"asleep"}),
+    );
+    let woke_busy = send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"screen","generation":screen_generation,"state":"awake"}),
+    );
+    assert_eq!(woke_busy["camera"]["status"], "unknown");
+    assert_eq!(woke_busy["camera"]["mode"], "face");
+    let denied = send(
+        &mut core,
+        json!({"type":"camera_status","status":"permission","generation":woke_busy["camera"]["generation"]}),
+    );
+    assert_eq!(denied["camera"]["mode"], "suspended");
+    send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"screen","generation":screen_generation,"state":"asleep"}),
+    );
+    let woke_denied = send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"screen","generation":screen_generation,"state":"awake"}),
+    );
+    assert_eq!(woke_denied["camera"]["status"], "permission");
+    assert_eq!(woke_denied["camera"]["display_status"], "permission");
+    assert_eq!(woke_denied["camera"]["mode"], "suspended");
+    assert_eq!(woke_denied["camera"]["next_sample_in_ms"], Value::Null);
+}

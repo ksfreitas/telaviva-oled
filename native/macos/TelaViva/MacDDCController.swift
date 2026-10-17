@@ -4,6 +4,9 @@ import Darwin
 import Foundation
 import IOKit
 import IOKit.graphics
+import os
+
+private let wakeLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "br.com.codebit.telaviva", category: "wake")
 
 /// Apple Silicon DDC/CI transport based on the MIT-licensed m1ddc IORegistry
 /// discovery flow. All IOAV access is serialized on `queue`, never on the UI thread.
@@ -51,7 +54,10 @@ final class MacDDCController {
         ) { [weak self] _ in self?.setAllDisplaysAsleep() })
         workspaceObservers.append(workspaceCenter.addObserver(
             forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: nil
-        ) { [weak self] _ in self?.refreshDisplayStates() })
+        ) { [weak self] _ in
+            wakeLog.debug("screens_did_wake at_ms=\(Int64(Date().timeIntervalSince1970 * 1000), privacy: .public)")
+            self?.refreshDisplayStates()
+        })
     }
 
     /// Performs the same real DDC reads used by display discovery and returns

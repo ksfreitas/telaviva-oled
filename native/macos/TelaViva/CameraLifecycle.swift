@@ -19,6 +19,7 @@ struct CameraLifecycle {
     private(set) var assessmentDeadline: TimeInterval?
     private(set) var acquisitionDeadline: TimeInterval?
     private(set) var assessmentToken: UInt64 = 0
+    private(set) var darkSettleUsed = false
 
     var eligible: Bool { mode == "face" || mode == "light_only" }
     var acquisitionPending: Bool { acquisitionDeadline != nil }
@@ -52,6 +53,7 @@ struct CameraLifecycle {
     }
 
     mutating func beginAcquisition(now: TimeInterval, timeout: TimeInterval = 5) {
+        darkSettleUsed = false
         acquisitionDeadline = now + timeout
     }
 
@@ -64,6 +66,18 @@ struct CameraLifecycle {
         assessmentToken &+= 1
         settlingUntil = now + settling
         assessmentDeadline = now + settling + frameTimeout
+    }
+
+    /// Face-mode dark frames get one five-second settle per sample. Returns true when the settle
+    /// started, so the caller keeps the session open; false when the dark result is final.
+    mutating func beginDarkSettle(now: TimeInterval, settling: TimeInterval = 5,
+                                  frameTimeout: TimeInterval = 5) -> Bool {
+        guard mode == "face", !darkSettleUsed else { return false }
+        darkSettleUsed = true
+        assessmentToken &+= 1
+        settlingUntil = now + settling
+        assessmentDeadline = now + settling + frameTimeout
+        return true
     }
 
     func isCurrentAssessment(_ token: UInt64) -> Bool {
@@ -99,5 +113,6 @@ struct CameraLifecycle {
         settlingUntil = nil
         assessmentDeadline = nil
         acquisitionDeadline = nil
+        darkSettleUsed = false
     }
 }

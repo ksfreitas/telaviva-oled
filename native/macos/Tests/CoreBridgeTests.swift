@@ -14,6 +14,8 @@ private struct CoreBridgeTests {
         hardwareBrightnessKeyDuringProtections()
         coreSettingsKeyStepJSON()
         keyStepSettingsReachRouterThroughCore()
+        cameraHistoryDecodesAndStaysOutOfSaves()
+        cameraSelectionRoundTripsThroughCore()
         print("Core bridge asynchronous tests passed")
     }
 
@@ -236,21 +238,21 @@ private struct CoreBridgeTests {
         expect(waitUntil { shutdownFinished }, "shutdown completes before the temporary directory is removed")
     }
 
-    private static func coreSettingsKeyStepJSON() {
-        // Synthesized Decodable requires every non-optional field, even one with a default, so all of them are
-        // supplied here; only the two key-step entries vary between the cases.
-        func decodeSettings(_ stepKeys: [String: Any]) -> CoreSettings {
-            var object: [String: Any] = [
-                "locale": "auto", "presence_sampling_interval_s": 10.0, "return_sampling_interval_s": 1.0,
-                "suspend_presence_on_battery": true, "presence_protection_enabled": false,
-                "screensaver_protection_enabled": false, "launch_at_login": false,
-                "screensaver_targets": [String: Double]()
-            ]
-            object.merge(stepKeys) { _, new in new }
-            let data = try! JSONSerialization.data(withJSONObject: object)
-            return try! JSONDecoder().decode(CoreSettings.self, from: data)
-        }
+    /// Synthesized Decodable requires every non-optional field, even one with a default, so all of them are
+    /// supplied here; callers vary only the optional keys in `extra`.
+    private static func decodeSettings(_ extra: [String: Any]) -> CoreSettings {
+        var object: [String: Any] = [
+            "locale": "auto", "presence_sampling_interval_s": 10.0, "return_sampling_interval_s": 1.0,
+            "suspend_presence_on_battery": true, "presence_protection_enabled": false,
+            "screensaver_protection_enabled": false, "launch_at_login": false,
+            "screensaver_targets": [String: Double]()
+        ]
+        object.merge(extra) { _, new in new }
+        let data = try! JSONSerialization.data(withJSONObject: object)
+        return try! JSONDecoder().decode(CoreSettings.self, from: data)
+    }
 
+    private static func coreSettingsKeyStepJSON() {
         let withKeys = decodeSettings(["brightness_key_step": 3, "volume_key_step": 12])
         expect(withKeys.brightness_key_step == 3 && withKeys.volume_key_step == 12,
                "key steps decode from a snapshot that carries them")
@@ -366,6 +368,60 @@ private struct CoreBridgeTests {
                "volume target is recorded as the desired volume")
 
         router.shutdown()
+        var shutdownFinished = false
+        bridge.beginShutdown { shutdownFinished = true }
+        expect(waitUntil { shutdownFinished }, "shutdown completes before the temporary directory is removed")
+    }
+
+    private static func cameraHistoryDecodesAndStaysOutOfSaves() {
+        // Snapshots from before camera_history existed must still decode, with the history absent.
+        let withoutHistory = decodeSettings([:])
+        expect(withoutHistory.camera_history == nil && withoutHistory.selected_camera_id == nil,
+               "snapshots without camera_history still decode")
+        let withHistory = decodeSettings(["selected_camera_id": "camera-b", "camera_history": ["camera-b", "camera-a"]])
+        expect(withHistory.camera_history == ["camera-b", "camera-a"], "camera_history decodes in most-recent-first order")
+        // The camera is sent only by selectCamera(_:), so a settings payload never carries it or the read-only history.
+        expect(withHistory.json["selected_camera_id"] == nil && withHistory.json["camera_history"] == nil,
+               "settings payloads never carry the camera selection or the read-only history")
+    }
+
+    private static func cameraSelectionRoundTripsThroughCore() {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("telaviva-core-bridge-tests-\(UUID().uuidString)", isDirectory: true)
+        try! FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let bridge = CoreBridge(configPath: directory.appendingPathComponent("settings.json"))
+        expect(waitUntil { bridge.snapshot.revision != nil }, "initial snapshot is published before the camera test")
+
+        expect(bridge.selectCamera("camera-a"), "camera A selection is accepted by the local core")
+        expect(waitUntil {
+            bridge.snapshot.settings?.selected_camera_id == "camera-a" &&
+                bridge.snapshot.settings?.camera_history == ["camera-a"]
+        }, "selecting camera A records it as the only history entry")
+
+        expect(bridge.selectCamera("camera-b"), "camera B selection is accepted by the local core")
+        expect(waitUntil {
+            bridge.snapshot.settings?.selected_camera_id == "camera-b" &&
+                bridge.snapshot.settings?.camera_history == ["camera-b", "camera-a"]
+        }, "selecting camera B moves it to the front of the history")
+
+        // A fresh CoreSettings carries no camera (selected_camera_id nil). Before the change, this full save sent
+        // that null and cleared the selection; an unrelated save must leave the camera alone.
+        var unrelated = CoreSettings()
+        unrelated.presence_protection_enabled = true
+        bridge.updateSettings(unrelated)
+        expect(waitUntil { bridge.snapshot.settings?.presence_protection_enabled == true },
+               "unrelated settings save is published")
+        expect(bridge.snapshot.settings?.selected_camera_id == "camera-b" &&
+               bridge.snapshot.settings?.camera_history == ["camera-b", "camera-a"],
+               "unrelated settings save leaves the selection and history unchanged")
+
+        expect(bridge.selectCamera(nil), "default camera selection is accepted by the local core")
+        expect(waitUntil {
+            bridge.snapshot.settings?.selected_camera_id == nil && bridge.snapshot.settings?.camera_history == []
+        }, "selecting the default camera clears the selection and the history")
+
         var shutdownFinished = false
         bridge.beginShutdown { shutdownFinished = true }
         expect(waitUntil { shutdownFinished }, "shutdown completes before the temporary directory is removed")

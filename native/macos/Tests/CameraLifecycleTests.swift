@@ -130,6 +130,50 @@ private struct CameraLifecycleTests {
         expect(!oneFramePolicy.reconcile(mode: "face", captureMode: "single_frame", generation: 12,
                                          cameraID: "camera-s", alwaysOn: false), "unchanged pending one-frame policy does not restart")
 
+        // A dark face frame starts one five-second settle; frames before the deadline are discarded
+        // and a usable frame at the deadline goes to normal face assessment.
+        var darkUsable = CameraLifecycle()
+        _ = darkUsable.reconcile(mode: "face", captureMode: "single_frame", generation: 30,
+                                 cameraID: "camera-d", alwaysOn: false)
+        darkUsable.beginAcquisition(now: 0)
+        darkUsable.acquiredFrame()
+        expect(darkUsable.frame(at: 1) == .assessPresence, "first face frame must be assessed")
+        expect(darkUsable.beginDarkSettle(now: 1), "first dark face frame must start a settle")
+        expect(darkUsable.settlingUntil == 6, "dark settle must last five seconds")
+        expect(darkUsable.frame(at: 3) == .discardWarmup, "frames during the dark settle must be discarded")
+        expect(darkUsable.frame(at: 5.9) == .discardWarmup, "frames before the dark settle deadline must be discarded")
+        expect(darkUsable.frame(at: 6) == .assessPresence, "usable frame at the dark settle deadline must assess face")
+        expect(darkUsable.settlingUntil == nil, "settled frame must clear the dark settle")
+
+        // A dark frame at the settle deadline is final for its sample and is reported as insufficient light.
+        var darkFinal = CameraLifecycle()
+        _ = darkFinal.reconcile(mode: "face", captureMode: "single_frame", generation: 31,
+                                cameraID: "camera-d", alwaysOn: false)
+        darkFinal.beginAcquisition(now: 0)
+        darkFinal.acquiredFrame()
+        expect(darkFinal.frame(at: 1) == .assessPresence, "first dark face frame must be assessed")
+        expect(darkFinal.beginDarkSettle(now: 1), "first dark face frame must start a settle")
+        expect(darkFinal.frame(at: 6) == .assessPresence, "frame at the settle deadline must be assessed")
+        expect(!darkFinal.beginDarkSettle(now: 6), "dark frame at the settle deadline must be reported, not settled again")
+
+        // The next sample resets the settle, so its first dark frame starts a fresh five-second settle.
+        darkFinal.beginAcquisition(now: 10)
+        darkFinal.acquiredFrame()
+        expect(darkFinal.frame(at: 11) == .assessPresence, "second sample's first face frame must be assessed")
+        expect(darkFinal.beginDarkSettle(now: 11), "second sample must start a fresh dark settle")
+        expect(darkFinal.settlingUntil == 16, "fresh dark settle must last five seconds")
+        expect(darkFinal.frame(at: 16) == .assessPresence, "second sample must reach its own settled frame")
+
+        // Light-only samples never enter the dark settle and keep assessing light directly.
+        var lightOnlyDark = CameraLifecycle()
+        _ = lightOnlyDark.reconcile(mode: "light_only", captureMode: "single_frame", generation: 32,
+                                    cameraID: "camera-l", alwaysOn: false)
+        lightOnlyDark.beginAcquisition(now: 0)
+        lightOnlyDark.acquiredFrame()
+        expect(!lightOnlyDark.beginDarkSettle(now: 1), "dark settle must not start outside face mode")
+        expect(lightOnlyDark.settlingUntil == nil, "light-only frame must not start a dark settle")
+        expect(lightOnlyDark.frame(at: 1) == .assessLight, "light-only frame must still assess light directly")
+
         print("Camera lifecycle fake-clock tests passed")
     }
 }

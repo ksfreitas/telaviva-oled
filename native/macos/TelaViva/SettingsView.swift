@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import ServiceManagement
 import AVFoundation
 import AppKit
@@ -19,11 +20,22 @@ struct SettingsView: View {
     @State private var volumeKeyStep = 5.0
     @State private var presentInterval = 10.0
     @State private var returnInterval = 1.0
-    @State private var selectedCameraID: String?
+    @State private var cameras: [AVCaptureDevice] = []
     @State private var didLoad = false
     @State private var showLoginItemError = false
     @State private var loginItemError = ""
-    private var cameras: [AVCaptureDevice] { AVCaptureDevice.DiscoverySession(deviceTypes: [.builtInWideAngleCamera, .external], mediaType: .video, position: .unspecified).devices }
+    /// The camera the app uses now: the first remembered device that is connected, or nil for the system default.
+    private var effectiveCameraID: String? {
+        resolveCamera(history: core.snapshot.settings?.camera_history ?? [], connected: Set(cameras.map(\.uniqueID)))
+    }
+    /// The setter runs only for a user choice, never for a programmatic change, so a fallback is never persisted.
+    private var cameraSelection: Binding<String?> {
+        Binding(get: { effectiveCameraID }, set: { core.selectCamera($0) })
+    }
+
+    private func refreshCameras() {
+        cameras = AVCaptureDevice.DiscoverySession(deviceTypes: [.builtInWideAngleCamera, .external], mediaType: .video, position: .unspecified).devices
+    }
 
     var body: some View {
         Form {
@@ -98,11 +110,10 @@ struct SettingsView: View {
                 }
             }
             Section(AppText.string("availability", locale: locale)) {
-                Picker(AppText.string("camera", locale: locale), selection: $selectedCameraID) {
+                Picker(AppText.string("camera", locale: locale), selection: cameraSelection) {
                     Text(AppText.string("cameraPicker", locale: locale)).tag(String?.none)
                     ForEach(cameras, id: \.uniqueID) { device in Text(device.localizedName).tag(Optional(device.uniqueID)) }
                 }
-                .onChange(of: selectedCameraID) { _, _ in save() }
                 Label(AppText.cameraInlineStatus(core.snapshot, locale: locale), systemImage: "camera")
                 Text(AppText.string("cameraHelp", locale: locale))
                     .font(.caption).foregroundStyle(.secondary)
@@ -112,7 +123,9 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding(20)
-        .onAppear(perform: load)
+        .onAppear { refreshCameras(); load() }
+        .onReceive(NotificationCenter.default.publisher(for: AVCaptureDevice.wasConnectedNotification)) { _ in refreshCameras() }
+        .onReceive(NotificationCenter.default.publisher(for: AVCaptureDevice.wasDisconnectedNotification)) { _ in refreshCameras() }
         .onChange(of: core.snapshot.revision) { _, _ in if !didLoad { load() } }
         .onChange(of: locale) { _, _ in save() }
         .onChange(of: presence) { _, _ in save() }
@@ -164,7 +177,6 @@ struct SettingsView: View {
         brightnessKeyStep = Double(value.brightness_key_step ?? 5)
         volumeKeyStep = Double(value.volume_key_step ?? 5)
         returnInterval = Double(value.return_sampling_interval_s)
-        selectedCameraID = value.selected_camera_id
     }
 
     private func save() {
@@ -174,7 +186,7 @@ struct SettingsView: View {
         settings.always_on_camera = alwaysOnCamera
         settings.screensaver_protection_enabled = screensaver; settings.suspend_presence_on_battery = battery
         settings.launch_at_login = login; settings.presence_sampling_interval_s = presentInterval
-        settings.return_sampling_interval_s = returnInterval; settings.selected_camera_id = selectedCameraID
+        settings.return_sampling_interval_s = returnInterval
         settings.hardware_keys_enabled = hardwareKeys
         settings.brightness_key_step = Int(brightnessKeyStep.rounded())
         settings.volume_key_step = Int(volumeKeyStep.rounded())

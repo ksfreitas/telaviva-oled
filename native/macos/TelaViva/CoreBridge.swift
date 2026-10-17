@@ -201,6 +201,14 @@ final class CoreBridge: ObservableObject {
         submit(["type": "update_settings", "settings": settings.json])
     }
 
+    /// The only path that sends `selected_camera_id`. Call it when the user picks a device or "Use default camera".
+    /// `nil` clears the core's history, so the app follows the system default from then on.
+    @discardableResult
+    func selectCamera(_ cameraID: String?) -> Bool {
+        let value: Any = cameraID ?? NSNull()
+        return submit(["type": "update_settings", "settings": ["selected_camera_id": value]])
+    }
+
     func beginShutdown(completion: @escaping () -> Void = {}) {
         #if TELAVIVA_CORE
         guard let core, !isShuttingDown else { DispatchQueue.main.async(execute: completion); return }
@@ -303,10 +311,14 @@ struct CoreSettings: Decodable {
     var launch_at_login = false
     var screensaver_targets: [String: Double] = [:]
     var selected_camera_id: String?
+    /// Read-only, most recent first. Optional so a snapshot without the key still decodes.
+    var camera_history: [String]?
     var hardware_keys_enabled: Bool?
     var brightness_key_step: Int?
     var volume_key_step: Int?
 
+    /// Omits `selected_camera_id` and `camera_history` on purpose: only `selectCamera(_:)` sends the camera, so an
+    /// unrelated save never re-sends a fallback camera and promotes it to the front of the history.
     var json: [String: Any] { [
         "locale": locale, "presence_sampling_interval_s": presence_sampling_interval_s,
         "return_sampling_interval_s": return_sampling_interval_s,
@@ -315,7 +327,6 @@ struct CoreSettings: Decodable {
         "always_on_camera": always_on_camera ?? false,
         "screensaver_protection_enabled": screensaver_protection_enabled,
         "launch_at_login": launch_at_login, "screensaver_targets": screensaver_targets,
-        "selected_camera_id": selected_camera_id ?? NSNull(),
         "hardware_keys_enabled": hardware_keys_enabled ?? false,
         "brightness_key_step": brightness_key_step ?? 5, "volume_key_step": volume_key_step ?? 5
     ] }

@@ -33,3 +33,29 @@ The setting and display-state contract are additive to settings schema 1 and ABI
 - A manually powered-off monitor may remain logically awake according to macOS and its connection.
 - Five seconds of exposure settling follows the existing 10-second low-light retry delay; it is distinct from the five-second acquisition timeout.
 - Camera frames remain local and outside the core ABI. Windows implementation and validation remain deferred.
+
+## Amendment 2026-10-16: Camera selection history and resume sampling
+
+**Feature:** camera-selection-history-and-wake-resume
+**Plan:** [Camera selection history and faster presence resume after wake](../specs/camera-selection-history-and-wake-resume.md)
+
+This dated amendment adds decisions to the camera lifecycle contract above. The accepted decisions in this record remain in force.
+
+### Decision
+
+- **Fallback is resolved at runtime and never persisted.** The core owns `camera_history`, a bounded most-recent-first list whose first entry is `selected_camera_id`. The native shell resolves the effective camera against connected devices when capture starts and when a camera connects or disconnects, and uses the system default only when no history entry is connected. Only an explicit user selection changes stored settings, so a missing camera never rewrites the history.
+- **Resume sampling.** A resume is triggered by an event rather than by a camera-mode transition: an eligible display going from asleep to awake, power returning from battery to AC while battery suspension is on, or presence protection being re-enabled. The trigger clears stale low-light state and resets sticky `busy` or `unavailable` camera status to `unknown`. `permission` and `error` keep their existing handling. Until the first accepted camera report, face mode reports `next_sample_in_ms` as 1 s instead of the configured interval. Later samples keep the configured interval, and light-only cadence is unchanged.
+- **Dark-frame settle in face mode.** When a single-frame face-mode frame is assessed as `insufficient_light`, the camera stays on for 5 s and frames are discarded while exposure settles. One frame is assessed at the end of the window, and only that final result is reported. This applies only to single-frame face-mode samples; continuous capture modes report an insufficient-light frame immediately. It reuses the light-only settle mechanism, with single-frame face-mode results as its trigger.
+
+### Consequences
+
+- The setting, the snapshot behavior and the 1 s first sample are additive to settings schema 1 and ABI version 1; no C signature changes. As with `always_on_camera`, an older binary that rejects unknown fields may reset a settings file that contains `camera_history`.
+- Benefit: a dark frame taken during auto-exposure after wake no longer starts the light-only cycle, which the earlier 1 s first sample made more likely.
+- Cost: in a genuinely dark room each single-frame face sample keeps the camera on about 5 s longer before it reports, which raises camera-on time per sample. This works against the project's minimal camera and battery goal and should be measured on hardware before the trade-off is treated as settled.
+- Hardware behavior is not verified. The wake acceptance row remains "Not run" in the archived macOS checklist, and the manual checks for this change are pending.
+
+### Non-Obvious Constraints
+
+- The runtime fallback must never be written into `selected_camera_id` or `camera_history`.
+- The 1 s first sample applies only to a resume trigger. It does not change `presence_sampling_interval_s` or its 5–300 second range.
+- The single-frame face-mode settle is bounded by its 5 s deadline. A stalled stream during the settle remains bounded by the existing frame timeout and is not extended.

@@ -5,6 +5,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub const MAX_CAMERA_HISTORY: usize = 8;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
@@ -34,6 +36,9 @@ pub struct Settings {
     pub volume_key_step: u8,
     #[serde(default)]
     pub selected_camera_id: Option<String>,
+    // Most recent first. The front entry is always selected_camera_id; clients cannot set it.
+    #[serde(default)]
+    pub camera_history: Vec<String>,
     #[serde(default)]
     pub screensaver_targets: std::collections::BTreeMap<String, f64>,
 }
@@ -73,6 +78,7 @@ impl Default for Settings {
             brightness_key_step: 5,
             volume_key_step: 5,
             selected_camera_id: None,
+            camera_history: Vec::new(),
             screensaver_targets: Default::default(),
         }
     }
@@ -99,6 +105,20 @@ impl Settings {
             .unwrap_or(false)
         {
             return Err("invalid selected camera ID".into());
+        }
+        if self.camera_history.len() > MAX_CAMERA_HISTORY {
+            return Err("camera history exceeds its limit".into());
+        }
+        for (index, id) in self.camera_history.iter().enumerate() {
+            if id.is_empty() || id.len() > 512 {
+                return Err("invalid camera history entry".into());
+            }
+            if self.camera_history[..index].contains(id) {
+                return Err("duplicate camera history entry".into());
+            }
+        }
+        if self.selected_camera_id.as_ref() != self.camera_history.first() {
+            return Err("selected camera must be the first camera history entry".into());
         }
         if !self.presence_sampling_interval_s.is_finite()
             || !(5.0..=300.0).contains(&self.presence_sampling_interval_s)
@@ -151,6 +171,11 @@ pub(crate) fn load(path: &Path) -> Result<Settings, String> {
                             s.presence_sampling_interval_s.clamp(5.0, 300.0);
                         s.return_sampling_interval_s =
                             s.return_sampling_interval_s.clamp(0.25, 5.0);
+                    }
+                    // Files written before camera_history existed only have selected_camera_id.
+                    // Seed the history from it so the legacy selection is not treated as corrupt.
+                    if s.camera_history.is_empty() {
+                        s.camera_history = s.selected_camera_id.iter().cloned().collect();
                     }
                     if s.validate().is_ok() {
                         Ok(s)
