@@ -1,0 +1,312 @@
+# Windows checks: Rust workspace, pinned CPU runtime, native build, packaging and an installer round trip.
+#
+# What this job covers:
+# - cargo fmt --check, clippy (workspace, and telaviva-inference with the directml feature), workspace tests
+# - fetch and SHA-256 verification of the pinned CPU ONNX Runtime, then the Rust YuNet smoke test
+# - Rust DLL build, export check against the C headers, MSBuild of the native solution
+# - tests.exe, the packaged TelaViva.exe --smoke-test, the release zip and its SHA-256
+# - extraction of the zip, install into a temporary directory without a Start menu entry,
+#   smoke test from the installed copy, uninstall, and checks that the directory and the Run value are gone
+#
+# What this job does NOT cover:
+# - No UI automation: the flyout, Settings window, tray icon and keyboard focus are not driven.
+# - No hardware: DDC brightness and volume, camera presence, hardware keys, laptop rows,
+#   launch at login and the Start menu shortcut stay manual.
+#   See specs/archived/windows-version/validation/hardware-checklist.md.
+# - No DirectML run: the runner has no acceleration profile; directml code is compiled by clippy only.
+# - No code signing and no SmartScreen check of the unsigned build.
+# - No telemetry and no secrets: the job uses only the repository contents and public downloads.
+
+name: Windows checks
+
+on:
+  pull_request:
+    paths:
+      - 'native/windows/**'
+      - 'crates/**'
+      - 'include/**'
+      - 'tools/windows/**'
+      - 'tools/inference/**'
+      - 'packaging/windows/**'
+      - 'assets/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/windows.yml'
+  push:
+    branches:
+      - main
+      - windows-version
+    paths:
+      - 'native/windows/**'
+      - 'crates/**'
+      - 'include/**'
+      - 'tools/windows/**'
+      - 'tools/inference/**'
+      - 'packaging/windows/**'
+      - 'assets/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/windows.yml'
+
+permissions:
+  contents: read
+
+# A newer push or pull request on the same ref cancels the older run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows x64 (Windows 11 toolchain)
+    # windows-2022 is pinned so the Visual Studio 17.14 and SDK 10.0.26100 expectations do not move with the latest image.
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # Fails early with a clear message when the runner does not match specs/archived/windows-version/validation/toolchain.md.
+      - name: Verify Visual Studio, MSBuild and Windows SDK versions
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
+              throw "vswhere.exe not found at $vswhere. The runner needs Visual Studio 2022 17.14."
+          }
+          $vsPath = & $vswhere -latest -products '*' -requires Microsoft.Component.MSBuild -property installationPath
+          if ($LASTEXITCODE -ne 0) { throw "vswhere failed with exit code $LASTEXITCODE" }
+          $vsPath = [string](@($vsPath) | Select-Object -First 1)
+          if ([string]::IsNullOrEmpty($vsPath)) { throw 'No Visual Studio installation with MSBuild was found.' }
+          $vsVersion = [string](@(& $vswhere -latest -products '*' -requires Microsoft.Component.MSBuild -property installationVersion) | Select-Object -First 1)
+          if (-not $vsVersion.StartsWith('17.14.')) {
+              throw "Visual Studio 17.14 is required, found '$vsVersion' at $vsPath. Use a runner image with Visual Studio 2022 17.14."
+          }
+          $msbuild = Join-Path $vsPath 'MSBuild\Current\Bin\MSBuild.exe'
+          if (-not (Test-Path -LiteralPath $msbuild -PathType Leaf)) { throw "MSBuild not found: $msbuild" }
+          $msbuildVersion = [string](@(& $msbuild -version -nologo) | Select-Object -Last 1)
+          if (-not $msbuildVersion.Trim().StartsWith('17.14.')) {
+              throw "MSBuild 17.14 is required, found '$msbuildVersion'."
+          }
+          foreach ($sdk in @('Include', 'Lib')) {
+              $sdkDir = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\$sdk\10.0.26100.0"
+              if (-not (Test-Path -LiteralPath $sdkDir -PathType Container)) {
+                  throw "Windows SDK 10.0.26100.0 is required; $sdkDir is missing."
+              }
+          }
+          # The WinUI C++ targets and the Roslyn compiler are part of the Visual Studio components the runner must provide.
+          # See specs/archived/windows-version/validation/toolchain.md (findings 4 and 7).
+          if (-not (Test-Path -LiteralPath (Join-Path $vsPath 'MSBuild\Microsoft\WindowsXaml') -PathType Container)) {
+              throw 'WinUI C++ build targets are missing (MSBuild\Microsoft\WindowsXaml). Component Microsoft.VisualStudio.ComponentGroup.WindowsAppSDK.Cpp is required.'
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $vsPath 'MSBuild\Current\Bin\Roslyn') -PathType Container)) {
+              throw 'Roslyn compiler is missing (MSBuild\Current\Bin\Roslyn). Component Microsoft.VisualStudio.Component.Roslyn.Compiler is required.'
+          }
+          Write-Host "Visual Studio $vsVersion, MSBuild $msbuildVersion, Windows SDK 10.0.26100.0: OK"
+
+      # Stable toolchain, same approach as the macOS workflow. The repository has no rust-toolchain.toml.
+      - name: Install Rust toolchain
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          rustup toolchain install stable --profile minimal --component clippy --component rustfmt
+          if ($LASTEXITCODE -ne 0) { throw "rustup toolchain install failed with exit code $LASTEXITCODE" }
+          rustup default stable
+          if ($LASTEXITCODE -ne 0) { throw "rustup default failed with exit code $LASTEXITCODE" }
+          rustc -V
+          cargo -V
+
+      # Caches only the download side: the registry and git checkouts. Build output is not cached.
+      - name: Cache cargo registry and git
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: windows-2022-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      # NuGet packages for the Windows App SDK and C++/WinRT restored by msbuild /restore.
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: windows-2022-nuget-${{ hashFiles('native/windows/**/*.vcxproj', 'native/windows/**/packages.config', 'native/windows/**/*.props', 'native/windows/**/*.targets', 'native/windows/**/nuget.config') }}
+
+      - name: Check formatting
+        shell: pwsh
+        run: |
+          cargo fmt --all -- --check
+          if ($LASTEXITCODE -ne 0) { throw "cargo fmt --check failed with exit code $LASTEXITCODE" }
+
+      - name: Lint workspace
+        shell: pwsh
+        run: |
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw "cargo clippy (workspace) failed with exit code $LASTEXITCODE" }
+
+      # The DirectML registration is only compiled with this feature, so it needs its own lint pass.
+      - name: Lint inference with DirectML feature
+        shell: pwsh
+        run: |
+          cargo clippy -p telaviva-inference --all-targets --features directml --locked -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw "cargo clippy (telaviva-inference, directml) failed with exit code $LASTEXITCODE" }
+
+      - name: Test workspace
+        shell: pwsh
+        run: |
+          cargo test --workspace --all-targets --locked
+          if ($LASTEXITCODE -ne 0) { throw "cargo test failed with exit code $LASTEXITCODE" }
+
+      # Downloads the pinned CPU runtime and checks the archive and DLL SHA-256 against assets/model/manifest.toml.
+      # The script installs nothing on a mismatch and exits non-zero.
+      - name: Fetch and verify the CPU ONNX Runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools\inference\fetch-windows-runtime.ps1 -Variant cpu
+          if ($LASTEXITCODE -ne 0) { throw "fetch-windows-runtime.ps1 failed with exit code $LASTEXITCODE" }
+          $dll = Join-Path $env:GITHUB_WORKSPACE 'tools\inference\runtime\windows-x64\onnxruntime.dll'
+          if (-not (Test-Path -LiteralPath $dll -PathType Leaf)) { throw "ONNX Runtime was not installed at $dll" }
+
+      # The smoke test skips silently when the runtime is absent, so the fetch step above must have passed first.
+      - name: Run Rust YuNet smoke test
+        shell: pwsh
+        run: |
+          cargo test -p telaviva-inference --test ort_yunet_smoke_windows --locked -- --nocapture
+          if ($LASTEXITCODE -ne 0) { throw "ort_yunet_smoke_windows failed with exit code $LASTEXITCODE" }
+
+      # Rust DLLs first: the native projects link their import libraries.
+      - name: Build Rust DLLs
+        shell: pwsh
+        run: |
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools\windows\build-rust-dlls.ps1 -Configuration Release
+          if ($LASTEXITCODE -ne 0) { throw "build-rust-dlls.ps1 failed with exit code $LASTEXITCODE" }
+
+      # Catches a DLL that exports a tv_ function the C headers do not declare, or the reverse.
+      - name: Check DLL exports against headers
+        shell: pwsh
+        run: |
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools\windows\check-dll-exports.ps1
+          if ($LASTEXITCODE -ne 0) { throw "check-dll-exports.ps1 failed with exit code $LASTEXITCODE" }
+
+      # MSBuild is found through vswhere rather than PATH. /nr:false keeps no MSBuild nodes alive after the build.
+      - name: Build native Windows solution
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vsPath = [string](@(& $vswhere -latest -products '*' -requires Microsoft.Component.MSBuild -property installationPath) | Select-Object -First 1)
+          $msbuild = Join-Path $vsPath 'MSBuild\Current\Bin\MSBuild.exe'
+          & $msbuild native\windows\TelaViva.sln /restore /p:Platform=x64 /p:Configuration=Release /m /nr:false
+          if ($LASTEXITCODE -ne 0) { throw "msbuild failed with exit code $LASTEXITCODE" }
+
+      # Tests read fixtures from the repository; the Rust DLLs folder is on PATH so the test host finds telaviva_core.dll.
+      - name: Run native tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = $env:GITHUB_WORKSPACE
+          $env:TELAVIVA_TEST_FIXTURES = Join-Path $root 'native\windows\Tests\fixtures'
+          $env:PATH = (Join-Path $root 'native\windows\build\rust') + ';' + $env:PATH
+          $exe = Join-Path $root 'native\windows\build\x64\Release\tests.exe'
+          if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw "tests.exe not found: $exe" }
+          # Start-Process reports the exit code; a failing test executable must fail the step.
+          $p = Start-Process -FilePath $exe -Wait -PassThru -NoNewWindow
+          if ($p.ExitCode -ne 0) { throw "tests.exe failed with exit code $($p.ExitCode)" }
+
+      # build-app.ps1 rebuilds the DLLs and the solution (incremental), assembles dist\TelaVivaOLED and writes the release zip.
+      - name: Build release package and zip
+        shell: pwsh
+        run: |
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File packaging\windows\build-app.ps1 -Configuration Release -Zip:$true
+          if ($LASTEXITCODE -ne 0) { throw "build-app.ps1 failed with exit code $LASTEXITCODE" }
+
+      - name: Smoke-test packaged app
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = $env:GITHUB_WORKSPACE
+          $exe = Join-Path $root 'dist\TelaVivaOLED\TelaViva.exe'
+          if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw "Packaged TelaViva.exe not found: $exe" }
+          $p = Start-Process -FilePath $exe -ArgumentList '--smoke-test' -Wait -PassThru -NoNewWindow
+          if ($p.ExitCode -ne 0) { throw "TelaViva.exe --smoke-test failed with exit code $($p.ExitCode)" }
+
+      # Copies the zip and writes its SHA-256 next to it, in the format sha256sum uses. Records the size in the job summary.
+      - name: Prepare release zip and SHA-256
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = $env:GITHUB_WORKSPACE
+          $zips = @(Get-ChildItem -LiteralPath (Join-Path $root 'dist') -Filter 'TelaVivaOLED-*-win-x64.zip' -File)
+          if ($zips.Count -ne 1) { throw "Expected exactly one release zip in dist, found $($zips.Count)." }
+          $artifactDir = Join-Path $root 'artifacts'
+          New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
+          $name = $zips[0].Name
+          $dest = Join-Path $artifactDir $name
+          Copy-Item -LiteralPath $zips[0].FullName -Destination $dest -Force
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $dest).Hash.ToLowerInvariant()
+          Set-Content -LiteralPath ($dest + '.sha256') -Value ($hash + '  ' + $name) -Encoding ASCII
+          $size = (Get-Item -LiteralPath $dest).Length
+          Write-Host "Release zip: $name ($size bytes)"
+          Write-Host "SHA-256:     $hash"
+          if ($env:GITHUB_STEP_SUMMARY) {
+              Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value ('Release zip `' + $name + '`: ' + $size + ' bytes, SHA-256 `' + $hash + '`')
+          }
+
+      # The zip carries Install-TelaVivaOLED.ps1 and Uninstall-TelaVivaOLED.ps1 at its root, so the round trip runs from an extracted copy.
+      # -NoStartMenu keeps the runner free of Start menu entries; the uninstall step below removes everything the install created.
+      - name: Install from the extracted zip into a temporary directory
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = $env:GITHUB_WORKSPACE
+          $zip = @(Get-ChildItem -LiteralPath (Join-Path $root 'artifacts') -Filter 'TelaVivaOLED-*-win-x64.zip' -File)[0].FullName
+          $extractDir = Join-Path $env:RUNNER_TEMP 'TelaVivaZip'
+          $installDir = Join-Path $env:RUNNER_TEMP 'TelaVivaInstall'
+          if (Test-Path -LiteralPath $installDir) { throw "Install directory already exists: $installDir" }
+          Expand-Archive -LiteralPath $zip -DestinationPath $extractDir -Force
+          $installer = Join-Path $extractDir 'Install-TelaVivaOLED.ps1'
+          if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw "Install-TelaVivaOLED.ps1 is missing from the zip." }
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer -InstallDir $installDir -NoStartMenu -Force
+          if ($LASTEXITCODE -ne 0) { throw "Install-TelaVivaOLED.ps1 failed with exit code $LASTEXITCODE" }
+          $expected = @(
+              'TelaViva.exe',
+              'telaviva_core.dll',
+              'telaviva_inference.dll',
+              'onnxruntime.dll',
+              (Join-Path 'models' 'face_detection_yunet_2023mar.onnx')
+          )
+          foreach ($file in $expected) {
+              $path = Join-Path $installDir $file
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Installed file is missing: $path" }
+          }
+          $p = Start-Process -FilePath (Join-Path $installDir 'TelaViva.exe') -ArgumentList '--smoke-test' -Wait -PassThru -NoNewWindow
+          if ($p.ExitCode -ne 0) { throw "Installed TelaViva.exe --smoke-test failed with exit code $($p.ExitCode)" }
+          Write-Host "Installed copy passed --smoke-test: $installDir"
+
+      # Runs even when an earlier step failed, so the runner is left clean. The directory and the Run value must be gone afterwards.
+      - name: Uninstall and check that nothing is left behind
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = $env:GITHUB_WORKSPACE
+          $installDir = Join-Path $env:RUNNER_TEMP 'TelaVivaInstall'
+          $extractDir = Join-Path $env:RUNNER_TEMP 'TelaVivaZip'
+          $uninstaller = Join-Path $extractDir 'Uninstall-TelaVivaOLED.ps1'
+          if ((Test-Path -LiteralPath $installDir) -and (Test-Path -LiteralPath $uninstaller -PathType Leaf)) {
+              & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $uninstaller -InstallDir $installDir -RemoveUserData -Quiet
+              if ($LASTEXITCODE -ne 0) { throw "Uninstall-TelaVivaOLED.ps1 failed with exit code $LASTEXITCODE" }
+          }
+          if (Test-Path -LiteralPath $installDir) { throw "Install directory still exists after uninstall: $installDir" }
+          $run = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'TelaVivaOLED' -ErrorAction SilentlyContinue
+          if ($null -ne $run) { throw 'The HKCU Run value TelaVivaOLED is still present after uninstall.' }
+          Write-Host 'Uninstall check passed: install directory and Run value are gone.'
+
+      - name: Upload release zip and SHA-256
+        uses: actions/upload-artifact@v4
+        with:
+          name: telaviva-oled-windows-x64
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 14

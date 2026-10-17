@@ -47,3 +47,26 @@ Generated from `cargo metadata --locked` for the current Cargo.lock. All license
 License/notice files shipped in the downloaded crate archives were copied into `licenses/rust/<package>-<version>/`. Registry checksums are recorded in Cargo.lock. This inventory must be regenerated if the lockfile changes.
 
 Packages without a top-level notice file in the registry archive: none.
+
+## Windows native dependencies
+
+Records for the Windows build under `native/windows/`, `tools/inference/` and the `dist\TelaVivaOLED` output. Versions come from `native/windows/**/*.vcxproj`, `assets/model/manifest.toml`, and the NuGet package metadata in the local package cache. License texts shipped with the app are in `licenses/windows/` (index in its `README.md`).
+
+| Component | Version | License | Source | Redistribution |
+|---|---|---|---|---|
+| Microsoft.WindowsAppSDK (Windows App SDK) | 2.5.1 | Microsoft Software License Terms (`license.txt` in the package; not MIT) | https://github.com/microsoft/windowsappsdk (project URL in the nuspec); NuGet `Microsoft.WindowsAppSDK` 2.5.1 | Self-contained deployment (`WindowsAppSDKSelfContained`). Files binplaced by the package may be redistributed (license section 3(a)(i)); they are the runtime DLLs, `.winmd`, `.pri` and language resources in `dist\TelaVivaOLED`. |
+| WinUI 3 (Microsoft.WindowsAppSDK.WinUI) | 2.3.9 | Microsoft Software License Terms (package `license.txt`) | Part of the Windows App SDK; NuGet `Microsoft.WindowsAppSDK.WinUI` 2.3.9 | Redistributed as part of the Windows App SDK runtime. |
+| C++/WinRT (Microsoft.Windows.CppWinRT) | 3.0.260818.1 | MIT (package `LICENSE`) | https://github.com/Microsoft/cppwinrt | Build-time only (projection headers). Not redistributed. |
+| ONNX Runtime, CPU (`onnxruntime.dll`) | 1.20.1 | MIT (`licenses/windows/ONNXRUNTIME-LICENSE`) | https://github.com/microsoft/onnxruntime/releases/download/v1.20.1/onnxruntime-win-x64-1.20.1.zip | Redistributed: `onnxruntime.dll` is copied to `dist\TelaVivaOLED` (default provider, pinned in `assets/model/manifest.toml`). `onnxruntime_providers_shared.dll` is not shipped: `build-app.ps1` copies only `onnxruntime.dll` (CPU runtime only). |
+| ONNX Runtime, DirectML package | 1.20.1 | MIT (`licenses/windows/ONNXRUNTIME-DIRECTML-LICENSE`) | https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime.DirectML/1.20.1 | Reserved variant, not shipped by default. Its `onnxruntime.dll` would be redistributed. |
+| DirectML.dll | Not pinned by this repo | Microsoft Software License Terms of the package that carries the file (see the next row) | Carried by Microsoft.Windows.AI.MachineLearning 2.1.74 (NuGet cache, `runtimes\win-x64\native`) | Not redistributed. `packaging/windows/build-app.ps1` removes it from the package root before zipping (`$unusedComponents`), so the in-box System32 copy is used. |
+| Microsoft.Windows.AI.MachineLearning | 2.1.74 | Microsoft Software License Terms (package `license.txt`) | NuGet `Microsoft.Windows.AI.MachineLearning` 2.1.74 (via Microsoft.WindowsAppSDK.ML 2.1.94) | Binplaced files that match `$unusedComponents` in `build-app.ps1` are removed before zipping (including `DirectML.dll`); the remaining files are redistributed. |
+| YuNet face detection model | 2023mar | MIT (see `licenses/inference/YUNET-LICENSE` and `assets/model/manifest.toml`) | https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet | Redistributed: copied to `dist\TelaVivaOLED\models`. |
+| Windows SDK Build Tools (Microsoft.Windows.SDK.BuildTools) | 10.0.26100.4654 | Microsoft (license at https://aka.ms/WinSDKLicenseURL, per the nuspec) | https://aka.ms/WinSDKProjectURL (project URL in the nuspec) | Build-time tooling. Not expected in the app output; not checked file by file. |
+| Microsoft Visual C++ runtime and STL | MSVC toolset v143 (Visual Studio 2022) | Microsoft Visual Studio terms (not a redistributable pin) | `native/windows/HybridCRT.props` | Hybrid CRT: the C++ runtime and STL are linked statically (`/MT` Release, `/MTd` Debug). The UCRT is linked dynamically through its import library. Nothing from the Visual C++ redistributable is copied by `packaging/windows/build-app.ps1`. |
+
+Dependency packages restored with Microsoft.WindowsAppSDK 2.5.1 (all Microsoft Software License Terms, per their nuspec `license.txt`; only the 2.5.1 file was read): Microsoft.WindowsAppSDK.Base 2.0.4, Microsoft.WindowsAppSDK.Foundation 2.3.12, Microsoft.WindowsAppSDK.InteractiveExperiences 2.1.9, Microsoft.WindowsAppSDK.DWrite 2.1.0, Microsoft.WindowsAppSDK.Widgets 2.0.5, Microsoft.WindowsAppSDK.AI 2.5.5, Microsoft.WindowsAppSDK.ML 2.1.94, Microsoft.WindowsAppSDK.Search 2.5.5, Microsoft.WindowsAppSDK.Runtime 2.5.1. Microsoft.Web.WebView2 1.0.3719.77 is also in the cache (its `LICENSE.txt` is not in this folder). The package that pulls it in was not identified.
+
+The Rust crates that ship in `telaviva_core.dll` and `telaviva_inference.dll` are the rows in the Rust table above; this section adds no Rust rows.
+
+No asset outside the open-source set is bundled by the Windows build, except the Microsoft Software License Terms components listed above (Windows App SDK, WinUI 3 and the Windows App SDK packages, including Microsoft.Windows.AI.MachineLearning), which are redistributed under their own terms.

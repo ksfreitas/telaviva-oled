@@ -26,3 +26,17 @@ __pycache__/
 *.key
 *.mobileprovision
 *.provisionprofile
+
+# Windows shell
+/native/windows/build/
+/native/windows/.vs/
+/native/windows/packages/
+**/x64/
+*.user
+*.aps
+*.VC.db
+*.VC.opendb
+
+# MSBuild and XAML compiler output (generated, never commit)
+/native/windows/**/Generated Files/
+/native/windows/**/obj/
