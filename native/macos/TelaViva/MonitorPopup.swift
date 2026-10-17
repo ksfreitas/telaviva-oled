@@ -140,10 +140,9 @@ private struct MonitorControls: View {
                     })
                     Text("\(Int(shown.rounded()))%").monospacedDigit().frame(width: 42, alignment: .trailing).font(.caption)
                 }
-                let status = controls.status(monitor: monitor, feature: feature)
-                if status != .ready {
-                    Text(AppText.string(status == .failed ? "controlFailed" : "controlPending", locale: core.snapshot.settings?.locale))
-                        .font(.system(size: 9)).foregroundStyle(status == .failed ? Color.red : Color.secondary)
+                if controls.status(monitor: monitor, feature: feature) == .failed {
+                    Text(AppText.string("controlFailed", locale: core.snapshot.settings?.locale))
+                        .font(.system(size: 9)).foregroundStyle(Color.red)
                         .frame(maxWidth: .infinity, alignment: .trailing)
                 }
             }
