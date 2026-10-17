@@ -4,6 +4,13 @@ import CoreVideo
 import Foundation
 import os
 
+extension Notification.Name {
+    /// Raw names of the AVCaptureDevice connect and disconnect notifications. The typed
+    /// `AVCaptureDevice.wasConnectedNotification` members are missing from older SDKs, such as the macos-14 runner's.
+    static let cameraDeviceConnected = Notification.Name("AVCaptureDeviceWasConnectedNotification")
+    static let cameraDeviceDisconnected = Notification.Name("AVCaptureDeviceWasDisconnectedNotification")
+}
+
 private let wakeLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "br.com.codebit.telaviva", category: "wake")
 
 /// Wall-clock milliseconds for wake timing logs, on the same clock as `captured_at_ms`.
@@ -57,13 +64,13 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         let center = NotificationCenter.default
         // Registered once. Both handlers hop to the camera queue before touching capture state.
         deviceObservers.append(center.addObserver(
-            forName: AVCaptureDevice.wasConnectedNotification, object: nil, queue: nil
+            forName: .cameraDeviceConnected, object: nil, queue: nil
         ) { [weak self] notification in
             guard let device = notification.object as? AVCaptureDevice else { return }
             self?.queue.async { [weak self] in self?.cameraDeviceChanged(device, connected: true) }
         })
         deviceObservers.append(center.addObserver(
-            forName: AVCaptureDevice.wasDisconnectedNotification, object: nil, queue: nil
+            forName: .cameraDeviceDisconnected, object: nil, queue: nil
         ) { [weak self] notification in
             guard let device = notification.object as? AVCaptureDevice else { return }
             self?.queue.async { [weak self] in self?.cameraDeviceChanged(device, connected: false) }

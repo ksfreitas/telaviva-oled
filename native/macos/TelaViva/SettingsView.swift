@@ -53,8 +53,8 @@ struct SettingsView: View {
                 .tabItem { Text(AppText.string("settings.tab.ambient", locale: locale)) }
         }
         .onAppear { refreshCameras(); load() }
-        .onReceive(NotificationCenter.default.publisher(for: AVCaptureDevice.wasConnectedNotification)) { _ in refreshCameras() }
-        .onReceive(NotificationCenter.default.publisher(for: AVCaptureDevice.wasDisconnectedNotification)) { _ in refreshCameras() }
+        .onReceive(NotificationCenter.default.publisher(for: .cameraDeviceConnected)) { _ in refreshCameras() }
+        .onReceive(NotificationCenter.default.publisher(for: .cameraDeviceDisconnected)) { _ in refreshCameras() }
         .onChange(of: core.snapshot.revision) { _, _ in if !didLoad { load() } }
         .onChange(of: locale) { _, _ in save() }
         .onChange(of: presence) { _, _ in save() }

@@ -11,6 +11,7 @@
 - Hardware brightness and volume keys pressed quickly no longer make the target jump back: the key router now ignores monitor readbacks while its own DDC writes are in flight and for one second afterwards, then compares again, so external changes and monitor clamping are still followed.
 - A dimmed monitor that wakes while its DDC channel is not ready is now restored: a failed wake readback or restore write is retried up to three times while ownership of the dimmed value is kept, instead of dropping ownership and leaving the monitor at its dimmed brightness.
 - The camera status shown when display sleep suspends monitoring was missing its pt-BR text and now has it.
+- The macOS app now builds with older SDKs such as the macos-14 CI runner's: the camera connect and disconnect observers use the raw AVFoundation notification names instead of the `AVCaptureDevice.wasConnectedNotification` members that only newer SDKs provide.
 
 ### Changed
 
