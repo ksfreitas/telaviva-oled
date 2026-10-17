@@ -4,7 +4,7 @@
 
 TelaViva OLED is a planned desktop application for macOS and Windows that controls the brightness and volume of external monitors through DDC. It adds configurable OLED-oriented brightness protections using webcam presence and screensaver state, with minimal computer resource usage as a central requirement.
 
-This document records agreed intent with implementation in progress. The repository now contains shared Rust policy and inference crates plus a native macOS shell. Windows implementation is deferred by the user. Current evidence is recorded under `specs/archived/external-monitor-control-and-oled-presence-protection/validation/`; source code and successful tests do not imply verified device support. Reducing brightness to zero is a requested monitor brightness setting; its physical effect and suitability for OLED protection must be evaluated for supported hardware.
+This document records agreed intent with implementation in progress. The repository now contains shared Rust policy and inference crates, a native macOS shell and a Windows 11 x64 shell in progress (see the windows-version section below). Current evidence is recorded under `specs/archived/external-monitor-control-and-oled-presence-protection/validation/`; source code and successful tests do not imply verified device support. Reducing brightness to zero is a requested monitor brightness setting; its physical effect and suitability for OLED protection must be evaluated for supported hardware.
 
 ### Agreed requirements
 
@@ -24,11 +24,11 @@ This document records agreed intent with implementation in progress. The reposit
 ## Stack
 
 - Repository architecture: modular monolith, delivered as a desktop application.
-- Initial target operating systems: macOS on Apple Silicon and Windows x64. Intel Mac support is deferred; affected M1 monitor/connection limitations are accepted and surfaced explicitly.
+- Initial target operating systems: macOS on Apple Silicon and Windows 11 x64 (ARM64 later; Windows 10 out of scope). Intel Mac support is deferred; affected M1 monitor/connection limitations are accepted and surfaced explicitly.
 - Implementation: Rust for shared application policy and inference, with Swift/macOS and future C++/Windows presentation and device adapters.
 - Build tooling: Cargo for the shared core, Xcode for the macOS shell, MSBuild for the Windows shell; one repository and modular application.
 - UI: SwiftUI/AppKit on macOS and C++/WinRT with WinUI 3 on Windows 11; shared Rust core through a versioned C ABI. No web frontend runtime.
-- Face detection: bundled YuNet model with ONNX Runtime via ort; CPU fallback, OS-supplied CoreML on macOS and optional OpenVINO on supported Intel Windows hardware, subject to measured energy benefit.
+- Face detection: bundled YuNet model with ONNX Runtime via ort; CPU by default and fallback, OS-supplied CoreML on macOS, and DirectML on Windows only for device profiles with a recorded energy benefit (none recorded yet). NPU routes are deferred.
 - DDC: Win32 physical monitor/VCP APIs on Windows; isolated IOAVService bridge based on the MIT-licensed m1ddc approach on Apple Silicon.
 - Project license: MIT; see `LICENSE`. Third-party libraries and assets retain their own licenses and notices.
 - Dependency policy: redistributed libraries, runtimes, and assets must be open source with retained licenses and provenance. Native operating-system APIs are platform facilities.
@@ -232,3 +232,30 @@ Camera session timing moved from the macOS shell into `telaviva-core`, as `crate
 The hand-written headers `include/telaviva_core.h` and `include/telaviva_inference.h` are now checked against the Rust ABI by `header_contract` tests in each crate. The tests use only std, so they add no dependency and need no CI change: they pin every exported function with a typed function-pointer cast and compare prototypes, struct fields and constants with the header text. The core snapshot no longer carries `messages`, and the `locales/en-US.ftl` and `locales/pt-BR.ftl` catalogs were removed. Native shells own their UI strings, so on macOS `native/macos/TelaViva/Localization.swift` is the only catalog; the core keeps the `locale` setting and returns status codes rather than display text. The Xcode Release configuration now links the `aarch64-apple-darwin` release libraries instead of the `target/debug/` ones, and live documentation points to the permanent documents instead of the archived stub `specs/oled-monitor-protection/architecture.md`. Two follow-ups stay deferred, each blocked by an existing record: the calibration session machine (`AmbientCalibrationController`) stays in Swift because [ADR 0008](adr/0008-core-owned-ambient-follow-and-per-monitor-protection.md) makes calibration a shell-owned session and needs a superseding record first, and the `HardwareKeyRouter` keystroke latch stays in Swift because [ADR 0004](adr/0004-external-monitor-hardware-keys-and-fluid-controls.md) says its event tap never calls the core and [ADR 0005](adr/0005-configurable-hardware-key-step.md) keeps the router standalone.
 
 The decisions are recorded in [ADR 0014](adr/0014-camera-lifecycle-in-the-core.md) and [ADR 0015](adr/0015-native-shells-own-ui-strings.md), the archived plan is at [specs/archived/core-camera-lifecycle-abi-contract-and-cleanup/spec.md](specs/archived/core-camera-lifecycle-abi-contract-and-cleanup/spec.md), and the contract is in [api.md](api.md); camera hardware behavior is not verified, so acceptance is pending.
+
+## windows-version — 2026-10-17
+
+The Windows version adds a second native shell over the same Rust policy core and C ABI. The requirements and design are in [specs/archived/windows-version/spec.md](specs/archived/windows-version/spec.md) and [specs/archived/windows-version/architecture.md](specs/archived/windows-version/architecture.md); this section records only the repository shape and status.
+
+- Shell split: `native/windows/Platform` is a static library without XAML that holds the platform layer and is tested with fake backends. `native/windows/TelaViva` is the WinUI 3 app with the tray host, flyout and Settings. Both are Windows 11 x64 only; ARM64 is a later feature.
+- Rust DLLs: `telaviva_core.dll` and `telaviva_inference.dll`, each built as a cdylib and linked by the shell through its import library, rather than two static libraries in one binary.
+- Inference ABI: additive only. Provider value `2` is the DirectML candidate, with `tv_inference_create_with_provider_device` and `tv_inference_directml_available`. Value `3` is reserved for an NPU provider. The core ABI stays at version 1, and CoreML code is compiled only for macOS. See [api.md](api.md).
+- Key hook (`KeyHook`, `KeyIntentRouter`): volume and mute keys only, with the route logic ported from macOS; see the architecture, Decision 9.
+- Audio owner (`AudioOwner`): default output matched to a monitor by container ID, with no name fallback; see the architecture, Decision 9.
+- Efficiency (`EfficiencyController`, `Scheduler`): EcoQoS while idle, with a user-forced Efficiency mode left in place; see the architecture, Decision 11.
+- Provider selection (`InferenceHost`): adapter matching against the allowlist, a startup self-test and CPU fallback; see the architecture, Decisions 3 and 4.
+
+Status: the Windows code is in the repository and covered by automated tests. Windows is no longer deferred, but its readiness is not established. Only the hardware checklist rows marked Pass are verified (see the README Windows section). DirectML energy benefit, NPU, clean-profile install, signed distribution and the remaining checklist rows are open, and the Windows App SDK runtime is redistributed under Microsoft Software License Terms.
+
+**Architectural decisions**
+
+- [ADR-0016](adr/0016-windows-shell-winui3-unpackaged-platform-split.md): Windows shell: C++/WinRT WinUI 3, unpackaged and self-contained, with a UI-free platform library
+- [ADR-0017](adr/0017-windows-two-rust-cdylibs.md): Windows Rust core and inference as two cdylibs with a C ABI
+- [ADR-0018](adr/0018-windows-monitor-identity-from-edid.md): Windows monitor identity from EDID without the connector path
+- [ADR-0019](adr/0019-windows-inference-cpu-default-directml-allowlist.md): Windows inference: CPU by default, DirectML only for measured device profiles with a failure marker
+- [ADR-0020](adr/0020-windows-efficiency-ecoqos-user-managed-mode.md): Windows efficiency: EcoQoS set once, UI exemption only while a window is visible, user-forced Efficiency mode respected
+- [ADR-0021](adr/0021-windows-volume-key-hook-and-route.md): Windows volume and mute keys through a low-level hook, a lock-free route and container-id ownership
+- [ADR-0022](adr/0022-windows-presence-camera-shared-mediacapture.md): Windows presence camera: shared read-only MediaCapture, infrared sources excluded
+- [ADR-0023](adr/0023-windows-laptop-naming-and-notebook.md): Windows UI says "Laptop" and "Notebook"; core identifiers unchanged
+- [ADR-0024](adr/0024-windows-zip-distribution-and-hkcu-run.md): Windows distribution: unpackaged zip with a per-user PowerShell installer and HKCU Run for launch at login
+- [ADR-0025](adr/0025-windows-app-sdk-license-versus-open-source-rule.md): Windows App SDK license versus the open-source-only rule (Proposed; owner decision open)

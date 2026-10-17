@@ -1,6 +1,6 @@
 # Public API
 
-This page records the consumer-facing native interfaces that exist in the repository. The Rust core C ABI is implemented; the inference C ABI is also implemented. The JSON snapshot schema is an implementation contract consumed by the native macOS shell, not a claim that the planned Windows consumer exists. The two C headers are checked against the Rust ABI by the `header_contract` tests.
+This page records the consumer-facing native interfaces that exist in the repository. The Rust core C ABI is implemented; the inference C ABI is also implemented. The JSON snapshot schema is an implementation contract consumed by the native macOS shell and by the Windows shell in the repository; the Windows status is in the [windows-version](#windows-version) section. The two C headers are checked against the Rust ABI by the `header_contract` tests.
 
 ## external-monitor-control-and-oled-presence-protection
 
@@ -110,11 +110,11 @@ Built-in display writes through DisplayServices and the automatic brightness set
 
 ### Local inference C ABI
 
-Header: [`include/telaviva_inference.h`](include/telaviva_inference.h). `TvInferenceResult` contains integer `status` and floating-point `confidence`. `tv_inference_create` and `tv_inference_create_with_provider` load absolute app-bundled runtime/model paths. Provider values currently implemented are CPU (`0`) and CoreML candidate (`1`); candidate selection may fall back to CPU and does not promise that every operation runs on CoreML.
+Header: [`include/telaviva_inference.h`](include/telaviva_inference.h). `TvInferenceResult` contains integer `status` and floating-point `confidence`. `tv_inference_create` and `tv_inference_create_with_provider` load absolute app-bundled runtime/model paths. Provider values currently implemented are CPU (`0`), CoreML candidate (`1`, macOS builds only) and DirectML candidate (`2`, see the [windows-version](#windows-version) section); candidate selection may fall back to CPU and does not promise that every operation runs on CoreML or DirectML.
 
 `tv_inference_detect_bgra` accepts caller-owned top-down BGRA8 bytes with length, width, height, and stride, and returns status: absent `0`, present `1`, or insufficient light `2`; negative values indicate invalid argument `-1`, runtime `-2`, model `-3`, or panic `-4`. It never returns `3` (unavailable), which only the create functions return. `tv_inference_assess_light_bgra` performs quality-only light assessment, returning `0` for sufficient light, `2` for insufficient light, or a negative error. `tv_inference_coreml_available` reports runtime capability, while `tv_inference_selected_provider` reports the selected provider. Call `tv_inference_destroy` to release the handle. Frame data is processed synchronously and is not retained or logged.
 
-Windows OpenVINO integration, hardware camera behavior, DDC writes/restoration, and measured acceleration benefit are not established by these interfaces or their source-level tests.
+Hardware camera behavior, DDC writes/restoration, and a measured DirectML energy benefit are not established by these interfaces or their source-level tests. NPU providers are not implemented.
 
 ## External monitor hardware keys
 
@@ -123,3 +123,36 @@ Settings schema 1 adds `hardware_keys_enabled` (Boolean, default false) and the 
 `set_brightness` and `set_volume` optionally accept `connection_generation`, an unsigned integer matching the target monitor's current connection generation. Missing values preserve the existing manual-control API. A malformed or stale supplied generation is rejected before any action, desired value, baseline, or revision changes. Manual state changes only after the bounded hardware queue accepts the action. This is additive to core ABI version 1.
 
 The native macOS shell reserves brightness keyboard intent only for an eligible external monitor under the cursor, reserves volume keyboard intent only for the external monitor that is the current default sound output, and submits both through these manual-control commands. The mute key reserves a volume intent of 0 or the remembered level for the sound-output monitor. The initial down event selects the monitor; repeats retain that target through release. Supported brightness and speaker volume controls are independent. Values use normalized 0–100; retained intent accumulates repeat steps until readback catches up. Sleeping, disconnected, ambiguous, or unsupported targets do not receive keyboard writes. Brightness keys for a monitor that ambient follow controls (`follow` is `eligible` while `ambient.active` is true) are passed through unchanged instead. Input permission/status presentation and the event tap are native-shell concerns, outside the Rust snapshot contract. Brightness keys sent as plain key-down and key-up events with key codes 144 and 145 are recognized too; the event tap acts only on those key codes and never reads typed characters.
+
+## windows-version
+
+### Local inference C ABI additions
+
+Header: [`include/telaviva_inference.h`](include/telaviva_inference.h). These additions are backward compatible: existing functions and values are unchanged, and the core ABI version (`TV_CORE_ABI_VERSION`) stays `1`.
+
+Provider values:
+
+| Constant | Value | Contract |
+|---|---|---|
+| `TV_INFERENCE_PROVIDER_CPU` | `0` | CPU. Always available. |
+| `TV_INFERENCE_PROVIDER_COREML_CANDIDATE` | `1` | CoreML candidate. Only macOS builds register it; other builds fall back to CPU. |
+| `TV_INFERENCE_PROVIDER_DIRECTML_CANDIDATE` | `2` | DirectML candidate. An unavailable or failing DirectML registration falls back to CPU. |
+| `3` | reserved | Reserved for a future NPU provider. The create functions reject it with `-1`. The value `3` is also the create-function unavailable status and is not a provider value. |
+
+```c
+int32_t tv_inference_create_with_provider_device(const char *runtime_abs_path,
+                                                 const char *model_abs_path,
+                                                 int32_t provider,
+                                                 uint32_t device_index,
+                                                 TvInferenceHandle **out_handle);
+
+int32_t tv_inference_directml_available(void);
+```
+
+`tv_inference_create_with_provider_device` is `tv_inference_create_with_provider` with a DirectML adapter index added. It has the same paths, return codes and handle rules as `tv_inference_create`. `device_index` is an index into the DXGI adapter enumeration order (`IDXGIFactory1::EnumAdapters1`) as seen by ONNX Runtime. It applies only to provider `2` and is ignored for providers `0` and `1`. Index `0` gives the same session as `tv_inference_create_with_provider`. An index that ONNX Runtime cannot register falls back to CPU: the return value is still `0` and `tv_inference_selected_provider` reports `0`. The index-to-adapter mapping is not yet confirmed against the DXGI order; the Windows measurement notes infer it from latency.
+
+`tv_inference_directml_available` returns `1` only when all of these hold: the build was compiled with the `directml` cargo feature (off by default), the platform supports DirectML, a successful create call has initialized the runtime, and the loaded runtime lists the DirectML provider. In every other case it returns `0`, including builds without the `directml` feature and calls made before the runtime is initialized. It never returns an error and does not need a created detector.
+
+`tv_inference_selected_provider` returns `2` when the session was built with DirectML.
+
+The default Windows runtime is the ONNX Runtime CPU build. A DirectML-enabled runtime is a reserved variant that is not shipped by default. On the Windows test machine, a DirectML session returned the same status and confidence as CPU on the test fixture. Energy was not measured, so no energy benefit is claimed (see [the Windows measurements](specs/archived/windows-version/validation/measurements.md)).

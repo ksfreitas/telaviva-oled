@@ -18,6 +18,8 @@
 
 ### Changed
 
+- The inference crate compiles its CoreML provider code only for macOS builds, so the Windows build does not depend on CoreML; the provider list and selection rules are unchanged on macOS.
+- Live documentation (README, ARCHITECTURE and api.md) describes Windows as an implementation in progress with a Windows 11 x64 target, with its hardware status limited to recorded checks.
 - macOS popup height follows the number of monitors and scrolls beyond three; hardware checks are pending acceptance.
 - macOS Settings is a larger, resizable window with General, Keyboard and Automatic brightness tabs; hardware checks are pending acceptance.
 - Brightness keys pass through to macOS for monitors that follow the MacBook screen brightness; hardware checks are pending acceptance.
@@ -35,6 +37,14 @@
 
 ### Added
 
+- Windows 11 x64 tray application under `native/windows/`: a flyout with a card per external monitor, a Settings window with General, Keyboard and Automatic brightness pages in English (US) and Portuguese (Brazil), and a per-user zip with install and uninstall scripts; the Windows status and its hardware checks are in the README.
+- Windows DDC monitor control through dxva2, with readback verification of each write. A read of brightness and volume on one Dell S3225QC over HDMI passed; writes and restoration are not yet hardware-verified.
+- Windows presence protection with local YuNet inference on the CPU, screensaver protection, battery and display-sleep suspension, and camera selection that hides infrared cameras; hardware checks are pending.
+- Windows Laptop brightness follow (Notebook in pt-BR) with user-managed calibration points, lid and panel pause, and restore of Windows adaptive brightness; disabled with a stated reason on desktops. Hardware checks are pending because no laptop was available.
+- Windows opt-in volume and mute keys for the external monitor that is the default sound output; brightness keys are not intercepted.
+- Windows Efficiency mode handling: the app requests EcoQoS while idle in the background and does not override a user-forced Efficiency mode.
+- Windows launch at login through the per-user `Run` registry value, off by default.
+- Inference C ABI additions, with no change to the core ABI version: provider value `2` (DirectML candidate), `tv_inference_create_with_provider_device` and `tv_inference_directml_available`. DirectML is off by default because the acceleration allowlist is empty; provider value `3` is reserved for a future NPU provider and is not accepted.
 - On macOS, external monitors follow the MacBook screen brightness through per-monitor calibration curves, with a calibration tab; hardware checks are pending acceptance.
 - New application icon for macOS: an Icon Composer `.icon` layered for Liquid Glass on macOS 26 and later, with an `.icns` fallback for macOS 14 and 15; vector sources are in `assets/branding/` and regenerate with `tools/branding/build-icons.sh`; Dock and Finder appearance is pending acceptance.
 - Presence menu-bar icon on macOS replaces the static monitor symbol: a filled dot when a face is detected, no dot when no face is detected or presence is off, suspended or unavailable, and a dot outline when light is insufficient. The core adds the additive snapshot field `camera.presence`; pending acceptance on a real menu bar.

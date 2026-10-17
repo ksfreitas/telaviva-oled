@@ -1,6 +1,6 @@
 # TelaViva OLED
 
-TelaViva OLED is an open-source desktop app for controlling external monitor brightness and volume, with optional OLED brightness protection. External monitors can optionally follow the brightness of a MacBook's built-in display. Its shared policy and inference code is written in Rust; the current desktop shell uses SwiftUI and AppKit on Apple Silicon macOS. Windows support is planned and has not been implemented or validated.
+TelaViva OLED is an open-source desktop app for controlling external monitor brightness and volume, with optional OLED brightness protection. External monitors can optionally follow the brightness of a MacBook's built-in display. Its shared policy and inference code is written in Rust; the macOS desktop shell uses SwiftUI and AppKit on Apple Silicon. A Windows 11 x64 shell (WinUI 3) is in the repository; its status is described in the [Windows](#windows) section.
 
 Presence protection detects any face locally. It does not identify people, enroll faces, save webcam images, or send frames to a service. The default presence sampling interval is 10 seconds (configurable from 5 to 300 seconds); while dimmed, return checks default to 1 second (0.25 to 5 seconds). Presence protection is off until enabled, and pauses on battery by default. The camera stays open during return checks, while inference still follows the configured interval. Normal presence checks use one-frame sessions unless **Keep camera on** is enabled (off by default). This option retains capture between checks without increasing inference frequency. Capture still stops when presence protection is disabled, battery suspension applies, no eligible monitor remains, all eligible external displays sleep, every eligible monitor is at or below the brightness threshold (20% by default), or the app exits. Insufficient light suspends face detection instead of counting as absence: recovery waits 10 seconds, keeps capture running for five seconds to allow exposure adjustment, then checks a fresh frame. Two usable-light checks are required before face detection resumes.
 
@@ -9,6 +9,63 @@ Presence protection detects any face locally. It does not identify people, enrol
 The project is under active development. Rust tests, native macOS builds, and an ABI smoke test have passed. A read-only DDC check has read brightness and volume on one Dell S3225QC connected to an M4 Pro. A connected LG ULTRAFINE has also passed a one-point brightness change and restoration through the application's Rust/native command path, with fresh physical readback; see the [DDC fix and hardware evidence](specs/archived/external-monitor-hardware-keys-and-fluid-controls/lg-ultrafine-ddc-brightness-writes.md). This does not establish support across monitors, ports, adapters, docks, or Apple Silicon generations. Broader camera, physical write/restoration, multi-monitor and release-distribution acceptance remains in progress. See the [implementation plan](specs/archived/external-monitor-control-and-oled-presence-protection/plan.md) and [validation reports](specs/archived/external-monitor-control-and-oled-presence-protection/validation/release-readiness.md) for evidence and outstanding work. Following the MacBook brightness, calibration and per-monitor protection have passed automated tests only; hardware acceptance is pending, see the [hardware checklist](specs/archived/macbook-brightness-follow/validation/hardware-checklist.md). The Liquid Glass app icon rendering in the Dock and Finder and the menu-bar presence icon are pending acceptance on real macOS hardware.
 
 The macOS app targets Apple Silicon and macOS 14 or later. Development builds have been exercised on macOS 27; this is not a tested compatibility matrix. Intel Macs are deferred. DDC support depends on the monitor and connection.
+
+## Windows
+
+The Windows version is a Windows 11 x64 tray application. A native WinUI 3 shell sits over the same shared Rust core and C ABI as the macOS app. It is implemented in the repository and covered by automated tests. Most hardware checks have not been run, so the status below lists only recorded results. Windows 10 and ARM64 are not supported yet.
+
+### What the Windows version provides
+
+- A tray icon with a flyout: a card per external monitor with brightness and volume sliders, the presence status, Settings and Quit.
+- A Settings window with General, Keyboard and Automatic brightness pages, in English (US) and Portuguese (Brazil).
+- DDC/CI control of external monitors through the Windows monitor API (dxva2), with readback verification of each write.
+- Presence protection, off until enabled: local face detection (any face, no identification, no enrollment) with YuNet through ONNX Runtime on the CPU. Two valid no-face checks dim the monitor, and a returning face restores it. Low light suspends detection instead of counting as absence.
+- Optional screensaver protection.
+- Battery suspension: presence checking pauses on battery by default. It also pauses while every eligible external display is asleep.
+- Camera selection with a history of up to eight cameras. Infrared cameras are hidden from selection.
+- Laptop follow: on a laptop with a controllable internal panel, external monitors follow the panel brightness through calibration points you manage. The panel is called **Laptop** in English and **Notebook** in Portuguese. Laptop follow is disabled with a stated reason on desktops. It pauses while the lid is closed or the panel is off. Calibration turns Windows adaptive brightness off and restores it afterwards, including after a crash at the next launch.
+- Hardware keys (opt-in): the volume and mute keys adjust an external monitor only while it is the default sound output. Brightness keys are not intercepted and keep their normal Windows behavior.
+- Efficiency mode: the app requests Efficiency mode (EcoQoS) while it is idle in the background, and it leaves a user-forced Efficiency mode in place.
+- Launch at login, off by default, through the per-user `Run` registry value.
+
+### Verified status
+
+Rows marked Pass in [the Windows hardware checklist](specs/archived/windows-version/validation/hardware-checklist.md) were run on one machine: Windows 11 Pro build 26300, an AMD Ryzen 7 9800X3D desktop with an AMD Radeon iGPU and an NVIDIA RTX 4080 SUPER, and one Dell S3225QC connected over HDMI. The machine has no laptop panel, no battery and no NPU.
+
+- The Dell S3225QC is listed with a stable monitor identifier.
+- DDC read of brightness and volume on the Dell S3225QC over HDMI.
+- CPU inference on the test face fixture: 5.27 ms mean, face present, confidence 0.822190 (see the [Windows measurements](specs/archived/windows-version/validation/measurements.md)).
+- The flyout in the dark theme with live data, from automated capture.
+
+Partially verified:
+
+- DirectML on the Radeon iGPU and the RTX GPU returned the same result as CPU on the fixture, and latency was recorded. Energy was not measured, because the test machine is a desktop without trustworthy per-component power data. DirectML is not used by default (see below).
+
+Everything else in the checklist is **not hardware-verified**. This includes DDC writes and restoration, monitor sleep and wake, two-monitor and dock cases, the flyout on other themes, scales and taskbar positions, the tray icon in the overflow area, presence with the camera (denied access, sharing with a video call, two cameras, dim and restore latency), screensaver protection, battery suspension, Laptop follow, keyboard keys, Efficiency mode latency, launch at login, clean-profile install and uninstall, and SmartScreen behavior. The only idle measurement is for the bare shell, not the full app: 0.078% of one core and a 57.6 MB working set over 60 seconds. The full-app idle cost is not measured.
+
+### Acceleration
+
+Face detection runs on the CPU by default. DirectML is off by default: the acceleration allowlist `assets/inference/acceleration-profiles.toml` is empty, so no device uses an accelerator. A device gets DirectML only after a recorded measurement shows lower energy than the CPU with the same detection result. No such measurement exists yet. NPU support is out of the first release.
+
+### Install and uninstall
+
+Release builds are not code-signed yet. The release is a per-user zip, not an installer package, and neither the build nor the installer needs administrator rights. Build it with `scripts\build-windows.ps1`, which writes `dist\TelaVivaOLED-<version>-win-x64.zip` and prints its SHA-256. Extract the zip and run `Install-TelaVivaOLED.ps1`. The app installs to `%LOCALAPPDATA%\Programs\TelaVivaOLED` with a Start menu shortcut. Install and uninstall in a clean profile are not yet run.
+
+To uninstall, use Settings > Apps, or run `Uninstall-TelaVivaOLED.ps1` from the install folder. Settings, calibration and logs stay in `%LOCALAPPDATA%\TelaVivaOLED` unless you pass `-RemoveUserData`. The full options are in [the packaging guide](packaging/windows/README.md).
+
+Windows SmartScreen may show "Windows protected your PC" the first time you run `TelaViva.exe`, because the build is unsigned. This behavior is not yet verified (row I3). Only continue for a zip you downloaded from the project and checked against the SHA-256 printed by the build.
+
+### Tray icon
+
+Windows 11 may place the new tray icon in the overflow area. To pin it, select the overflow arrow in the taskbar and drag TelaViva OLED onto the taskbar. You can also open Settings > Personalization > Taskbar > Other system tray icons and turn it on. Neither method has been verified on the test machine yet (row U5).
+
+### Privacy
+
+Everything runs locally. The app has no telemetry and makes no network requests of its own. Camera frames are processed in memory and are not stored, transmitted or logged. Device identifiers are not logged.
+
+### Third-party components
+
+The Windows build redistributes the Windows App SDK and WinUI 3 runtime. They ship under Microsoft Software License Terms, not an open-source license. The ONNX Runtime CPU library, the YuNet model and the Rust crates are open source. See the Windows section of [`licenses/DEPENDENCIES.md`](licenses/DEPENDENCIES.md) and [`licenses/windows/`](licenses/windows/README.md).
 
 ## Build on macOS
 
@@ -74,6 +131,8 @@ After fetching the runtime, run the full test suite with `cargo test --workspace
 - `crates/telaviva-core/`: shared settings, protection policy, and C ABI.
 - `crates/telaviva-inference/`: local image-quality assessment and YuNet inference.
 - `native/macos/`: SwiftUI/AppKit UI, camera capture, and macOS device adapters.
+- `native/windows/`: WinUI 3 shell and the Windows platform layer (Windows 11 x64).
+- `packaging/windows/`: Windows zip build and per-user installer scripts.
 - `include/`: C interfaces used by the native shell.
 - `assets/model/` and `licenses/`: model provenance and third-party license notices.
 - `assets/branding/`: vector icon sources (master SVG, Liquid Glass layers, Icon Composer document and menu-bar glyphs); regenerate with `sh tools/branding/build-icons.sh`.
