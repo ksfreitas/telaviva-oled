@@ -1,5 +1,7 @@
 # Contracts: MacBook Brightness Follow
 
+> Superseded in part: the calibration direction was inverted (points are monitor levels, the slider sets the MacBook). See `specs/archived/invert-macbook-calibration-direction/spec.md`.
+
 All contracts extend the existing JSON interface of `telaviva-core` (`tv_submit`, `tv_snapshot`) and `settings.json`. No C ABI function changes. `api.md` is updated to match when implemented.
 
 ## Data Models

@@ -1,5 +1,7 @@
 # Architecture: MacBook Brightness Follow, Popup Sizing and Larger Settings
 
+> Superseded in part: the calibration direction was inverted (points are monitor levels, the slider sets the MacBook). See `specs/archived/invert-macbook-calibration-direction/spec.md`.
+
 **Feature**: macbook-brightness-follow **Date**: 2026-10-16 **Branch**: feat/macbook-brightness-follow **Specs**: [spec.md](spec.md), [contracts.md](contracts.md)
 
 ## Summary

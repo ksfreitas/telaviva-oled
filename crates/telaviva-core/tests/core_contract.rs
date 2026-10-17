@@ -2921,6 +2921,58 @@ fn ambient_settings_round_trip_through_persisted_settings_file() {
 }
 
 #[test]
+fn ambient_optional_low_points_serialize_only_when_set_and_round_trip() {
+    // A curve without the optional points serializes exactly as before: no p5, p10, p15 or p20.
+    let plain = Settings::from_json(
+        r#"{"ambient_curves":{"screen":{"p25":20.0,"p50":45.0,"p75":70.0,"p100":90.0}}}"#
+            .as_bytes(),
+    )
+    .unwrap();
+    let value = serde_json::to_value(&plain).unwrap();
+    assert_eq!(
+        value["ambient_curves"],
+        json!({"screen":{"p25":20.0,"p50":45.0,"p75":70.0,"p100":90.0}})
+    );
+    // Set optional points are serialized and survive a round trip through from_json.
+    let refined = Settings::from_json(
+        r#"{"ambient_curves":{"screen":{"p5":4.0,"p10":8.0,"p15":12.0,"p20":16.0,"p25":20.0,"p50":45.0,"p75":70.0,"p100":90.0}}}"#.as_bytes(),
+    )
+    .unwrap();
+    let value = serde_json::to_value(&refined).unwrap();
+    assert_eq!(
+        value["ambient_curves"]["screen"],
+        json!({"p5":4.0,"p10":8.0,"p15":12.0,"p20":16.0,"p25":20.0,"p50":45.0,"p75":70.0,"p100":90.0})
+    );
+    let reparsed = Settings::from_json(&serde_json::to_vec(&refined).unwrap()).unwrap();
+    assert_eq!(reparsed, refined);
+}
+
+#[test]
+fn ambient_p1_serializes_only_when_set_and_round_trips() {
+    // A curve without p1 has no "p1" key, even when the other optional points are set.
+    let without_p1 = Settings::from_json(
+        r#"{"ambient_curves":{"screen":{"p5":4.0,"p10":8.0,"p25":20.0,"p50":45.0,"p75":70.0,"p100":90.0}}}"#
+            .as_bytes(),
+    )
+    .unwrap();
+    let value = serde_json::to_value(&without_p1).unwrap();
+    assert!(value["ambient_curves"]["screen"].get("p1").is_none());
+    assert_eq!(value["ambient_curves"]["screen"]["p5"], 4.0);
+    // A set p1 is serialized and survives a round trip through from_json.
+    let with_p1 = Settings::from_json(
+        r#"{"ambient_curves":{"screen":{"p1":2.0,"p5":4.0,"p10":8.0,"p15":12.0,"p20":16.0,"p25":20.0,"p50":45.0,"p75":70.0,"p100":90.0}}}"#.as_bytes(),
+    )
+    .unwrap();
+    let value = serde_json::to_value(&with_p1).unwrap();
+    assert_eq!(
+        value["ambient_curves"]["screen"],
+        json!({"p1":2.0,"p5":4.0,"p10":8.0,"p15":12.0,"p20":16.0,"p25":20.0,"p50":45.0,"p75":70.0,"p100":90.0})
+    );
+    let reparsed = Settings::from_json(&serde_json::to_vec(&with_p1).unwrap()).unwrap();
+    assert_eq!(reparsed, with_p1);
+}
+
+#[test]
 fn ambient_update_settings_replaces_curves_and_protection_list_whole() {
     let mut core = Core::new(CoreOptions::default()).unwrap();
     let first_curve = json!({"p25":18.0,"p50":40.0,"p75":66.0,"p100":100.0});
@@ -3019,6 +3071,66 @@ fn ambient_invalid_curve_rejects_the_whole_update_and_keeps_previous_settings() 
 }
 
 #[test]
+fn ambient_optional_low_points_follow_the_same_range_and_order_rules() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"ambient_curves":{"screen":{"p25":10.0,"p50":40.0,"p75":66.0,"p100":100.0}}}}),
+    );
+    let before = core.snapshot_value().unwrap()["settings"].clone();
+    // p10 above p25 breaks the order; p5 below 0 and above 100 break the range.
+    for curve in [
+        json!({"p10":30.0,"p25":20.0,"p50":40.0,"p75":66.0,"p100":100.0}),
+        json!({"p5":-1.0,"p25":10.0,"p50":40.0,"p75":66.0,"p100":100.0}),
+        json!({"p5":101.0,"p25":10.0,"p50":40.0,"p75":66.0,"p100":100.0}),
+    ] {
+        let event =
+            json!({"type":"update_settings","settings":{"ambient_curves":{"screen":curve}}});
+        assert!(core
+            .submit_json(&serde_json::to_vec(&event).unwrap())
+            .is_err());
+        assert_eq!(core.snapshot_value().unwrap()["settings"], before);
+    }
+    // Equal neighboring optional points are non-decreasing, so the curve is stored as sent.
+    let curve = json!({"p5":4.0,"p10":8.0,"p15":8.0,"p20":16.0,"p25":20.0,"p50":45.0,"p75":70.0,"p100":90.0});
+    let saved = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"ambient_curves":{"screen":curve}}}),
+    );
+    assert_eq!(saved["settings"]["ambient_curves"]["screen"], curve);
+}
+
+#[test]
+fn ambient_p1_follows_the_same_range_and_order_rules() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"ambient_curves":{"screen":{"p25":10.0,"p50":40.0,"p75":66.0,"p100":100.0}}}}),
+    );
+    let before = core.snapshot_value().unwrap()["settings"].clone();
+    // p1 above p5 breaks the order; p1 below 0 and above 100 break the range.
+    for curve in [
+        json!({"p1":5.0,"p5":4.0,"p25":10.0,"p50":40.0,"p75":66.0,"p100":100.0}),
+        json!({"p1":-1.0,"p25":10.0,"p50":40.0,"p75":66.0,"p100":100.0}),
+        json!({"p1":101.0,"p25":10.0,"p50":40.0,"p75":66.0,"p100":100.0}),
+    ] {
+        let event =
+            json!({"type":"update_settings","settings":{"ambient_curves":{"screen":curve}}});
+        assert!(core
+            .submit_json(&serde_json::to_vec(&event).unwrap())
+            .is_err());
+        assert_eq!(core.snapshot_value().unwrap()["settings"], before);
+    }
+    // An equal p1 and p5 are non-decreasing, so the curve is stored as sent.
+    let curve = json!({"p1":4.0,"p5":4.0,"p10":8.0,"p15":12.0,"p20":16.0,"p25":20.0,"p50":45.0,"p75":70.0,"p100":90.0});
+    let saved = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"ambient_curves":{"screen":curve}}}),
+    );
+    assert_eq!(saved["settings"]["ambient_curves"]["screen"], curve);
+}
+
+#[test]
 fn ambient_snapshot_reports_static_builtin_state_and_mirrors_the_enabled_flag() {
     let mut core = Core::new(CoreOptions::default()).unwrap();
     let initial = core.snapshot_value().unwrap();
@@ -3069,6 +3181,54 @@ fn ambient_follow_state_is_uncalibrated_until_a_complete_curve_exists() {
         json!({"type":"update_settings","settings":{"ambient_follow_enabled":true}}),
     );
     assert_eq!(enabled["monitors"][0]["follow"], "eligible");
+}
+
+#[test]
+fn ambient_curve_with_only_optional_low_points_is_uncalibrated() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    send(&mut core, follow_discovery("screen", 0.0, 100.0, 50.0));
+    let partial = json!({"p5":4.0,"p10":8.0,"p15":12.0,"p20":16.0});
+    let snapshot = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"ambient_follow_enabled":true,"ambient_curves":{"screen":partial.clone()}}}),
+    );
+    assert_eq!(snapshot["monitors"][0]["follow"], "uncalibrated");
+    // Without p25, p50, p75 and p100 the curve maps no level, so a built-in change writes nothing.
+    assert_eq!(follow_first_write_for(partial, 0.0, 100.0, 90.0, 6.0), None);
+}
+
+#[test]
+fn ambient_p1_is_optional_and_completeness_still_needs_the_required_four() {
+    // Completeness depends only on p25, p50, p75 and p100, with or without p1.
+    let complete = Settings::from_json(
+        br#"{"ambient_curves":{"screen":{"p1":2.0,"p25":20.0,"p50":45.0,"p75":70.0,"p100":90.0}}}"#,
+    )
+    .unwrap();
+    assert!(complete.ambient_curves["screen"].is_complete());
+    let missing_p25 = Settings::from_json(
+        br#"{"ambient_curves":{"screen":{"p1":2.0,"p50":45.0,"p75":70.0,"p100":90.0}}}"#,
+    )
+    .unwrap();
+    assert!(!missing_p25.ambient_curves["screen"].is_complete());
+    let only_p1 = Settings::from_json(br#"{"ambient_curves":{"screen":{"p1":2.0}}}"#).unwrap();
+    assert!(!only_p1.ambient_curves["screen"].is_complete());
+    // Through the core: p1 with the required four makes the monitor eligible; p1 alone does not.
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    send(&mut core, follow_discovery("screen", 0.0, 100.0, 50.0));
+    let snapshot = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"ambient_follow_enabled":true,"ambient_curves":{"screen":{"p1":2.0,"p25":20.0,"p50":45.0,"p75":70.0,"p100":90.0}}}}),
+    );
+    assert_eq!(snapshot["monitors"][0]["follow"], "eligible");
+    let snapshot = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"ambient_curves":{"screen":{"p1":2.0}}}}),
+    );
+    assert_eq!(snapshot["monitors"][0]["follow"], "uncalibrated");
+    assert_eq!(
+        follow_first_write_for(json!({"p1":2.0}), 0.0, 100.0, 90.0, 6.0),
+        None
+    );
 }
 
 #[test]
@@ -3458,7 +3618,7 @@ fn protection_monitor_unprotected_only_camera_matches_no_monitor_state() {
 }
 
 fn follow_curve() -> Value {
-    json!({"p25":30.0,"p50":50.0,"p75":70.0,"p100":100.0})
+    json!({"p25":20.0,"p50":45.0,"p75":70.0,"p100":90.0})
 }
 
 fn follow_discovery(id: &str, min: f64, max: f64, raw: f64) -> Value {
@@ -3535,48 +3695,198 @@ fn follow_first_write(min: f64, max: f64, raw: f64, brightness: f64) -> Option<f
     follow_pending(&s, "screen", "set_brightness").and_then(|action| action["value"].as_f64())
 }
 
+// Like follow_first_write, for a curve other than the shared follow_curve() fixture.
+fn follow_first_write_for(
+    curve: Value,
+    min: f64,
+    max: f64,
+    raw: f64,
+    brightness: f64,
+) -> Option<f64> {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    send(&mut core, follow_discovery("screen", min, max, raw));
+    send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"ambient_follow_enabled":true,"ambient_curves":{"screen":curve}}}),
+    );
+    let s = follow_builtin(&mut core, json!(brightness), false);
+    follow_pending(&s, "screen", "set_brightness").and_then(|action| action["value"].as_f64())
+}
+
 #[test]
 fn follow_curve_maps_anchor_percents_to_exact_raw_targets() {
     // The monitor starts at 90, so no anchor target equals its current raw value.
-    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 25.0), Some(30.0));
-    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 50.0), Some(50.0));
-    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 75.0), Some(70.0));
-    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 100.0), Some(100.0));
+    // MacBook levels 20, 45, 70 and 90 are the p25, p50, p75 and p100 points of the fixture.
+    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 20.0), Some(25.0));
+    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 45.0), Some(50.0));
+    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 70.0), Some(75.0));
+    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 90.0), Some(100.0));
     assert_eq!(follow_first_write(0.0, 100.0, 90.0, 0.0), Some(0.0));
 }
 
 #[test]
 fn follow_curve_interpolates_linearly_between_anchors_and_from_origin() {
-    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 37.5), Some(40.0));
-    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 12.5), Some(15.0));
-    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 62.5), Some(60.0));
-    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 87.5), Some(85.0));
+    // Between the origin and p25: MacBook 4 and 8 are monitor 5 and 10 percent.
+    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 4.0), Some(5.0));
+    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 8.0), Some(10.0));
+    // MacBook 10 is 12.5 percent: raw 25 on a 0..200 range.
+    assert_eq!(follow_first_write(0.0, 200.0, 90.0, 10.0), Some(25.0));
+    // Between p25 and p50, p50 and p75, and p75 and p100.
+    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 30.0), Some(35.0));
+    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 60.0), Some(65.0));
+    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 78.0), Some(85.0));
+    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 86.0), Some(95.0));
+}
+
+#[test]
+fn follow_curve_without_optional_low_points_keeps_the_origin_segment() {
+    // Null optional points are the same as absent ones, so the origin segment is unchanged:
+    // MacBook 4 and 8 are monitor 5 and 10 percent.
+    let curve = json!({"p5":null,"p10":null,"p15":null,"p20":null,"p25":20.0,"p50":45.0,"p75":70.0,"p100":90.0});
+    assert_eq!(
+        follow_first_write_for(curve.clone(), 0.0, 100.0, 90.0, 4.0),
+        Some(5.0)
+    );
+    assert_eq!(
+        follow_first_write_for(curve, 0.0, 100.0, 90.0, 8.0),
+        Some(10.0)
+    );
+}
+
+#[test]
+fn follow_curve_optional_low_points_refine_the_low_end() {
+    // With p5=4, p10=8, p15=12 and p20=16 added to the fixture, the low end is piecewise linear
+    // through (0, 0), (4, 5), (8, 10), (12, 15), (16, 20) and (20, 25).
+    // A 0..200 raw range makes every target exact: raw is twice the monitor percent.
+    let curve = json!({"p5":4.0,"p10":8.0,"p15":12.0,"p20":16.0,"p25":20.0,"p50":45.0,"p75":70.0,"p100":90.0});
+    // MacBook 6 is monitor 7.5 percent: raw 15.
+    assert_eq!(
+        follow_first_write_for(curve.clone(), 0.0, 200.0, 90.0, 6.0),
+        Some(15.0)
+    );
+    // MacBook 12 is monitor 15 percent: raw 30.
+    assert_eq!(
+        follow_first_write_for(curve.clone(), 0.0, 200.0, 90.0, 12.0),
+        Some(30.0)
+    );
+    // MacBook 18 is monitor 22.5 percent: raw 45.
+    assert_eq!(
+        follow_first_write_for(curve.clone(), 0.0, 200.0, 90.0, 18.0),
+        Some(45.0)
+    );
+    // MacBook 20 is monitor 25 percent: raw 50.
+    assert_eq!(
+        follow_first_write_for(curve.clone(), 0.0, 200.0, 90.0, 20.0),
+        Some(50.0)
+    );
+    // MacBook 2 is monitor 2.5 percent, linear from the origin to (4, 5): raw 5.
+    assert_eq!(
+        follow_first_write_for(curve, 0.0, 200.0, 90.0, 2.0),
+        Some(5.0)
+    );
+}
+
+#[test]
+fn follow_curve_optional_p1_refines_the_origin_segment() {
+    // With p1=2 added to the refined fixture, the origin segment runs through (0, 0), (2, 1) and
+    // (4, 5). A 0..200 raw range makes every target exact: raw is twice the monitor percent.
+    let curve = json!({"p1":2.0,"p5":4.0,"p10":8.0,"p15":12.0,"p20":16.0,"p25":20.0,"p50":45.0,"p75":70.0,"p100":90.0});
+    // MacBook 1 is monitor 0.5 percent, linear from the origin to (2, 1): raw 1.
+    assert_eq!(
+        follow_first_write_for(curve.clone(), 0.0, 200.0, 90.0, 1.0),
+        Some(1.0)
+    );
+    // MacBook 2 is monitor 1 percent: raw 2.
+    assert_eq!(
+        follow_first_write_for(curve.clone(), 0.0, 200.0, 90.0, 2.0),
+        Some(2.0)
+    );
+    // MacBook 3 is monitor 3 percent, between (2, 1) and (4, 5): 1 + (3 - 2) * 4 / 2 = 3, raw 6.
+    assert_eq!(
+        follow_first_write_for(curve, 0.0, 200.0, 90.0, 3.0),
+        Some(6.0)
+    );
 }
 
 #[test]
 fn follow_curve_rounds_fractional_targets_to_whole_raw_units() {
-    // 10 maps to exactly 12.0, 11 maps to 13.2 and 13 maps to 15.6.
-    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 10.0), Some(12.0));
-    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 11.0), Some(13.0));
+    // 10 maps to 12.5 (rounds away from zero to 13), 11 to 13.75 and 13 to 16.25.
+    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 10.0), Some(13.0));
+    assert_eq!(follow_first_write(0.0, 100.0, 90.0, 11.0), Some(14.0));
     assert_eq!(follow_first_write(0.0, 100.0, 90.0, 13.0), Some(16.0));
 }
 
 #[test]
 fn follow_curve_maps_through_a_0_to_255_raw_range() {
-    // Normalized 40 is raw 102.0 on 0..255; normalized 15 is 38.25, rounded to 38.
+    // MacBook 35 is monitor 40 percent: raw 102.0 on 0..255.
+    // MacBook 12 is monitor 15 percent: raw 38.25, rounded to 38.
     assert_eq!(follow_first_write(0.0, 255.0, 100.0, 100.0), Some(255.0));
     assert_eq!(follow_first_write(0.0, 255.0, 100.0, 0.0), Some(0.0));
-    assert_eq!(follow_first_write(0.0, 255.0, 100.0, 37.5), Some(102.0));
-    assert_eq!(follow_first_write(0.0, 255.0, 100.0, 12.5), Some(38.0));
+    assert_eq!(follow_first_write(0.0, 255.0, 100.0, 35.0), Some(102.0));
+    assert_eq!(follow_first_write(0.0, 255.0, 100.0, 12.0), Some(38.0));
 }
 
 #[test]
 fn follow_curve_maps_through_a_monitor_minimum_above_zero() {
-    // Normalized 0 is the monitor minimum (20) on a 20..=120 range.
+    // MacBook 0, 20, 45 and 100 are monitor 0, 25, 50 and 100 percent: raw 20, 45, 70 and 120
+    // on a 20..=120 range, where raw 20 is the monitor minimum.
     assert_eq!(follow_first_write(20.0, 120.0, 100.0, 0.0), Some(20.0));
-    assert_eq!(follow_first_write(20.0, 120.0, 100.0, 25.0), Some(50.0));
-    assert_eq!(follow_first_write(20.0, 120.0, 100.0, 50.0), Some(70.0));
+    assert_eq!(follow_first_write(20.0, 120.0, 100.0, 20.0), Some(45.0));
+    assert_eq!(follow_first_write(20.0, 120.0, 100.0, 45.0), Some(70.0));
     assert_eq!(follow_first_write(20.0, 120.0, 100.0, 100.0), Some(120.0));
+}
+
+#[test]
+fn follow_curve_with_zero_p25_returns_25_percent_at_level_zero_without_nan() {
+    // p25 == 0 makes the first segment zero-width: level 0 returns its upper point, 25 percent.
+    let curve = json!({"p25":0.0,"p50":50.0,"p75":75.0,"p100":100.0});
+    assert_eq!(
+        follow_first_write_for(curve.clone(), 0.0, 100.0, 90.0, 0.0),
+        Some(25.0)
+    );
+    // Levels above it still interpolate from that point: MacBook 10 is monitor 30 percent.
+    assert_eq!(
+        follow_first_write_for(curve, 0.0, 100.0, 90.0, 10.0),
+        Some(30.0)
+    );
+}
+
+#[test]
+fn follow_curve_with_equal_consecutive_points_is_finite_and_non_decreasing() {
+    // p50 == p75 makes the segment at level 60 zero-width. The monitor starts at raw 62, which no
+    // target reaches on this curve, so every level produces a write.
+    let curve = json!({"p25":20.0,"p50":60.0,"p75":60.0,"p100":100.0});
+    let mut previous = f64::NEG_INFINITY;
+    for level in 0..=100_u32 {
+        let level = f64::from(level);
+        let target = follow_first_write_for(curve.clone(), 0.0, 100.0, 62.0, level)
+            .unwrap_or_else(|| panic!("no write at level {level}"));
+        assert!(target.is_finite(), "level {level} gave {target}");
+        assert!(
+            target >= previous,
+            "level {level} gave {target} after {previous}"
+        );
+        previous = target;
+    }
+}
+
+#[test]
+fn follow_curve_clamps_to_exactly_100_percent_above_a_p100_below_100() {
+    // p100 is 80: MacBook level 80 already reaches monitor 100 percent, which is raw 255 on
+    // 0..255, and levels above it clamp to the same value.
+    let curve = json!({"p25":20.0,"p50":45.0,"p75":70.0,"p100":80.0});
+    assert_eq!(
+        follow_first_write_for(curve.clone(), 0.0, 255.0, 100.0, 80.0),
+        Some(255.0)
+    );
+    assert_eq!(
+        follow_first_write_for(curve.clone(), 0.0, 255.0, 100.0, 85.0),
+        Some(255.0)
+    );
+    assert_eq!(
+        follow_first_write_for(curve, 0.0, 255.0, 100.0, 100.0),
+        Some(255.0)
+    );
 }
 
 #[test]
@@ -3675,7 +3985,7 @@ fn follow_writes_only_to_calibrated_supported_monitors() {
     let s = follow_builtin(&mut core, json!(50.0), false);
     // Positive control: the calibrated monitor is written.
     let write = follow_pending(&s, "screen", "set_brightness").expect("calibrated monitor follows");
-    assert_eq!(write["value"].as_f64(), Some(50.0));
+    assert_eq!(write["value"].as_f64(), Some(55.0));
     assert_eq!(follow_monitor(&s, "bare")["follow"], "uncalibrated");
     assert_eq!(follow_monitor(&s, "ddc-less")["follow"], "unsupported");
     assert!(follow_pending(&s, "bare", "set_brightness").is_none());
@@ -3692,14 +4002,14 @@ fn follow_writes_do_not_set_manual_override_so_presence_still_dims() {
     );
     let s = follow_builtin(&mut core, json!(50.0), false);
     let write = follow_pending(&s, "screen", "set_brightness").expect("follow write");
-    assert_eq!(write["value"].as_f64(), Some(50.0));
-    let mut s = follow_ack(&mut core, &write, 50.0);
+    assert_eq!(write["value"].as_f64(), Some(55.0));
+    let mut s = follow_ack(&mut core, &write, 55.0);
     s = follow_presence(&mut core, "absent", 10_000, &s);
     s = follow_presence(&mut core, "absent", 20_000, &s);
     assert_eq!(follow_monitor(&s, "screen")["presence_dimmed"], true);
     // The owned monitor is read back before the dim write.
     let read = follow_pending(&s, "screen", "read_brightness").expect("dim verifies ownership");
-    s = follow_ack(&mut core, &read, 50.0);
+    s = follow_ack(&mut core, &read, 55.0);
     let dim = follow_pending(&s, "screen", "set_brightness").expect("presence still dims");
     assert_eq!(dim["value"].as_f64(), Some(0.0));
 }
@@ -3714,11 +4024,11 @@ fn follow_dimmed_monitor_defers_builtin_changes_and_restores_the_new_mapped_valu
     );
     let s = follow_builtin(&mut core, json!(50.0), false);
     let write = follow_pending(&s, "screen", "set_brightness").expect("follow write");
-    let mut s = follow_ack(&mut core, &write, 50.0);
+    let mut s = follow_ack(&mut core, &write, 55.0);
     s = follow_presence(&mut core, "absent", 10_000, &s);
     s = follow_presence(&mut core, "absent", 20_000, &s);
     let read = follow_pending(&s, "screen", "read_brightness").expect("dim verifies ownership");
-    s = follow_ack(&mut core, &read, 50.0);
+    s = follow_ack(&mut core, &read, 55.0);
     let dim = follow_pending(&s, "screen", "set_brightness").expect("presence dim");
     assert_eq!(dim["value"].as_f64(), Some(0.0));
     s = follow_ack(&mut core, &dim, 0.0);
@@ -3727,13 +4037,13 @@ fn follow_dimmed_monitor_defers_builtin_changes_and_restores_the_new_mapped_valu
     let s = follow_builtin(&mut core, json!(75.0), false);
     assert_eq!(s["ambient"]["builtin_percent"].as_f64(), Some(75.0));
     assert!(s["pending_actions"].as_array().unwrap().is_empty());
-    // Presence returns: read back, then restore the new mapped value (70), not the old 50.
+    // Presence returns: read back, then restore the new mapped value (81), not the old 55.
     let mut s = follow_presence(&mut core, "present", 30_000, &s);
     let read = follow_pending(&s, "screen", "read_brightness").expect("restore verifies ownership");
     s = follow_ack(&mut core, &read, 0.0);
     let restore =
         follow_pending(&s, "screen", "set_brightness").expect("restore after presence returns");
-    assert_eq!(restore["value"].as_f64(), Some(70.0));
+    assert_eq!(restore["value"].as_f64(), Some(81.0));
 }
 
 #[test]
@@ -3756,7 +4066,7 @@ fn follow_asleep_monitor_defers_then_reads_before_writing_the_mapped_value() {
     assert!(follow_pending(&s, "screen", "set_brightness").is_none());
     let s = follow_ack(&mut core, &read, 90.0);
     let write = follow_pending(&s, "screen", "set_brightness").expect("mapped value after wake");
-    assert_eq!(write["value"].as_f64(), Some(50.0));
+    assert_eq!(write["value"].as_f64(), Some(55.0));
 }
 
 #[test]
@@ -3764,18 +4074,18 @@ fn follow_dead_band_ignores_targets_within_one_raw_unit_of_desired() {
     let mut core = follow_core(0.0, 100.0, 90.0);
     let s = follow_builtin(&mut core, json!(50.0), false);
     let write = follow_pending(&s, "screen", "set_brightness").expect("first write");
-    let s = follow_ack(&mut core, &write, 50.0);
+    let s = follow_ack(&mut core, &write, 55.0);
     assert!(s["pending_actions"].as_array().unwrap().is_empty());
-    // 50.5 maps to 50.4 on the 50..75 segment, which rounds to the current raw value 50.
-    let s = follow_builtin(&mut core, json!(50.5), false);
+    // 50.2 maps to 55.2 on the 45..70 segment, which rounds to the current raw value 55.
+    let s = follow_builtin(&mut core, json!(50.2), false);
     assert!(s["pending_actions"].as_array().unwrap().is_empty());
-    // Positive control: a real change reads the owned monitor back, then writes 70.
+    // Positive control: a real change reads the owned monitor back, then writes 81.
     let s = follow_builtin(&mut core, json!(75.0), false);
     let read =
         follow_pending(&s, "screen", "read_brightness").expect("owned monitor verifies first");
-    let s = follow_ack(&mut core, &read, 50.0);
+    let s = follow_ack(&mut core, &read, 55.0);
     let write = follow_pending(&s, "screen", "set_brightness").expect("a real change writes");
-    assert_eq!(write["value"].as_f64(), Some(70.0));
+    assert_eq!(write["value"].as_f64(), Some(81.0));
 }
 
 #[test]
@@ -3789,7 +4099,7 @@ fn follow_calibrating_pauses_writes_until_calibration_ends() {
     assert!(s["pending_actions"].as_array().unwrap().is_empty());
     let s = follow_builtin(&mut core, json!(75.0), false);
     let write = follow_pending(&s, "screen", "set_brightness").expect("calibration ended");
-    assert_eq!(write["value"].as_f64(), Some(70.0));
+    assert_eq!(write["value"].as_f64(), Some(81.0));
 }
 
 #[test]
@@ -3804,8 +4114,8 @@ fn follow_stops_when_builtin_is_unavailable_or_follow_is_disabled() {
     // Positive control: the same level writes once the built-in display is available.
     let s = follow_builtin(&mut core, json!(50.0), false);
     let write = follow_pending(&s, "screen", "set_brightness").expect("available builtin writes");
-    assert_eq!(write["value"].as_f64(), Some(50.0));
-    follow_ack(&mut core, &write, 50.0);
+    assert_eq!(write["value"].as_f64(), Some(55.0));
+    follow_ack(&mut core, &write, 55.0);
     // Follow off: a new level is not written and the monitor keeps its last value.
     let s = send(
         &mut core,
@@ -3821,7 +4131,7 @@ fn follow_stops_when_builtin_is_unavailable_or_follow_is_disabled() {
     );
     let read =
         follow_pending(&s, "screen", "read_brightness").expect("owned monitor verifies first");
-    let s = follow_ack(&mut core, &read, 50.0);
+    let s = follow_ack(&mut core, &read, 55.0);
     let write = follow_pending(&s, "screen", "set_brightness").expect("re-enabled follow writes");
     assert_eq!(write["value"].as_f64(), Some(30.0));
 }
@@ -3831,8 +4141,8 @@ fn follow_pauses_while_builtin_is_unavailable_and_resumes_with_the_current_level
     let mut core = follow_core(0.0, 100.0, 90.0);
     let s = follow_builtin(&mut core, json!(50.0), false);
     let write = follow_pending(&s, "screen", "set_brightness").expect("available builtin writes");
-    assert_eq!(write["value"].as_f64(), Some(50.0));
-    follow_ack(&mut core, &write, 50.0);
+    assert_eq!(write["value"].as_f64(), Some(55.0));
+    follow_ack(&mut core, &write, 55.0);
     // Built-in unavailable: follow pauses, queues nothing and keeps the monitor eligible.
     let s = send(
         &mut core,
@@ -3856,9 +4166,9 @@ fn follow_pauses_while_builtin_is_unavailable_and_resumes_with_the_current_level
     if let Some(read) = follow_pending(&s, "screen", "read_brightness") {
         s = follow_ack(&mut core, &read, 20.0);
     }
-    // The p75 anchor maps to raw 70 on the 0..100 range.
+    // MacBook 75 is monitor 81.25 percent, which rounds to raw 81 on the 0..100 range.
     let write = follow_pending(&s, "screen", "set_brightness").expect("follow resumes");
-    assert_eq!(write["value"].as_f64(), Some(70.0));
+    assert_eq!(write["value"].as_f64(), Some(81.0));
 }
 
 #[test]
@@ -3866,14 +4176,14 @@ fn follow_reconnect_reapplies_the_curve_only_to_the_same_monitor_id() {
     let mut core = follow_core(0.0, 100.0, 90.0);
     let s = follow_builtin(&mut core, json!(50.0), false);
     let write = follow_pending(&s, "screen", "set_brightness").expect("first write");
-    follow_ack(&mut core, &write, 50.0);
+    follow_ack(&mut core, &write, 55.0);
     send(
         &mut core,
         json!({"type":"monitor_disconnected","monitor_id":"screen"}),
     );
     let s = send(&mut core, follow_discovery("screen", 0.0, 100.0, 90.0));
     let write = follow_pending(&s, "screen", "set_brightness").expect("same ID keeps its curve");
-    assert_eq!(write["value"].as_f64(), Some(50.0));
+    assert_eq!(write["value"].as_f64(), Some(55.0));
     let s = send(&mut core, follow_discovery("screen-2", 0.0, 100.0, 90.0));
     assert_eq!(follow_monitor(&s, "screen-2")["follow"], "uncalibrated");
     assert!(follow_pending(&s, "screen-2", "set_brightness").is_none());
@@ -3889,8 +4199,8 @@ fn follow_null_builtin_brightness_emits_no_write() {
     // Positive control: a known level writes.
     let s = follow_builtin(&mut core, json!(50.0), false);
     let write = follow_pending(&s, "screen", "set_brightness").expect("known level writes");
-    assert_eq!(write["value"].as_f64(), Some(50.0));
-    follow_ack(&mut core, &write, 50.0);
+    assert_eq!(write["value"].as_f64(), Some(55.0));
+    follow_ack(&mut core, &write, 55.0);
     // An unknown level after a known one must not be treated as 0.
     let s = follow_builtin(&mut core, Value::Null, false);
     assert_eq!(s["ambient"]["builtin_percent"], Value::Null);

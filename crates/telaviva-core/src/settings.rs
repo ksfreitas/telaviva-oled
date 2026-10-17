@@ -53,11 +53,23 @@ pub struct Settings {
     pub protection_disabled: std::collections::BTreeSet<String>,
 }
 
-// One monitor's calibration: its normalized brightness judged equal to the MacBook at 25, 50, 75
-// and 100 percent. A curve is complete only when all four points are present.
+// One monitor's calibration: the MacBook level (percent) at which the monitor looks equal to the
+// monitor at 1, 5, 10, 15, 20, 25, 50, 75 and 100 percent of its range. A curve is complete when
+// p25, p50, p75 and p100 are present; p1, p5, p10, p15 and p20 are optional refinements of the
+// low end.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AmbientCurve {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p1: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p5: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p10: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p15: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p20: Option<f64>,
     #[serde(default)]
     pub p25: Option<f64>,
     #[serde(default)]
@@ -74,7 +86,9 @@ impl AmbientCurve {
     }
 
     fn validate(&self) -> Result<(), String> {
-        let points = [self.p25, self.p50, self.p75, self.p100];
+        let points = [
+            self.p1, self.p5, self.p10, self.p15, self.p20, self.p25, self.p50, self.p75, self.p100,
+        ];
         if points
             .iter()
             .flatten()

@@ -1,5 +1,7 @@
 # Feature Specification: MacBook Brightness Follow, Popup Sizing and Larger Settings
 
+> Superseded in part: the calibration direction was inverted (points are monitor levels, the slider sets the MacBook). See `specs/archived/invert-macbook-calibration-direction/spec.md`.
+
 **Feature Branch**: `feat/macbook-brightness-follow` (spec folder: `macbook-brightness-follow`)
 
 Follow-up from the user during discovery: reading and setting the MacBook brightness probably should not go through DDC; a native macOS mechanism is likely better.

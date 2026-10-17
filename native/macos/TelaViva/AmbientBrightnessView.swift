@@ -94,7 +94,7 @@ private struct CalibrationPanel: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(AppText.string("calibration.points.title", locale: locale))
                 .font(.caption).foregroundStyle(.secondary)
-            HStack {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 64), spacing: 8)], alignment: .leading, spacing: 8) {
                 ForEach(CalibrationPoint.allCases, id: \.self) { point in
                     pointButton(point)
                 }
@@ -102,9 +102,14 @@ private struct CalibrationPanel: View {
             if calibration.active?.monitorID == monitor.id, let active = calibration.active {
                 Text(AppText.string("calibration.help", locale: locale))
                     .font(.caption).foregroundStyle(.secondary)
+                if !calibration.anchorReached(monitorID: monitor.id) {
+                    Text(AppText.string("calibration.waiting", locale: locale))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 sliderRow(active)
                 HStack {
                     Button(AppText.string("calibration.confirm", locale: locale)) { calibration.confirm() }
+                        .disabled(!calibration.anchorReached(monitorID: monitor.id))
                     Button(AppText.string("calibration.done", locale: locale)) { calibration.end(.done) }
                     Button(AppText.string("calibration.cancel", locale: locale)) { calibration.end(.cancelled) }
                 }
@@ -166,6 +171,7 @@ private struct CalibrationNoticeView: View {
         switch notice {
         case .builtInUnreadable: return "calibration.notice.builtInUnreadable"
         case .builtInWriteFailed: return "calibration.notice.builtInWriteFailed"
+        case .builtInUnavailable: return "calibration.notice.builtInUnavailable"
         case .autoBrightnessUnknown: return "calibration.notice.autoUnknown"
         case .autoBrightnessNotChanged: return "calibration.notice.autoNotChanged"
         case .recoveryFailed: return "calibration.notice.recoveryFailed"

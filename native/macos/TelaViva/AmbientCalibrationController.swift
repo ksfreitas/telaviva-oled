@@ -1,15 +1,21 @@
 import Foundation
 import Combine
 
-/// Calibration points on the built-in brightness curve, as percents.
+/// Calibration points on the monitor brightness axis, as percents. The five lowest are optional refinements.
 enum CalibrationPoint: Int, CaseIterable {
-    case p25 = 25, p50 = 50, p75 = 75, p100 = 100
+    case p1 = 1, p5 = 5, p10 = 10, p15 = 15, p20 = 20, p25 = 25, p50 = 50, p75 = 75, p100 = 100
 }
 
 extension AmbientCurve {
+    /// The stored values are MacBook levels (percent), not monitor brightness.
     subscript(point: CalibrationPoint) -> Double? {
         get {
             switch point {
+            case .p1: return p1
+            case .p5: return p5
+            case .p10: return p10
+            case .p15: return p15
+            case .p20: return p20
             case .p25: return p25
             case .p50: return p50
             case .p75: return p75
@@ -18,6 +24,11 @@ extension AmbientCurve {
         }
         set {
             switch point {
+            case .p1: p1 = newValue
+            case .p5: p5 = newValue
+            case .p10: p10 = newValue
+            case .p15: p15 = newValue
+            case .p20: p20 = newValue
             case .p25: p25 = newValue
             case .p50: p50 = newValue
             case .p75: p75 = newValue
@@ -102,6 +113,8 @@ struct CalibrationHooks {
 enum CalibrationNotice: Equatable {
     case builtInUnreadable
     case builtInWriteFailed
+    /// The built-in screen is off or the lid is closed, so calibration cannot run.
+    case builtInUnavailable
     case autoBrightnessUnknown
     case autoBrightnessNotChanged
     /// Also used when the session file cannot be saved at the start of a session.
@@ -147,6 +160,11 @@ final class AmbientCalibrationController: ObservableObject {
     func begin(monitorID: String, point: CalibrationPoint) {
         dispatchPrecondition(condition: .onQueue(.main))
         notice = nil
+        // Checked live: the core snapshot can lag a display sleep or a closed lid.
+        guard backend.status().available, !backend.isAsleep() else {
+            notice = .builtInUnavailable
+            return
+        }
         if let session = captured, session.monitorID != monitorID {
             end(.cancelled)
         }
@@ -171,20 +189,21 @@ final class AmbientCalibrationController: ObservableObject {
                 notice = .autoBrightnessUnknown
             }
         }
-        guard backend.writeLevel(Double(point.rawValue)) else {
+        // The point is a monitor level: move the monitor first, then set the MacBook slider.
+        hooks.setMonitorBrightness(monitorID, Double(point.rawValue))
+        let range = allowedRange(for: point, monitorID: monitorID)
+        let initial = hooks.curve(monitorID)[point] ?? captured!.builtinLevelPercent
+        let slider = clamp(initial, to: range)
+        guard backend.writeLevel(slider) else {
             notice = .builtInWriteFailed
-            // The monitor is restored only when this session has already moved it.
-            finish(restoreMonitor: active != nil)
+            // The monitor was already moved by this call, so it is always restored.
+            finish(restoreMonitor: true)
             return
         }
-        let range = allowedRange(for: point, monitorID: monitorID)
-        let initial = hooks.curve(monitorID)[point] ?? hooks.monitorBrightness(monitorID) ?? 50
-        let slider = clamp(initial, to: range)
-        hooks.setMonitorBrightness(monitorID, slider)
         active = ActiveCalibration(monitorID: monitorID, point: point, sliderValue: slider)
     }
 
-    /// Range bounded by the nearest calibrated neighbors: 0 below and 100 above when none exist.
+    /// Range of MacBook levels bounded by the nearest calibrated neighbors: 0 below and 100 above when none exist.
     func allowedRange(for point: CalibrationPoint, monitorID: String) -> ClosedRange<Double> {
         dispatchPrecondition(condition: .onQueue(.main))
         let curve = hooks.curve(monitorID)
@@ -199,9 +218,23 @@ final class AmbientCalibrationController: ObservableObject {
         dispatchPrecondition(condition: .onQueue(.main))
         guard var current = active else { return }
         let clamped = clamp(value, to: allowedRange(for: current.point, monitorID: current.monitorID))
-        hooks.setMonitorBrightness(current.monitorID, clamped)
+        guard backend.writeLevel(clamped) else {
+            notice = .builtInWriteFailed
+            finish(restoreMonitor: true)
+            return
+        }
         current.sliderValue = clamped
         active = current
+    }
+
+    /// True once the monitor reports the active point's level, within 2 points. Save waits for it.
+    func anchorReached(monitorID: String) -> Bool {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard let current = active, current.monitorID == monitorID,
+              let observed = hooks.monitorBrightness(monitorID) else {
+            return false
+        }
+        return abs(observed - Double(current.point.rawValue)) <= 2
     }
 
     /// Stores the slider value for the active point only. The session stays active.
@@ -215,6 +248,9 @@ final class AmbientCalibrationController: ObservableObject {
 
     func end(_ reason: CalibrationEndReason) {
         dispatchPrecondition(condition: .onQueue(.main))
+        if reason == .builtInUnavailable, captured != nil {
+            notice = .builtInUnavailable
+        }
         finish(restoreMonitor: true)
     }
 

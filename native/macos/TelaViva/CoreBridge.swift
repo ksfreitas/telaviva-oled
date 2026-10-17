@@ -312,8 +312,9 @@ struct VcpValue: Decodable {
 struct PendingAction: Decodable { var id: UInt64; var generation: UInt64; var monitor_id: String; var kind: String; var value: Double?; var target: Double? }
 struct CameraSnapshot: Decodable { var mode: String?; var capture_mode: String?; var status: String?; var display_status: String?; var next_sample_in_ms: UInt64?; var generation: UInt64?; var presence: String? }
 
-/// One monitor's brightness-follow calibration in normalized percent. A nil point means not calibrated yet.
-struct AmbientCurve: Codable, Equatable { var p25, p50, p75, p100: Double? }
+/// One monitor's brightness-follow calibration. Each value is a MacBook level (percent) at which the monitor equals
+/// N% of its range; p1...p20 are optional low-end refinements. A nil point means not calibrated yet.
+struct AmbientCurve: Codable, Equatable { var p1, p5, p10, p15, p20, p25, p50, p75, p100: Double? }
 
 struct CoreAmbient: Codable, Equatable {
     var enabled: Bool
@@ -380,8 +381,15 @@ struct CoreSettings: Decodable {
         if let ambientFollowEnabled { object["ambient_follow_enabled"] = ambientFollowEnabled }
         if let ambientCurves {
             object["ambient_curves"] = ambientCurves.mapValues { (curve: AmbientCurve) -> [String: Any] in
-                ["p25": curve.p25 ?? NSNull(), "p50": curve.p50 ?? NSNull(),
-                 "p75": curve.p75 ?? NSNull(), "p100": curve.p100 ?? NSNull()]
+                var point: [String: Any] = ["p25": curve.p25 ?? NSNull(), "p50": curve.p50 ?? NSNull(),
+                                            "p75": curve.p75 ?? NSNull(), "p100": curve.p100 ?? NSNull()]
+                // Optional low-end points are added only when calibrated, so curves without them keep the same JSON.
+                if let p1 = curve.p1 { point["p1"] = p1 }
+                if let p5 = curve.p5 { point["p5"] = p5 }
+                if let p10 = curve.p10 { point["p10"] = p10 }
+                if let p15 = curve.p15 { point["p15"] = p15 }
+                if let p20 = curve.p20 { point["p20"] = p20 }
+                return point
             }
         }
         if let protectionDisabled { object["protection_disabled"] = protectionDisabled.sorted() }
