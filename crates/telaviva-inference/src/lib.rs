@@ -1,7 +1,13 @@
 use ndarray::Array4;
-use ort::{
-    execution_providers::{CoreMLExecutionProvider, ExecutionProvider},
-    session::{builder::GraphOptimizationLevel, Session},
+#[cfg(target_os = "macos")]
+use ort::execution_providers::{CoreMLExecutionProvider, ExecutionProvider};
+// `as _` brings the trait methods (register, is_available, supported_by_platform) into scope
+// without clashing with the CoreML import above.
+#[cfg(feature = "directml")]
+use ort::execution_providers::{DirectMLExecutionProvider, ExecutionProvider as _};
+use ort::session::{
+    builder::{GraphOptimizationLevel, SessionBuilder},
+    Session,
 };
 use ort_sys as _;
 use sha2::{Digest, Sha256};
@@ -46,8 +52,40 @@ const MODEL_ERROR: i32 = -3;
 const PANIC_ERROR: i32 = -4;
 const PROVIDER_CPU: i32 = 0;
 const PROVIDER_COREML_CANDIDATE: i32 = 1;
+const PROVIDER_DIRECTML_CANDIDATE: i32 = 2;
 
 static RUNTIME_PATH: OnceLock<String> = OnceLock::new();
+// Set only after the runtime was initialised successfully. Availability probes check it so they
+// never call into an ONNX Runtime API that has not been loaded yet.
+static RUNTIME_READY: OnceLock<()> = OnceLock::new();
+
+/// Execution provider requested by the caller or used by a session. CPU is always available;
+/// an accelerator that cannot be registered falls back to CPU and is reported as CPU.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProviderKind {
+    Cpu,
+    CoreMl,
+    DirectMl,
+}
+
+impl ProviderKind {
+    fn from_code(code: i32) -> Option<Self> {
+        match code {
+            PROVIDER_CPU => Some(Self::Cpu),
+            PROVIDER_COREML_CANDIDATE => Some(Self::CoreMl),
+            PROVIDER_DIRECTML_CANDIDATE => Some(Self::DirectMl),
+            _ => None,
+        }
+    }
+
+    fn code(self) -> i32 {
+        match self {
+            Self::Cpu => PROVIDER_CPU,
+            Self::CoreMl => PROVIDER_COREML_CANDIDATE,
+            Self::DirectMl => PROVIDER_DIRECTML_CANDIDATE,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 struct Box2d {
@@ -71,9 +109,11 @@ pub unsafe extern "C" fn tv_inference_create(
     tv_inference_create_with_provider(runtime_abs_path, model_abs_path, PROVIDER_CPU, out_handle)
 }
 
-/// Creates a session with an optional CoreML provider candidate and CPU fallback.
-/// The existing create function remains CPU-only; applications should request CoreML
-/// only for a device profile that has measured an energy benefit.
+/// Creates a session with an optional CoreML or DirectML provider candidate and CPU fallback.
+/// The existing create function remains CPU-only; applications should request an accelerator
+/// only for a device profile that has measured an energy benefit. A requested accelerator that
+/// is unavailable or fails to register yields a CPU session and provider 0, never an error.
+/// Equivalent to `tv_inference_create_with_provider_device` with device index 0.
 ///
 /// # Safety
 /// All pointers must be valid for reads/writes as appropriate and point to NUL-terminated UTF-8 paths.
@@ -84,13 +124,38 @@ pub unsafe extern "C" fn tv_inference_create_with_provider(
     provider: i32,
     out_handle: *mut *mut TvInferenceHandle,
 ) -> i32 {
+    tv_inference_create_with_provider_device(
+        runtime_abs_path,
+        model_abs_path,
+        provider,
+        0,
+        out_handle,
+    )
+}
+
+/// Creates a session like `tv_inference_create_with_provider`, and registers DirectML on the
+/// adapter at `device_index` (index into the DXGI adapter enumeration order as seen by ONNX
+/// Runtime). The index is used only for provider 2 and ignored otherwise. An index the runtime
+/// cannot register falls back to CPU with provider 0, the same as any failing accelerator.
+///
+/// # Safety
+/// All pointers must be valid for reads/writes as appropriate and point to NUL-terminated UTF-8 paths.
+#[no_mangle]
+pub unsafe extern "C" fn tv_inference_create_with_provider_device(
+    runtime_abs_path: *const c_char,
+    model_abs_path: *const c_char,
+    provider: i32,
+    device_index: u32,
+    out_handle: *mut *mut TvInferenceHandle,
+) -> i32 {
     catch_unwind(AssertUnwindSafe(|| unsafe {
         if runtime_abs_path.is_null() || model_abs_path.is_null() || out_handle.is_null() {
             return INVALID_ARGUMENT;
         }
-        if provider != PROVIDER_CPU && provider != PROVIDER_COREML_CANDIDATE {
-            return INVALID_ARGUMENT;
-        }
+        let requested = match ProviderKind::from_code(provider) {
+            Some(kind) => kind,
+            None => return INVALID_ARGUMENT,
+        };
         *out_handle = ptr::null_mut();
         let runtime = match c_path(runtime_abs_path) {
             Some(path) => path,
@@ -131,21 +196,24 @@ pub unsafe extern "C" fn tv_inference_create_with_provider(
         if init.is_err() {
             return RUNTIME_ERROR;
         }
+        let _ = RUNTIME_READY.set(());
+        // DirectML registration is compiled only with the `directml` feature. Without it,
+        // directml_is_available() is false and a DirectML request runs on CPU, reported as 0.
+        let accelerator = match requested {
+            ProviderKind::CoreMl if coreml_is_available() => Some(ProviderKind::CoreMl),
+            ProviderKind::DirectMl if directml_is_available() => Some(ProviderKind::DirectMl),
+            _ => None,
+        };
         let mut selected_provider = PROVIDER_CPU;
-        let coreml_available = provider == PROVIDER_COREML_CANDIDATE
-            && CoreMLExecutionProvider::default()
-                .is_available()
-                .unwrap_or(false);
-        let session = if coreml_available {
-            match create_session(&model, true) {
+        let session = match accelerator {
+            Some(kind) => match create_session(&model, Some(kind), device_index) {
                 Ok(session) => {
-                    selected_provider = PROVIDER_COREML_CANDIDATE;
+                    selected_provider = kind.code();
                     Ok(session)
                 }
-                Err(_) => create_session(&model, false),
-            }
-        } else {
-            create_session(&model, false)
+                Err(_) => create_session(&model, None, device_index),
+            },
+            None => create_session(&model, None, device_index),
         };
         let session = match session {
             Ok(session) => session,
@@ -163,19 +231,92 @@ pub unsafe extern "C" fn tv_inference_create_with_provider(
     .unwrap_or(PANIC_ERROR)
 }
 
-fn create_session(model: &Path, coreml_candidate: bool) -> ort::Result<Session> {
+/// Builds a session. Callers pass only an accelerator that was reported available, so any
+/// other kind builds the CPU session. An error from attaching the accelerator makes the caller
+/// retry on CPU. `device_index` is used only when the accelerator is DirectML.
+fn create_session(
+    model: &Path,
+    accelerator: Option<ProviderKind>,
+    device_index: u32,
+) -> ort::Result<Session> {
     let builder = Session::builder()?
         .with_intra_threads(1)?
         .with_inter_threads(1)?
         .with_intra_op_spinning(false)?
         .with_inter_op_spinning(false)?
         .with_optimization_level(GraphOptimizationLevel::Level3)?;
-    let builder = if coreml_candidate {
-        builder.with_execution_providers([CoreMLExecutionProvider::default().build()])?
-    } else {
-        builder
+    let builder = match accelerator {
+        None => builder,
+        Some(kind) => attach_accelerator(builder, kind, device_index)?,
     };
     builder.commit_from_file(model)
+}
+
+fn attach_accelerator(
+    builder: SessionBuilder,
+    kind: ProviderKind,
+    device_index: u32,
+) -> ort::Result<SessionBuilder> {
+    match kind {
+        #[cfg(target_os = "macos")]
+        ProviderKind::CoreMl => {
+            builder.with_execution_providers([CoreMLExecutionProvider::default().build()])
+        }
+        #[cfg(feature = "directml")]
+        ProviderKind::DirectMl => register_directml(builder, device_index),
+        _ => {
+            // Without DirectML compiled in, the index has no effect; the session stays on CPU.
+            let _ = device_index;
+            Ok(builder)
+        }
+    }
+}
+
+/// Registers DirectML on the adapter at `device_index`. `register` is used instead of
+/// `with_execution_providers`: without `error_on_failure`, ort logs a failed registration and
+/// continues on CPU, so the error would be lost and the session wrongly reported as DirectML.
+/// An index the runtime rejects makes `register` fail, and the caller then retries on CPU.
+/// The cast to i32 is lossless for every index a DXGI adapter list can contain; larger values
+/// wrap to a negative id that the runtime rejects the same way.
+#[cfg(feature = "directml")]
+fn register_directml(
+    mut builder: SessionBuilder,
+    device_index: u32,
+) -> ort::Result<SessionBuilder> {
+    DirectMLExecutionProvider::default()
+        .with_device_id(device_index as i32)
+        .register(&mut builder)?;
+    Ok(builder)
+}
+
+/// Whether this build can use DirectML on the loaded runtime. Requires the `directml` feature,
+/// an initialised runtime, platform support, and a runtime that lists DmlExecutionProvider.
+/// Any error reads as unavailable.
+#[cfg(feature = "directml")]
+fn directml_is_available() -> bool {
+    if RUNTIME_READY.get().is_none() {
+        return false;
+    }
+    let provider = DirectMLExecutionProvider::default();
+    provider.supported_by_platform() && provider.is_available().unwrap_or(false)
+}
+
+#[cfg(not(feature = "directml"))]
+fn directml_is_available() -> bool {
+    false
+}
+
+/// Whether the loaded runtime advertises CoreML. Only macOS builds ask the runtime.
+#[cfg(target_os = "macos")]
+fn coreml_is_available() -> bool {
+    CoreMLExecutionProvider::default()
+        .is_available()
+        .unwrap_or(false)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn coreml_is_available() -> bool {
+    false
 }
 
 /// Assesses an owned BGRA frame and runs YuNet unless the frame is too dark.
@@ -316,17 +457,45 @@ pub unsafe extern "C" fn tv_inference_assess_light_bgra(
 /// Call only after successful `tv_inference_create` initialized the runtime.
 #[no_mangle]
 pub unsafe extern "C" fn tv_inference_coreml_available() -> i32 {
-    catch_unwind(AssertUnwindSafe(
-        || match CoreMLExecutionProvider::default().is_available() {
-            Ok(true) => PRESENT,
-            Ok(false) => ABSENT,
-            Err(_) => RUNTIME_ERROR,
-        },
-    ))
-    .unwrap_or(PANIC_ERROR)
+    catch_unwind(AssertUnwindSafe(coreml_probe)).unwrap_or(PANIC_ERROR)
 }
 
-/// Reports the provider candidate used when this session was built; CPU is 0, CoreML candidate is 1.
+#[cfg(target_os = "macos")]
+fn coreml_probe() -> i32 {
+    match CoreMLExecutionProvider::default().is_available() {
+        Ok(true) => PRESENT,
+        Ok(false) => ABSENT,
+        Err(_) => RUNTIME_ERROR,
+    }
+}
+
+// Other platforms have no CoreML; reporting unavailable keeps the export present everywhere.
+#[cfg(not(target_os = "macos"))]
+fn coreml_probe() -> i32 {
+    ABSENT
+}
+
+/// Reports whether this build can register the DirectML execution provider on the loaded runtime.
+/// It returns 0 in every build without the `directml` cargo feature (off by default), and 0 until
+/// a `tv_inference_create` call has initialised the runtime. It never fails and does not need a
+/// created detector.
+///
+/// # Safety
+/// Reads no pointers. Safe to call at any time.
+#[no_mangle]
+pub unsafe extern "C" fn tv_inference_directml_available() -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if directml_is_available() {
+            PRESENT
+        } else {
+            ABSENT
+        }
+    }))
+    .unwrap_or(ABSENT)
+}
+
+/// Reports the provider used when this session was built; CPU is 0, CoreML candidate is 1,
+/// DirectML candidate is 2.
 /// This indicates successful EP session registration, not that all model nodes run on CoreML.
 ///
 /// # Safety

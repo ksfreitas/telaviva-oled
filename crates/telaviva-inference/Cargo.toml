@@ -8,6 +8,12 @@ license.workspace = true
 [lib]
 crate-type = ["rlib", "staticlib", "cdylib"]
 
+[features]
+# Off by default. Enables DirectML registration (ort's registration API only; with the
+# load-dynamic feature no extra binaries are downloaded).
+default = []
+directml = ["ort/directml"]
+
 [dependencies]
 ndarray = "=0.16.1"
 ort = { version = "=2.0.0-rc.9", default-features = false, features = ["load-dynamic", "ndarray"] }

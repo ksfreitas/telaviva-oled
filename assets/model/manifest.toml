@@ -1,4 +1,4 @@
-schema_version = 1
+﻿schema_version = 1
 
 [model]
 name = "YuNet"
@@ -24,3 +24,32 @@ license = "MIT"
 notices = "licenses/inference/ONNXRUNTIME-THIRD-PARTY-NOTICES.txt"
 default_provider = "CPU"
 coreml_policy = "Explicit candidate only; CPU fallback; energy benefit not verified"
+
+# Windows x64 runtime (specs/archived/windows-version, Phase 5 T070).
+# Pins computed locally with tools/inference/fetch-windows-runtime.ps1 -ComputeOnly
+# on 2026-10-17 from a fresh download; the GitHub release assets publish no digests.
+# The default shipped provider is CPU. DirectML is a reserved variant (see below).
+[runtime.windows-x64.cpu]
+version = "1.20.1"
+source = "https://github.com/microsoft/onnxruntime/releases/download/v1.20.1/onnxruntime-win-x64-1.20.1.zip"
+archive_size = 65585496
+archive_sha256 = "78d447051e48bd2e1e778bba378bec4ece11191c9e538cf7b2c4a4565e8f5581"
+dll = "onnxruntime.dll"
+dll_sha256 = "4cb41e89b8bf30578e1dd95e9c40292d61974a4bfcd666409302c4f0c5aa8ce0"
+license = "MIT"
+
+# DirectML variant (specs/archived/windows-version, Phase 5 T094). Not shipped by default: the app
+# selects it only through a measured acceleration profile (architecture Decision 3).
+# Pins were computed locally on 2026-10-17 with
+# tools/inference/fetch-windows-runtime.ps1 -Variant directml -ComputeOnly; the script refuses placeholders.
+# DirectML.dll is the in-box Windows system component and is never redistributed.
+[runtime.windows-x64.directml]
+version = "1.20.1"
+package = "Microsoft.ML.OnnxRuntime.DirectML"
+source = "https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime.DirectML/1.20.1"
+archive_size = "15844459"
+archive_sha256 = "6763468507b7cfc777b1334b3e174c11a540ddacb7bd4354bc2e0ec89e56eec2"
+dll = "runtimes/win-x64/native/onnxruntime.dll"
+dll_sha256 = "903c92c54acc57caa77d44d4c856c829eb82f5cf6755b47367a8153bd3fabeb6"
+license = "MIT"
+directml_dll = "system"

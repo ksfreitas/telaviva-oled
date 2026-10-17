@@ -45,6 +45,13 @@ fn exports() -> Vec<Export> {
         i32,
         *mut *mut TvInferenceHandle,
     ) -> i32 = tv_inference_create_with_provider;
+    let create_with_provider_device: unsafe extern "C" fn(
+        *const std::ffi::c_char,
+        *const std::ffi::c_char,
+        i32,
+        u32,
+        *mut *mut TvInferenceHandle,
+    ) -> i32 = tv_inference_create_with_provider_device;
     let detect: unsafe extern "C" fn(
         *mut TvInferenceHandle,
         *const u8,
@@ -57,6 +64,7 @@ fn exports() -> Vec<Export> {
     let assess: unsafe extern "C" fn(*const u8, usize, u32, u32, usize) -> i32 =
         tv_inference_assess_light_bgra;
     let coreml_available: unsafe extern "C" fn() -> i32 = tv_inference_coreml_available;
+    let directml_available: unsafe extern "C" fn() -> i32 = tv_inference_directml_available;
     let selected_provider: unsafe extern "C" fn(*const TvInferenceHandle) -> i32 =
         tv_inference_selected_provider;
     let destroy: unsafe extern "C" fn(*mut TvInferenceHandle) = tv_inference_destroy;
@@ -72,6 +80,11 @@ fn exports() -> Vec<Export> {
             address: create_with_provider as usize,
         },
         Export {
+            name: "tv_inference_create_with_provider_device",
+            prototype: "int32_t tv_inference_create_with_provider_device(const char *, const char *, int32_t, uint32_t, TvInferenceHandle **)",
+            address: create_with_provider_device as usize,
+        },
+        Export {
             name: "tv_inference_detect_bgra",
             prototype: "int32_t tv_inference_detect_bgra(TvInferenceHandle *, const uint8_t *, size_t, uint32_t, uint32_t, size_t, TvInferenceResult *)",
             address: detect as usize,
@@ -85,6 +98,11 @@ fn exports() -> Vec<Export> {
             name: "tv_inference_coreml_available",
             prototype: "int32_t tv_inference_coreml_available(void)",
             address: coreml_available as usize,
+        },
+        Export {
+            name: "tv_inference_directml_available",
+            prototype: "int32_t tv_inference_directml_available(void)",
+            address: directml_available as usize,
         },
         Export {
             name: "tv_inference_selected_provider",
@@ -170,6 +188,12 @@ fn constants() -> Vec<Constant> {
             rust_name: "PROVIDER_COREML_CANDIDATE",
             value: 1,
             rust: PROVIDER_COREML_CANDIDATE as i64,
+        },
+        Constant {
+            header: "TV_INFERENCE_PROVIDER_DIRECTML_CANDIDATE",
+            rust_name: "PROVIDER_DIRECTML_CANDIDATE",
+            value: 2,
+            rust: PROVIDER_DIRECTML_CANDIDATE as i64,
         },
     ]
 }

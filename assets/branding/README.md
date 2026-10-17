@@ -74,3 +74,20 @@ glyph geometry changes, update both files.
 The artwork is original, designed for this project by the project owner. It is
 released under the repository's MIT license (see [../../LICENSE](../../LICENSE)).
 It uses no third-party assets or fonts.
+
+## Windows application icon
+
+Run from the repository root:
+
+```powershell
+powershell -File tools/windows/make-app-icon.ps1
+```
+
+The script writes `packaging/windows/Resources/AppIcon.ico`, a multi-size ICO
+from 16 to 256 px. It composes `liquid-glass/screen.svg`, `stand.svg` and
+`dot.svg` on a transparent square, and does not use `background.svg`.
+
+The Windows icon is the monitor only, without the rounded-square tile. This is
+an owner decision of 2026-10-17. The tray glyphs come from
+`tools/windows/make-tray-icons.ps1`, not from this icon. The generated `.ico` is
+committed, like the macOS resources.

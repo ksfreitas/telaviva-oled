@@ -37,8 +37,10 @@ void tv_destroy(TvCore *core);
 /* Frees and zeroes a buffer returned by tv_snapshot or tv_camera_lifecycle_step. */
 void tv_buffer_free(TvBuffer *buffer);
 
-/* Camera session timing, additive to ABI version 1. The core reads no clock: the shell passes
- * "now" in seconds, from its own monotonic clock, with every time-dependent event. Events are
+/* Camera session timing, additive to ABI version 1. The camera lifecycle reads no clock: the
+ * shell passes "now" in seconds as a double, from its own steady (monotonic) clock, with every
+ * time-dependent event. presence_observation.captured_at_ms is a different clock: it is Unix
+ * epoch milliseconds from the wall clock. Events are
  * UTF-8 JSON objects with a "type" member: reconcile {mode, capture_mode, generation, camera_id,
  * always_on}, begin_acquisition {now}, acquired_frame, begin_light_assessment {now},
  * begin_dark_settle {now}, is_current_assessment {token}, frame {now}, timed_out {now},

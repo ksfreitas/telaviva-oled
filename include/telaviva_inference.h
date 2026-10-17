@@ -28,7 +28,9 @@ enum {
 
 enum {
     TV_INFERENCE_PROVIDER_CPU = 0,
-    TV_INFERENCE_PROVIDER_COREML_CANDIDATE = 1
+    TV_INFERENCE_PROVIDER_COREML_CANDIDATE = 1,
+    TV_INFERENCE_PROVIDER_DIRECTML_CANDIDATE = 2
+    /* 3 is reserved for a future NPU provider and is not accepted yet. */
 };
 
 /* Paths must be absolute paths to app-bundled files. Runtime is initialized once.
@@ -40,12 +42,28 @@ int32_t tv_inference_create(const char *runtime_abs_path,
                             const char *model_abs_path,
                             TvInferenceHandle **out_handle);
 
-/* Explicitly requests CPU or CoreML candidate; unavailable/failing CoreML falls back to CPU.
- * The app should request CoreML only for a device profile with measured energy benefit. */
+/* Explicitly requests CPU, CoreML candidate or DirectML candidate. An unavailable or failing
+ * accelerator (including CoreML on a non-macOS build) falls back to CPU and is not an error.
+ * The app should request an accelerator only for a device profile with measured energy benefit;
+ * tv_inference_selected_provider reports what actually ran. */
 int32_t tv_inference_create_with_provider(const char *runtime_abs_path,
                                           const char *model_abs_path,
                                           int32_t provider,
                                           TvInferenceHandle **out_handle);
+
+/* Same as tv_inference_create_with_provider, plus the DirectML adapter to use. device_index is an
+ * index into the DXGI adapter enumeration order (IDXGIFactory1::EnumAdapters1) as seen by ONNX
+ * Runtime; the shell passes the index of the adapter that matched its device profile. Index 0 is
+ * the same as tv_inference_create_with_provider. device_index only applies to provider 2 and is
+ * ignored for providers 0 and 1. An index that ONNX Runtime cannot register falls back to CPU like
+ * any other failing accelerator: the return value is still 0 and tv_inference_selected_provider
+ * reports 0. The index-to-adapter mapping is to be confirmed against the DXGI adapter order by
+ * the shell (see specs/archived/windows-version/validation/measurements.md), not assumed. */
+int32_t tv_inference_create_with_provider_device(const char *runtime_abs_path,
+                                                 const char *model_abs_path,
+                                                 int32_t provider,
+                                                 uint32_t device_index,
+                                                 TvInferenceHandle **out_handle);
 
 /* Input is a top-down BGRA8 frame. Returns the result status: 0 absent, 1 present,
  * 2 insufficient light; negative values are errors (-1 invalid argument, -2 runtime,
@@ -71,7 +89,13 @@ int32_t tv_inference_assess_light_bgra(const uint8_t *bytes,
  * 1 available, 0 unavailable, negative error. Capability discovery only; CPU remains selected. */
 int32_t tv_inference_coreml_available(void);
 
-/* Returns CPU (0) or CoreML candidate (1); this does not guarantee all model ops run there. */
+/* After successful create, reports whether this build can register DirectML on the loaded runtime:
+ * 1 available, 0 unavailable (always 0 in builds without DirectML registration). Never an error;
+ * does not need a created detector. */
+int32_t tv_inference_directml_available(void);
+
+/* Returns CPU (0), CoreML candidate (1) or DirectML candidate (2) for the provider actually used;
+ * this does not guarantee all model ops run there. */
 int32_t tv_inference_selected_provider(const TvInferenceHandle *handle);
 
 void tv_inference_destroy(TvInferenceHandle *handle);
