@@ -927,6 +927,473 @@ fn wake_read_failure_does_not_issue_a_protection_write() {
 }
 
 #[test]
+fn failed_wake_readback_keeps_ownership_and_retries_the_restore() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    let discovered = send(
+        &mut core,
+        json!({"type":"monitor_discovered","monitor":{
+            "id":"screen","name":"Display","identity_status":"stable","connection_path":"usb",
+            "brightness":{"supported":true,"value":70,"raw":70,"min":0,"max":100},
+            "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}
+        }}),
+    );
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    let generation = discovered["monitors"][0]["generation"].clone();
+    let enabled = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true}}),
+    );
+    for offset in [10_000, 20_000] {
+        send(
+            &mut core,
+            json!({"type":"presence_observation","status":"absent","captured_at_ms":capture_time(offset),"camera_generation":enabled["camera"]["generation"]}),
+        );
+    }
+    let dim = core.snapshot_value().unwrap()["pending_actions"][0].clone();
+    let dimmed = send(
+        &mut core,
+        json!({"type":"hardware_result","action_id":dim["id"],"generation":dim["generation"],"ok":true,"value":0}),
+    );
+    assert_eq!(dimmed["monitors"][0]["brightness"]["owned"], true);
+    send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"screen","generation":generation,"state":"asleep"}),
+    );
+    let awake = send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"screen","generation":generation,"state":"awake"}),
+    );
+    let read = awake["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["kind"] == "read_brightness")
+        .expect("wake must verify ownership before writing")
+        .clone();
+    let failed = send(
+        &mut core,
+        json!({"type":"hardware_result","action_id":read["id"],"generation":read["generation"],"ok":false,"error":"unsupported"}),
+    );
+    assert_eq!(failed["monitors"][0]["brightness"]["owned"], true);
+    assert!(failed["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|a| a["kind"] != "set_brightness"));
+    let retry = failed["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["kind"] == "read_brightness")
+        .expect("failed wake readback must be retried")
+        .clone();
+    let verified = send(
+        &mut core,
+        json!({"type":"hardware_result","action_id":retry["id"],"generation":retry["generation"],"ok":true,"value":0}),
+    );
+    let restore = verified["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["kind"] == "set_brightness")
+        .expect("matching readback must restore the baseline")
+        .clone();
+    assert_eq!(restore["value"].as_f64(), Some(70.0));
+    let restored = send(
+        &mut core,
+        json!({"type":"hardware_result","action_id":restore["id"],"generation":restore["generation"],"ok":true,"value":70}),
+    );
+    assert_eq!(restored["monitors"][0]["brightness"]["raw"], 70.0);
+    assert_eq!(restored["monitors"][0]["brightness"]["observed"], 70.0);
+    assert_eq!(restored["monitors"][0]["brightness"]["owned"], true);
+    assert_eq!(restored["pending_actions"], json!([]));
+}
+
+#[test]
+fn failed_restore_write_is_retried_after_a_new_readback() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    let discovered = send(
+        &mut core,
+        json!({"type":"monitor_discovered","monitor":{
+            "id":"screen","name":"Display","identity_status":"stable","connection_path":"usb",
+            "brightness":{"supported":true,"value":70,"raw":70,"min":0,"max":100},
+            "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}
+        }}),
+    );
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    let generation = discovered["monitors"][0]["generation"].clone();
+    let enabled = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true}}),
+    );
+    for offset in [10_000, 20_000] {
+        send(
+            &mut core,
+            json!({"type":"presence_observation","status":"absent","captured_at_ms":capture_time(offset),"camera_generation":enabled["camera"]["generation"]}),
+        );
+    }
+    let dim = core.snapshot_value().unwrap()["pending_actions"][0].clone();
+    send(
+        &mut core,
+        json!({"type":"hardware_result","action_id":dim["id"],"generation":dim["generation"],"ok":true,"value":0}),
+    );
+    send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"screen","generation":generation,"state":"asleep"}),
+    );
+    let awake = send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"screen","generation":generation,"state":"awake"}),
+    );
+    let read = awake["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["kind"] == "read_brightness")
+        .expect("wake must verify ownership before writing")
+        .clone();
+    let verified = send(
+        &mut core,
+        json!({"type":"hardware_result","action_id":read["id"],"generation":read["generation"],"ok":true,"value":0}),
+    );
+    let restore = verified["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["kind"] == "set_brightness")
+        .expect("matching readback must restore the baseline")
+        .clone();
+    assert_eq!(restore["value"].as_f64(), Some(70.0));
+    let failed = send(
+        &mut core,
+        json!({"type":"hardware_result","action_id":restore["id"],"generation":restore["generation"],"ok":false,"error":"io"}),
+    );
+    assert_eq!(failed["monitors"][0]["brightness"]["owned"], true);
+    assert!(failed["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|a| a["kind"] != "set_brightness"));
+    let retry = failed["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["kind"] == "read_brightness")
+        .expect("failed restore write must be preceded by a new readback")
+        .clone();
+    let verified_again = send(
+        &mut core,
+        json!({"type":"hardware_result","action_id":retry["id"],"generation":retry["generation"],"ok":true,"value":0}),
+    );
+    let restore_again = verified_again["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["kind"] == "set_brightness")
+        .expect("second matching readback must restore the baseline")
+        .clone();
+    assert_eq!(restore_again["value"].as_f64(), Some(70.0));
+    let restored = send(
+        &mut core,
+        json!({"type":"hardware_result","action_id":restore_again["id"],"generation":restore_again["generation"],"ok":true,"value":70}),
+    );
+    assert_eq!(restored["monitors"][0]["brightness"]["raw"], 70.0);
+    assert_eq!(restored["monitors"][0]["brightness"]["observed"], 70.0);
+    assert_eq!(restored["monitors"][0]["brightness"]["owned"], true);
+    assert_eq!(restored["pending_actions"], json!([]));
+}
+
+#[test]
+fn restore_retries_are_bounded() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    let discovered = send(
+        &mut core,
+        json!({"type":"monitor_discovered","monitor":{
+            "id":"screen","name":"Display","identity_status":"stable","connection_path":"usb",
+            "brightness":{"supported":true,"value":70,"raw":70,"min":0,"max":100},
+            "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}
+        }}),
+    );
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    let generation = discovered["monitors"][0]["generation"].clone();
+    let enabled = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true}}),
+    );
+    for offset in [10_000, 20_000] {
+        send(
+            &mut core,
+            json!({"type":"presence_observation","status":"absent","captured_at_ms":capture_time(offset),"camera_generation":enabled["camera"]["generation"]}),
+        );
+    }
+    let dim = core.snapshot_value().unwrap()["pending_actions"][0].clone();
+    send(
+        &mut core,
+        json!({"type":"hardware_result","action_id":dim["id"],"generation":dim["generation"],"ok":true,"value":0}),
+    );
+    send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"screen","generation":generation,"state":"asleep"}),
+    );
+    let awake = send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"screen","generation":generation,"state":"awake"}),
+    );
+    let mut read = awake["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["kind"] == "read_brightness")
+        .expect("wake must verify ownership before writing")
+        .clone();
+    // Three failed readbacks each queue a new readback while ownership is kept.
+    for _ in 0..3 {
+        let failed = send(
+            &mut core,
+            json!({"type":"hardware_result","action_id":read["id"],"generation":read["generation"],"ok":false,"error":"unsupported"}),
+        );
+        assert_eq!(failed["monitors"][0]["brightness"]["owned"], true);
+        read = failed["pending_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["kind"] == "read_brightness")
+            .expect("failed readback must be retried while ownership is kept")
+            .clone();
+    }
+    // The fourth failure exhausts the retries and reverts to the existing failure behavior.
+    let exhausted = send(
+        &mut core,
+        json!({"type":"hardware_result","action_id":read["id"],"generation":read["generation"],"ok":false,"error":"unsupported"}),
+    );
+    assert_eq!(exhausted["monitors"][0]["brightness"]["owned"], false);
+    assert_eq!(
+        exhausted["monitors"][0]["brightness"]["status"],
+        "unsupported"
+    );
+    assert_eq!(exhausted["pending_actions"], json!([]));
+}
+
+#[test]
+fn manual_brightness_change_wins_over_a_pending_restore_retry() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    let discovered = send(
+        &mut core,
+        json!({"type":"monitor_discovered","monitor":{
+            "id":"screen","name":"Display","identity_status":"stable","connection_path":"usb",
+            "brightness":{"supported":true,"value":70,"raw":70,"min":0,"max":100},
+            "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}
+        }}),
+    );
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    let generation = discovered["monitors"][0]["generation"].clone();
+    let enabled = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true}}),
+    );
+    for offset in [10_000, 20_000] {
+        send(
+            &mut core,
+            json!({"type":"presence_observation","status":"absent","captured_at_ms":capture_time(offset),"camera_generation":enabled["camera"]["generation"]}),
+        );
+    }
+    let dim = core.snapshot_value().unwrap()["pending_actions"][0].clone();
+    send(
+        &mut core,
+        json!({"type":"hardware_result","action_id":dim["id"],"generation":dim["generation"],"ok":true,"value":0}),
+    );
+    send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"screen","generation":generation,"state":"asleep"}),
+    );
+    let awake = send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"screen","generation":generation,"state":"awake"}),
+    );
+    let read = awake["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["kind"] == "read_brightness")
+        .expect("wake must verify ownership before writing")
+        .clone();
+    let failed = send(
+        &mut core,
+        json!({"type":"hardware_result","action_id":read["id"],"generation":read["generation"],"ok":false,"error":"unsupported"}),
+    );
+    assert_eq!(failed["monitors"][0]["brightness"]["owned"], true);
+    assert!(failed["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|a| a["kind"] == "read_brightness"));
+    let manual = send(
+        &mut core,
+        json!({"type":"set_brightness","monitor_id":"screen","value":40,"connection_generation":generation}),
+    );
+    assert_eq!(manual["monitors"][0]["brightness"]["desired"], 40.0);
+    assert!(manual["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|a| a["kind"] != "set_brightness" || a["value"] != 70.0));
+    // The snapshot lists only the first pending action per monitor, so the manual write is
+    // visible only after the retry readback at the head of the queue has been completed.
+    let mut snapshot = manual;
+    for _ in 0..6 {
+        assert!(snapshot["pending_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|a| a["kind"] != "set_brightness" || a["value"] != 70.0));
+        let head = snapshot["pending_actions"][0].clone();
+        if head["kind"] != "read_brightness" {
+            break;
+        }
+        // The retry reads the monitor still at the dimmed value, which must not restore 70.
+        snapshot = send(
+            &mut core,
+            json!({"type":"hardware_result","action_id":head["id"],"generation":head["generation"],"ok":true,"value":0}),
+        );
+    }
+    let write = snapshot["pending_actions"][0].clone();
+    assert_eq!(write["kind"], "set_brightness");
+    assert_eq!(write["value"].as_f64(), Some(40.0));
+    let acked = send(
+        &mut core,
+        json!({"type":"hardware_result","action_id":write["id"],"generation":write["generation"],"ok":true,"value":40}),
+    );
+    assert_eq!(acked["monitors"][0]["brightness"]["raw"], 40.0);
+    assert_eq!(acked["monitors"][0]["brightness"]["observed"], 40.0);
+    assert_eq!(acked["monitors"][0]["brightness"]["owned"], true);
+    assert!(acked["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|a| a["kind"] != "set_brightness" || a["value"] != 70.0));
+}
+
+#[test]
+fn failed_dim_write_is_not_retried_as_a_restore() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    send(
+        &mut core,
+        json!({"type":"monitor_discovered","monitor":{
+            "id":"screen","name":"Display","identity_status":"stable","connection_path":"usb",
+            "brightness":{"supported":true,"value":70,"raw":70,"min":0,"max":100},
+            "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}
+        }}),
+    );
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    let enabled = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true}}),
+    );
+    for offset in [10_000, 20_000] {
+        send(
+            &mut core,
+            json!({"type":"presence_observation","status":"absent","captured_at_ms":capture_time(offset),"camera_generation":enabled["camera"]["generation"]}),
+        );
+    }
+    let dim = core.snapshot_value().unwrap()["pending_actions"][0].clone();
+    assert_eq!(dim["value"].as_f64(), Some(0.0));
+    // A failed dim write is not a restore: ownership stays dropped and no restore is queued.
+    let failed = send(
+        &mut core,
+        json!({"type":"hardware_result","action_id":dim["id"],"generation":dim["generation"],"ok":false,"error":"io"}),
+    );
+    assert_eq!(failed["monitors"][0]["brightness"]["owned"], false);
+    assert!(failed["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|a| a["kind"] != "read_brightness"));
+    assert!(failed["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|a| a["kind"] != "set_brightness" || a["value"] != 70.0));
+}
+
+#[test]
+fn shutdown_failed_readback_does_not_retry_the_restore() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    send(
+        &mut core,
+        json!({"type":"monitor_discovered","monitor":{
+            "id":"screen","name":"Display","identity_status":"stable","connection_path":"usb",
+            "brightness":{"supported":true,"value":70,"raw":70,"min":0,"max":100},
+            "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}
+        }}),
+    );
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    let enabled = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true}}),
+    );
+    for offset in [10_000, 20_000] {
+        send(
+            &mut core,
+            json!({"type":"presence_observation","status":"absent","captured_at_ms":capture_time(offset),"camera_generation":enabled["camera"]["generation"]}),
+        );
+    }
+    let dim = core.snapshot_value().unwrap()["pending_actions"][0].clone();
+    let dimmed = send(
+        &mut core,
+        json!({"type":"hardware_result","action_id":dim["id"],"generation":dim["generation"],"ok":true,"value":0}),
+    );
+    assert_eq!(dimmed["monitors"][0]["brightness"]["owned"], true);
+    // Return the monitor and restore it, so that it owns its value but is no longer dimmed.
+    let returned = send(
+        &mut core,
+        json!({"type":"presence_observation","status":"present","captured_at_ms":capture_time(30_000),"camera_generation":enabled["camera"]["generation"]}),
+    );
+    let returned_read = returned["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["kind"] == "read_brightness")
+        .expect("returning presence must verify ownership before writing")
+        .clone();
+    let verified = send(
+        &mut core,
+        json!({"type":"hardware_result","action_id":returned_read["id"],"generation":returned_read["generation"],"ok":true,"value":0}),
+    );
+    let restore = verified["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["kind"] == "set_brightness")
+        .expect("matching readback must restore the baseline")
+        .clone();
+    assert_eq!(restore["value"].as_f64(), Some(70.0));
+    let restored = send(
+        &mut core,
+        json!({"type":"hardware_result","action_id":restore["id"],"generation":restore["generation"],"ok":true,"value":70}),
+    );
+    assert_eq!(restored["monitors"][0]["brightness"]["raw"], 70.0);
+    assert_eq!(restored["monitors"][0]["brightness"]["observed"], 70.0);
+    assert_eq!(restored["monitors"][0]["brightness"]["owned"], true);
+    assert_eq!(restored["monitors"][0]["brightness"]["reasons"], json!([]));
+    assert_eq!(restored["pending_actions"], json!([]));
+    let shutdown = send(&mut core, json!({"type":"shutdown"}));
+    let shutdown_read = shutdown["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["kind"] == "read_brightness")
+        .expect("shutdown must verify an owned value before quitting")
+        .clone();
+    // Once shutdown has started, a failed readback must not keep ownership or queue a retry.
+    let failed = send(
+        &mut core,
+        json!({"type":"hardware_result","action_id":shutdown_read["id"],"generation":shutdown_read["generation"],"ok":false,"error":"unsupported"}),
+    );
+    assert_eq!(failed["monitors"][0]["brightness"]["owned"], false);
+    assert_eq!(failed["pending_actions"], json!([]));
+}
+
+#[test]
 fn stale_presence_success_does_not_clear_a_camera_failure() {
     let mut core = Core::new(CoreOptions::default()).unwrap();
     send(

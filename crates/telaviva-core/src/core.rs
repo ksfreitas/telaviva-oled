@@ -12,6 +12,7 @@ use std::{
 
 const MAX_ACTIONS: usize = 128;
 const MAX_MONITORS: usize = 64;
+const MAX_RESTORE_FAILURES: u8 = 3;
 
 #[derive(Clone, Debug, Default)]
 pub struct CoreOptions {
@@ -47,6 +48,8 @@ struct Monitor {
     presence_dimmed: bool,
     saver_dimmed: bool,
     misses: u8,
+    // Consecutive failed wake readbacks or restore writes while ownership is kept.
+    restore_failures: u8,
     manual_override: bool,
     wake_ownership_check: bool,
 }
@@ -283,6 +286,7 @@ impl Core {
                 presence_dimmed: false,
                 saver_dimmed: false,
                 misses: 0,
+                restore_failures: 0,
                 manual_override: false,
                 wake_ownership_check: false,
             },
@@ -358,6 +362,7 @@ impl Core {
         let was_asleep = monitor.display_state == "asleep";
         monitor.display_state = state.into();
         monitor.misses = 0;
+        monitor.restore_failures = 0;
         monitor.presence_dimmed = false;
         monitor.brightness.ownership_checked_target = None;
         monitor.wake_ownership_check = if state == "asleep" {
@@ -430,6 +435,7 @@ impl Core {
         if kind == "set_brightness" {
             m.baseline = Some(raw);
             m.manual_override = true;
+            m.restore_failures = 0;
         }
         Ok(())
     }
@@ -866,6 +872,7 @@ impl Core {
             }
         }
         let action = self.actions.remove(pos).unwrap();
+        let closed = self.closed;
         let Some(m) = self.monitors.get_mut(&action.monitor_id) else {
             return Ok(());
         };
@@ -898,9 +905,20 @@ impl Core {
                     .and_then(Value::as_str)
                     .unwrap_or("read_error")
                     .into();
-                feature.owned = false;
-                feature.ownership_checked_target = None;
-                m.manual_override = !feature.reasons.is_empty();
+                // No retries once shutdown has started; quitting must not wait on them.
+                if feature.owned
+                    && feature.reasons.is_empty()
+                    && !closed
+                    && m.restore_failures < MAX_RESTORE_FAILURES
+                {
+                    // Keep ownership: reconcile_all re-reads and the baseline stays reachable.
+                    m.restore_failures += 1;
+                    feature.ownership_checked_target = None;
+                } else {
+                    feature.owned = false;
+                    feature.ownership_checked_target = None;
+                    m.manual_override = !feature.reasons.is_empty();
+                }
             }
             self.reconcile_all()?;
             return Ok(());
@@ -911,6 +929,9 @@ impl Core {
             &mut m.brightness
         };
         if ok {
+            if action.kind == "set_brightness" {
+                m.restore_failures = 0;
+            }
             let value = v.get("value").and_then(Value::as_f64).or(action.value);
             feature.observed = value;
             feature.raw = value;
@@ -934,7 +955,20 @@ impl Core {
                 .and_then(Value::as_str)
                 .unwrap_or("error")
                 .into();
-            feature.owned = false;
+            // Only a failed restore write keeps ownership; reconcile_all re-reads first.
+            let restore_write = action.kind == "set_brightness"
+                && feature.owned
+                && feature.reasons.is_empty()
+                && !m.manual_override
+                && action
+                    .value
+                    .zip(m.baseline)
+                    .is_some_and(|(wanted, base)| (wanted - base).abs() < 0.0001);
+            if restore_write && !closed && m.restore_failures < MAX_RESTORE_FAILURES {
+                m.restore_failures += 1;
+            } else {
+                feature.owned = false;
+            }
         }
         self.reconcile_all()?;
         Ok(())

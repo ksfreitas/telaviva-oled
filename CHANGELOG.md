@@ -9,6 +9,7 @@
 - Keyboard routing now also requires and requests Input Monitoring, re-evaluates permissions when the app is activated or Settings opens (no polling), retries creating the event tap after permission changes, shows each permission's state with its request button disabled once granted, and local ad-hoc builds use an identifier-based designated requirement so permissions survive rebuilds (existing grants must be re-added once).
 - Brightness keys that the keyboard sends as plain key codes 144 and 145 are now recognized and routed to the external monitor under the cursor; they were ignored before.
 - Hardware brightness and volume keys pressed quickly no longer make the target jump back: the key router now ignores monitor readbacks while its own DDC writes are in flight and for one second afterwards, then compares again, so external changes and monitor clamping are still followed.
+- A dimmed monitor that wakes while its DDC channel is not ready is now restored: a failed wake readback or restore write is retried up to three times while ownership of the dimmed value is kept, instead of dropping ownership and leaving the monitor at its dimmed brightness.
 
 ### Changed
 
