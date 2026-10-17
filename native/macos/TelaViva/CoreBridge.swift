@@ -310,7 +310,7 @@ struct VcpValue: Decodable {
     enum CodingKeys: String, CodingKey { case supported, value = "normalized", raw, min, max, desired, status }
 }
 struct PendingAction: Decodable { var id: UInt64; var generation: UInt64; var monitor_id: String; var kind: String; var value: Double?; var target: Double? }
-struct CameraSnapshot: Decodable { var mode: String?; var capture_mode: String?; var status: String?; var display_status: String?; var next_sample_in_ms: UInt64?; var generation: UInt64? }
+struct CameraSnapshot: Decodable { var mode: String?; var capture_mode: String?; var status: String?; var display_status: String?; var next_sample_in_ms: UInt64?; var generation: UInt64?; var presence: String? }
 
 /// One monitor's brightness-follow calibration in normalized percent. A nil point means not calibrated yet.
 struct AmbientCurve: Codable, Equatable { var p25, p50, p75, p100: Double? }

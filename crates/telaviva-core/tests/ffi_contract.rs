@@ -174,3 +174,51 @@ fn ffi_builtin_display_reaches_the_snapshot() {
         ffi::tv_destroy(core);
     }
 }
+
+#[test]
+fn ffi_presence_observation_reaches_the_snapshot() {
+    unsafe {
+        let mut core: *mut TvCore = ptr::null_mut();
+        assert_eq!(
+            ffi::tv_create(1, ptr::null(), 0, None, ptr::null_mut(), &mut core),
+            ffi::TV_OK
+        );
+        for cmd in [
+            br#"{"type":"monitor_discovered","monitor":{"id":"screen","name":"Display","identity_status":"stable","connection_path":"usb","brightness":{"supported":true,"value":70,"raw":70,"min":0,"max":100},"volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}}}"#.as_slice(),
+            br#"{"type":"power","on_battery":false}"#.as_slice(),
+            br#"{"type":"update_settings","settings":{"presence_protection_enabled":true}}"#.as_slice(),
+        ] {
+            assert_eq!(ffi::tv_submit(core, cmd.as_ptr(), cmd.len()), ffi::TV_OK);
+        }
+        let mut buffer = TvBuffer {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        assert_eq!(ffi::tv_snapshot(core, &mut buffer), ffi::TV_OK);
+        let enabled: serde_json::Value =
+            serde_json::from_slice(std::slice::from_raw_parts(buffer.data, buffer.len)).unwrap();
+        ffi::tv_buffer_free(&mut buffer);
+        assert_eq!(enabled["camera"]["mode"], "face");
+        assert_eq!(enabled["camera"]["presence"], serde_json::Value::Null);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let observation = format!(
+            r#"{{"type":"presence_observation","status":"present","captured_at_ms":{},"camera_generation":{}}}"#,
+            now - 10_000,
+            enabled["camera"]["generation"]
+        );
+        assert_eq!(
+            ffi::tv_submit(core, observation.as_ptr(), observation.len()),
+            ffi::TV_OK
+        );
+        assert_eq!(ffi::tv_snapshot(core, &mut buffer), ffi::TV_OK);
+        let snapshot: serde_json::Value =
+            serde_json::from_slice(std::slice::from_raw_parts(buffer.data, buffer.len)).unwrap();
+        ffi::tv_buffer_free(&mut buffer);
+        assert_eq!(snapshot["camera"]["presence"], "present");
+        ffi::tv_destroy(core);
+    }
+}

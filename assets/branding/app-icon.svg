@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="TelaViva OLED">
+  <title>TelaViva OLED</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#17171b"/><stop offset="1" stop-color="#000"/></linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".14"/><stop offset=".3" stop-color="#fff" stop-opacity="0"/></linearGradient>
+    <linearGradient id="scr" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFB224"/><stop offset=".5" stop-color="#FF4D6A"/><stop offset="1" stop-color="#7B3FF2"/></linearGradient>
+  </defs>
+  <g transform="translate(100 100)">
+    <rect width="824" height="824" rx="185" fill="url(#bg)"/>
+    <rect x=".5" y=".5" width="823" height="823" rx="184.5" fill="none" stroke="url(#edge)" stroke-width="2"/>
+    <g transform="translate(0 14)">
+      <rect x="142" y="190" width="540" height="350" rx="64" fill="url(#scr)"/>
+      <circle cx="412" cy="365" r="54" fill="#fff"/>
+      <rect x="388" y="530" width="48" height="76" fill="#E9E9EF"/>
+      <rect x="296" y="596" width="232" height="30" rx="15" fill="#E9E9EF"/>
+    </g>
+  </g>
+</svg>

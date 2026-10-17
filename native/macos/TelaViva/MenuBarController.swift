@@ -70,11 +70,14 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     private var wakeObserver: NSObjectProtocol?
     private var displaySleepObserver: NSObjectProtocol?
     private var settingsCloseObserver: NSObjectProtocol?
+    /// Last state and locale applied to the status item; the icon is only reset when one of them changes.
+    private var appliedIconState: PresenceIconState?
+    private var appliedIconLocale: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.image = NSImage(systemSymbolName: "display", accessibilityDescription: "TelaViva OLED")
+        updateStatusItemIcon(presence: nil, locale: nil)
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePopover(_:))
         statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -90,6 +93,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         popover.contentViewController = host
         snapshotSubscription = core.$snapshot.receive(on: DispatchQueue.main).sink { [weak self] snapshot in
             guard let self else { return }
+            self.updateStatusItemIcon(presence: snapshot.camera?.presence, locale: snapshot.settings?.locale)
             self.pruneExternalKeyboardDrafts(using: snapshot)
             self.camera.apply(snapshot, core: self.core)
             self.manualControls.apply(snapshot)
@@ -259,6 +263,19 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     func applicationDidBecomeActive(_ notification: Notification) {
         hardwareKeyRouter.apply(enabled: core.snapshot.settings?.hardware_keys_enabled ?? false,
                                 displays: hardwareKeyDisplays)
+    }
+
+    /// Applies the presence icon and its accessibility label; does nothing unless the state or locale changed.
+    private func updateStatusItemIcon(presence: String?, locale: String?) {
+        let state = PresenceIconState(presence: presence)
+        guard state != appliedIconState || locale != appliedIconLocale else { return }
+        appliedIconState = state
+        appliedIconLocale = locale
+        let description = StatusItemIcon.accessibilityDescription(for: state, locale: locale)
+        let image = StatusItemIcon.image(for: state)
+        image.accessibilityDescription = description
+        statusItem.button?.image = image
+        statusItem.button?.setAccessibilityLabel(description)
     }
 
     @objc private func togglePopover(_ sender: Any?) {

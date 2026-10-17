@@ -2184,6 +2184,161 @@ fn resume_clears_low_light_and_busy_status_but_keeps_permission() {
     assert_eq!(woke_denied["camera"]["next_sample_in_ms"], Value::Null);
 }
 
+#[test]
+fn camera_presence_is_null_when_presence_protection_is_disabled() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    send(
+        &mut core,
+        json!({"type":"monitor_discovered","monitor":{
+            "id":"screen","name":"Display","identity_status":"stable","connection_path":"usb",
+            "brightness":{"supported":true,"value":70,"raw":70,"min":0,"max":100},
+            "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}
+        }}),
+    );
+    let disabled = send(&mut core, json!({"type":"power","on_battery":false}));
+    assert_eq!(disabled["camera"]["mode"], "disabled");
+    assert_eq!(disabled["camera"]["presence"], Value::Null);
+    let still_disabled = send(
+        &mut core,
+        json!({"type":"presence_observation","status":"present","captured_at_ms":capture_time(10_000),"camera_generation":disabled["camera"]["generation"]}),
+    );
+    assert_eq!(still_disabled["camera"]["presence"], Value::Null);
+}
+
+#[test]
+fn camera_presence_tracks_the_latest_face_sample_and_light_state() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    send(
+        &mut core,
+        json!({"type":"monitor_discovered","monitor":{
+            "id":"screen","name":"Display","identity_status":"stable","connection_path":"usb",
+            "brightness":{"supported":true,"value":70,"raw":70,"min":0,"max":100},
+            "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}
+        }}),
+    );
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    let enabled = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true}}),
+    );
+    assert_eq!(enabled["camera"]["mode"], "face");
+    assert_eq!(enabled["camera"]["presence"], Value::Null);
+
+    let present = send(
+        &mut core,
+        json!({"type":"presence_observation","status":"present","captured_at_ms":capture_time(10_000),"camera_generation":enabled["camera"]["generation"]}),
+    );
+    assert_eq!(present["camera"]["presence"], "present");
+
+    let absent = send(
+        &mut core,
+        json!({"type":"presence_observation","status":"absent","captured_at_ms":capture_time(20_000),"camera_generation":present["camera"]["generation"]}),
+    );
+    assert_eq!(absent["camera"]["mode"], "face");
+    assert_eq!(absent["camera"]["presence"], "absent");
+
+    let dark = send(
+        &mut core,
+        json!({"type":"presence_observation","status":"insufficient_light","captured_at_ms":capture_time(30_000),"camera_generation":absent["camera"]["generation"]}),
+    );
+    assert_eq!(dark["camera"]["mode"], "light_only");
+    assert_eq!(dark["camera"]["presence"], "insufficient_light");
+
+    let usable = send(
+        &mut core,
+        json!({"type":"presence_observation","status":"usable_light","captured_at_ms":capture_time(40_000),"camera_generation":dark["camera"]["generation"]}),
+    );
+    assert_eq!(usable["camera"]["mode"], "light_only");
+    assert_eq!(usable["camera"]["presence"], "insufficient_light");
+    let recovered = send(
+        &mut core,
+        json!({"type":"presence_observation","status":"usable_light","captured_at_ms":capture_time(50_000),"camera_generation":usable["camera"]["generation"]}),
+    );
+    assert_eq!(recovered["camera"]["mode"], "face");
+    assert_eq!(recovered["camera"]["presence"], Value::Null);
+}
+
+#[test]
+fn camera_presence_clears_on_suspend_and_stays_null_until_a_new_resume_sample() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    send(
+        &mut core,
+        json!({"type":"monitor_discovered","monitor":{
+            "id":"screen","name":"Display","identity_status":"stable","connection_path":"usb",
+            "brightness":{"supported":true,"value":70,"raw":70,"min":0,"max":100},
+            "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}
+        }}),
+    );
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    let enabled = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true}}),
+    );
+    let present = send(
+        &mut core,
+        json!({"type":"presence_observation","status":"present","captured_at_ms":capture_time(10_000),"camera_generation":enabled["camera"]["generation"]}),
+    );
+    assert_eq!(present["camera"]["presence"], "present");
+
+    let battery = send(&mut core, json!({"type":"power","on_battery":true}));
+    assert_eq!(battery["camera"]["mode"], "suspended");
+    assert_eq!(battery["camera"]["presence"], Value::Null);
+    let resumed = send(&mut core, json!({"type":"power","on_battery":false}));
+    assert_eq!(resumed["camera"]["mode"], "face");
+    assert_eq!(resumed["camera"]["presence"], Value::Null);
+
+    let sampled = send(
+        &mut core,
+        json!({"type":"presence_observation","status":"absent","captured_at_ms":capture_time(20_000),"camera_generation":resumed["camera"]["generation"]}),
+    );
+    assert_eq!(sampled["camera"]["presence"], "absent");
+}
+
+#[test]
+fn camera_presence_ignores_stale_generation_and_out_of_order_samples() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    send(
+        &mut core,
+        json!({"type":"monitor_discovered","monitor":{
+            "id":"screen","name":"Display","identity_status":"stable","connection_path":"usb",
+            "brightness":{"supported":true,"value":70,"raw":70,"min":0,"max":100},
+            "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}
+        }}),
+    );
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    let enabled = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true}}),
+    );
+    let old_generation = enabled["camera"]["generation"].clone();
+    let suspended = send(&mut core, json!({"type":"power","on_battery":true}));
+    assert_eq!(suspended["camera"]["presence"], Value::Null);
+    let resumed = send(&mut core, json!({"type":"power","on_battery":false}));
+    assert_eq!(resumed["camera"]["presence"], Value::Null);
+
+    let stale = send(
+        &mut core,
+        json!({"type":"presence_observation","status":"absent","captured_at_ms":capture_time(20_000),"camera_generation":old_generation}),
+    );
+    assert_eq!(stale["camera"]["presence"], Value::Null);
+
+    let present = send(
+        &mut core,
+        json!({"type":"presence_observation","status":"present","captured_at_ms":capture_time(30_000),"camera_generation":resumed["camera"]["generation"]}),
+    );
+    assert_eq!(present["camera"]["presence"], "present");
+    let out_of_order = send(
+        &mut core,
+        json!({"type":"presence_observation","status":"absent","captured_at_ms":capture_time(25_000),"camera_generation":resumed["camera"]["generation"]}),
+    );
+    assert_eq!(out_of_order["camera"]["presence"], "present");
+    let stale_after_sample = send(
+        &mut core,
+        json!({"type":"presence_observation","status":"absent","captured_at_ms":capture_time(40_000),"camera_generation":old_generation}),
+    );
+    assert_eq!(stale_after_sample["camera"]["presence"], "present");
+}
+
 // Ambient follow and per-monitor protection contracts from
 // specs/archived/macbook-brightness-follow/contracts.md: settings, update_settings and snapshot fields.
 

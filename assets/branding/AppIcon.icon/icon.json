@@ -1,0 +1,9 @@
+{
+  "groups": [
+    {"layers": [{"image-name": "dot.svg", "name": "dot", "glass": true}]},
+    {"layers": [{"image-name": "stand.svg", "name": "stand", "glass": true}]},
+    {"layers": [{"image-name": "screen.svg", "name": "screen", "glass": true}]},
+    {"layers": [{"image-name": "background.svg", "name": "background"}]}
+  ],
+  "supported-platforms": {"squares": ["macOS"]}
+}

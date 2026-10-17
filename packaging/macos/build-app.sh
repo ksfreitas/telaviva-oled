@@ -19,6 +19,14 @@ cp "$SRC/Info.plist" "$APP/Contents/Info.plist"
 mkdir -p "$APP/Contents/Resources/en.lproj" "$APP/Contents/Resources/pt-BR.lproj"
 cp "$SRC/en.lproj/InfoPlist.strings" "$APP/Contents/Resources/en.lproj/InfoPlist.strings"
 cp "$SRC/pt-BR.lproj/InfoPlist.strings" "$APP/Contents/Resources/pt-BR.lproj/InfoPlist.strings"
+for required in "$ROOT/packaging/macos/Resources/AppIcon.icns" "$ROOT/packaging/macos/Resources/Assets.car"; do
+  if [[ ! -f "$required" ]]; then
+    echo "Required app icon asset is missing: $required (generate it with: sh tools/branding/build-icons.sh)" >&2
+    exit 2
+  fi
+done
+cp "$ROOT/packaging/macos/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+cp "$ROOT/packaging/macos/Resources/Assets.car" "$APP/Contents/Resources/Assets.car"
 python3 "$ROOT/tools/inference/prepare.py" \
   --resources-dir "$APP/Contents/Resources" \
   --frameworks-dir "$APP/Contents/Frameworks"
@@ -30,7 +38,7 @@ cp "$ROOT/native/macos/DDC-LICENSE" "$LICENSES/DDC-LICENSE"
 cp "$ROOT/LICENSE" "$APP/Contents/Resources/LICENSE"
 
 SDK="$(xcrun --sdk macosx --show-sdk-path)"
-SOURCES=("$SRC/App.swift" "$SRC/CoreBridge.swift" "$SRC/CameraLifecycle.swift" "$SRC/CameraSelection.swift" "$SRC/HardwareKeyRouter.swift" "$SRC/MenuBarController.swift" "$SRC/MonitorPopup.swift" "$SRC/SettingsView.swift" "$SRC/PresenceCamera.swift" "$SRC/Localization.swift" "$SRC/MacDDCController.swift" "$SRC/DDCTransaction.swift" "$SRC/ManualMonitorControls.swift" "$SRC/DefaultAudioOutputMonitor.swift" "$SRC/MediaKeyProbe.swift" "$SRC/BuiltInDisplayBackend.swift" "$SRC/PopupLayout.swift" "$SRC/BuiltInBrightnessMonitor.swift" "$SRC/AmbientBrightnessView.swift" "$SRC/AmbientCalibrationController.swift")
+SOURCES=("$SRC/App.swift" "$SRC/CoreBridge.swift" "$SRC/CameraLifecycle.swift" "$SRC/CameraSelection.swift" "$SRC/HardwareKeyRouter.swift" "$SRC/MenuBarController.swift" "$SRC/MonitorPopup.swift" "$SRC/SettingsView.swift" "$SRC/PresenceCamera.swift" "$SRC/Localization.swift" "$SRC/MacDDCController.swift" "$SRC/DDCTransaction.swift" "$SRC/ManualMonitorControls.swift" "$SRC/DefaultAudioOutputMonitor.swift" "$SRC/MediaKeyProbe.swift" "$SRC/BuiltInDisplayBackend.swift" "$SRC/PopupLayout.swift" "$SRC/BuiltInBrightnessMonitor.swift" "$SRC/AmbientBrightnessView.swift" "$SRC/AmbientCalibrationController.swift" "$SRC/StatusItemIcon.swift")
 swiftc -sdk "$SDK" -target arm64-apple-macos14.0 -module-cache-path "$OUT/module-cache" \
   -O \
   -import-objc-header "$SRC/TelaViva-Bridging-Header.h" -I "$ROOT/include" -Xcc -I -Xcc "$ROOT/include" \

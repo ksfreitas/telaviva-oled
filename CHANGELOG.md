@@ -25,6 +25,8 @@
 ### Added
 
 - On macOS, external monitors follow the MacBook screen brightness through per-monitor four-point curves, with a calibration tab; hardware checks are pending acceptance.
+- New application icon for macOS: an Icon Composer `.icon` layered for Liquid Glass on macOS 26 and later, with an `.icns` fallback for macOS 14 and 15; vector sources are in `assets/branding/` and regenerate with `tools/branding/build-icons.sh`; Dock and Finder appearance is pending acceptance.
+- Presence menu-bar icon on macOS replaces the static monitor symbol: a filled dot when a face is detected, no dot when no face is detected or presence is off, suspended or unavailable, and a dot outline when light is insufficient. The core adds the additive snapshot field `camera.presence`; pending acceptance on a real menu bar.
 - Per-monitor OLED protection participation toggle in the popup and in Settings, so each external monitor can opt in or out; hardware checks are pending acceptance.
 - Camera selection history on macOS: the app remembers the cameras you select, up to eight, most recent first, and uses the first one that is connected. When none is connected it falls back to the system default camera, and "Use default camera" clears the history. Hardware checks with two webcams are pending.
 - Configurable hardware-key step for brightness and volume (1 to 15 points each, default 5) in Settings; Settings window is taller.

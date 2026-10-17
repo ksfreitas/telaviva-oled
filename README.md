@@ -6,7 +6,7 @@ Presence protection detects any face locally. It does not identify people, enrol
 
 ## Status
 
-The project is under active development. Rust tests, native macOS builds, and an ABI smoke test have passed. A read-only DDC check has read brightness and volume on one Dell S3225QC connected to an M4 Pro. A connected LG ULTRAFINE has also passed a one-point brightness change and restoration through the application's Rust/native command path, with fresh physical readback; see the [DDC fix and hardware evidence](specs/archived/external-monitor-hardware-keys-and-fluid-controls/lg-ultrafine-ddc-brightness-writes.md). This does not establish support across monitors, ports, adapters, docks, or Apple Silicon generations. Broader camera, physical write/restoration, multi-monitor and release-distribution acceptance remains in progress. See the [implementation plan](specs/archived/external-monitor-control-and-oled-presence-protection/plan.md) and [validation reports](specs/archived/external-monitor-control-and-oled-presence-protection/validation/release-readiness.md) for evidence and outstanding work. Following the MacBook brightness, calibration and per-monitor protection have passed automated tests only; hardware acceptance is pending, see the [hardware checklist](specs/archived/macbook-brightness-follow/validation/hardware-checklist.md).
+The project is under active development. Rust tests, native macOS builds, and an ABI smoke test have passed. A read-only DDC check has read brightness and volume on one Dell S3225QC connected to an M4 Pro. A connected LG ULTRAFINE has also passed a one-point brightness change and restoration through the application's Rust/native command path, with fresh physical readback; see the [DDC fix and hardware evidence](specs/archived/external-monitor-hardware-keys-and-fluid-controls/lg-ultrafine-ddc-brightness-writes.md). This does not establish support across monitors, ports, adapters, docks, or Apple Silicon generations. Broader camera, physical write/restoration, multi-monitor and release-distribution acceptance remains in progress. See the [implementation plan](specs/archived/external-monitor-control-and-oled-presence-protection/plan.md) and [validation reports](specs/archived/external-monitor-control-and-oled-presence-protection/validation/release-readiness.md) for evidence and outstanding work. Following the MacBook brightness, calibration and per-monitor protection have passed automated tests only; hardware acceptance is pending, see the [hardware checklist](specs/archived/macbook-brightness-follow/validation/hardware-checklist.md). The Liquid Glass app icon rendering in the Dock and Finder and the menu-bar presence icon are pending acceptance on real macOS hardware.
 
 The macOS app targets Apple Silicon and macOS 14 or later. Development builds have been exercised on macOS 27; this is not a tested compatibility matrix. Intel Macs are deferred. DDC support depends on the monitor and connection.
 
@@ -26,9 +26,11 @@ To open the compiled app:
 open 'build/macos/TelaViva OLED.app'
 ```
 
+The app icon resources in `packaging/macos/Resources/` are generated and committed rather than built in CI, because the macos-14 CI runner cannot compile Icon Composer `.icon` files. Regenerating them with `sh tools/branding/build-icons.sh` needs Xcode 26 or later.
+
 ## Usage
 
-1. Open the app and click the monitor icon in the macOS menu bar.
+1. Open the app and click its icon in the macOS menu bar. The icon shows presence: a filled dot when a face is detected, no dot when no face is detected or when presence is off, suspended or unavailable, and a dot outline when light is insufficient. Visual checks on a real menu bar are pending acceptance.
 2. Adjust brightness and speaker volume independently for each detected external monitor. Unsupported controls are shown as unavailable. The popup fits one to three monitors and scrolls beyond three.
 3. Open **Settings** to choose English (US) or Portuguese (Brazil), the camera, sampling intervals, continuous camera capture, battery behavior, optional launch at login, and the brightness-key and volume-key steps. Settings has General, Keyboard and Automatic brightness tabs.
 4. Enable presence protection to request camera access. Two valid no-face samples trigger dimming; a returning face clears the presence reason. Low light suspends detection instead of triggering absence.
@@ -58,6 +60,8 @@ tools/tests/test-core-bridge.sh
 tools/tests/test-hardware-key-router.sh
 tools/tests/test-default-audio-output.sh
 tools/tests/test-media-key-probe.sh
+tools/tests/test-status-item-icon.sh
+tools/tests/test-branding-assets.sh
 ```
 
 After fetching the runtime, run the full test suite with `cargo test --workspace --all-targets --locked`. CI intentionally skips only the runtime integration test and builds/packages the native app separately. The macOS workflow runs on macOS 14; it does not perform camera acceptance or physical monitor writes.
@@ -71,6 +75,8 @@ After fetching the runtime, run the full test suite with `cargo test --workspace
 - `native/macos/`: SwiftUI/AppKit UI, camera capture, and macOS device adapters.
 - `include/`: C interfaces used by the native shell.
 - `assets/model/` and `licenses/`: model provenance and third-party license notices.
+- `assets/branding/`: vector icon sources (master SVG, Liquid Glass layers, Icon Composer document and menu-bar glyphs); regenerate with `sh tools/branding/build-icons.sh`.
+- `packaging/macos/Resources/`: generated app icon resources (`AppIcon.icns`, `Assets.car`).
 - `specs/archived/external-monitor-control-and-oled-presence-protection/`: requirements, design, implementation plan, and validation evidence.
 - `specs/archived/macbook-brightness-follow/`: requirements, design, plan and the hardware validation checklist for following the MacBook brightness.
 
