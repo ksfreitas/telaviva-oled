@@ -4,7 +4,7 @@
 
 Deferred from [always-on-camera-resource-optimization](archived/always-on-camera-resource-optimization/plan.md) (task 5). Every presence report amplifies into about 3 snapshot builds, 5 JSON serializations, 2 decodes and 2 main-thread publications (`ffi.rs` `tv_submit` builds a full snapshot only to read the revision; `CoreBridge.submit` then calls `refresh()` while the snapshot-ready callback also requests one; `localized_messages()` re-parses the FTL text on every snapshot; `CoreSnapshot` is not `Equatable`, so every publish fires `MenuBarController`'s sink and re-runs `camera.apply`, `manualControls.apply`, `ddc.process` and key routing). This is small per event, but it runs on the main thread about once per 1 to 10 seconds, and once per second while a monitor is dimmed. Reduce it without changing behavior, the snapshot content or the C ABI.
 
-Status: blocked until the `macbook-brightness-follow` branch is merged. That work adds snapshot fields (`ambient`, per-monitor `follow` and `protected`) and a `builtin_display` command in the same files, so doing this first would be rewritten. Rebase on it, re-read the files, then execute.
+Status: unblocked and not started. The `macbook-brightness-follow` work is merged into main (archived at [macbook-brightness-follow](archived/macbook-brightness-follow/spec.md)); the snapshot already carries the ambient, follow and protection fields, so no rebase onto that branch is needed.
 
 ## Relevant Files
 

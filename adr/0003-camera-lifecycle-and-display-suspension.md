@@ -37,7 +37,7 @@ The setting and display-state contract are additive to settings schema 1 and ABI
 ## Amendment 2026-10-16: Camera selection history and resume sampling
 
 **Feature:** camera-selection-history-and-wake-resume
-**Plan:** [Camera selection history and faster presence resume after wake](../specs/camera-selection-history-and-wake-resume.md)
+**Plan:** [Camera selection history and faster presence resume after wake](../specs/archived/camera-selection-history-and-wake-resume/spec.md)
 
 This dated amendment adds decisions to the camera lifecycle contract above. The accepted decisions in this record remain in force.
 
