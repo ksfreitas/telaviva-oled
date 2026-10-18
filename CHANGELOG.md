@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.1 - 2026-10-18
+
 ### Added
 
 - Inference device setting on Windows, on the new Advanced page of Settings: Automatic (the default), CPU, or a specific GPU listed by name and kind. Automatic runs face detection on the integrated GPU when it passes a check (it starts, returns the same presence result as the CPU on a test frame, and answers within 125 ms) and on the CPU otherwise, so the main CPU and graphics card stay free; a discrete GPU is only ever chosen by hand. Any failure falls back to the CPU without losing a frame. The page shows the device in use and a notice when a chosen device is missing or failed. Changes apply without restarting the app. No energy benefit is claimed. The macOS shell does not have this setting yet and keeps running on the CPU.
