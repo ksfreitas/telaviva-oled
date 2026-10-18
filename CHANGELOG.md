@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.1.0 - 2026-10-17
+
+First release.
+
 ### Fixed
 
 - Reliable macOS DDC requests for the connected LG ULTRAFINE: transmit requests twice with short spacing, validate complete replies, and confirm the requested brightness or volume through readback before reporting success. A one-point brightness change and restoration were verified on this LG connection.
