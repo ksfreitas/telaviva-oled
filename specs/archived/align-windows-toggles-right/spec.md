@@ -71,5 +71,6 @@ Execute every command to validate the chore is complete with zero regressions.
 - Step 1 done: `MakeSettingRow` resets `MinWidth` to 0 for `ToggleSwitch` controls before right-aligning them (`SettingRow.cpp`, plus a sentence in the `SettingRow.h` comment).
 - Step 2 done: `CHANGELOG.md` has the `### Fixed` entry under `## Unreleased`.
 - Step 3 done: the solution builds with 0 errors and `tests.exe` runs 634 tests with 0 failures.
-- Step 4 pending: the measurement on the real window needs the owner's running `TelaViva.exe` (`dist\TelaVivaOLED`) closed, because the app allows a single instance. Nothing was killed.
-- Step 5 partly done: build and `tests.exe` pass; `scripts\build-windows.ps1 -NoZip` and the UI Automation check wait for the app to be closed.
+- Step 4: the owner checked the real window personally and found the toggles right (2026-10-18). The planned UI Automation measurement of bounding rectangles was not run.
+- Step 5 partly done: build and `tests.exe` pass; `scripts\build-windows.ps1 -NoZip` and the UI Automation check were not run.
+- Finalized 2026-10-18: [ADR 0027](../../../adr/0027-align-windows-toggles-right.md).

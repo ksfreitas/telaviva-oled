@@ -262,6 +262,7 @@ Status: the Windows code is in the repository and covered by automated tests. Wi
 - [ADR-0024](adr/0024-windows-zip-distribution-and-hkcu-run.md): Windows distribution: unpackaged zip with a per-user PowerShell installer and HKCU Run for launch at login
 - [ADR-0025](adr/0025-windows-app-sdk-license-versus-open-source-rule.md): Windows App SDK license versus the open-source-only rule (Proposed; owner decision open)
 - [ADR-0026](adr/0026-about-screen-and-github-update-check.md): About screen and an informational update check against GitHub releases (Accepted)
+- [ADR-0027](adr/0027-align-windows-toggles-right.md): Windows Settings toggles right-aligned by resetting the ToggleSwitch `MinWidth` in the shared row builder (Accepted)
 
 ## About screen and update check — 2026-10-17
 
