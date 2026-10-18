@@ -16,10 +16,13 @@ Header: [`include/telaviva_core.h`](include/telaviva_core.h). ABI version: `1` (
 | `tv_snapshot(core, out_buffer)` | Copies the current revisioned UTF-8 JSON snapshot into a Rust-owned buffer, capped at 8 MiB. |
 | `tv_shutdown(core)` | Stops new callbacks/commands and emits best-effort ownership-checked restore actions. |
 | `tv_destroy(core)` | Destroys a handle after the host handles shutdown actions; callers must not race it with other calls. |
-| `tv_buffer_free(buffer)` | Frees and clears a buffer returned by `tv_snapshot` or `tv_camera_lifecycle_step`. |
+| `tv_buffer_free(buffer)` | Frees and clears a buffer returned by `tv_snapshot`, `tv_camera_lifecycle_step` or `tv_controls_step`. |
 | `tv_camera_lifecycle_create(out)` | Creates an inactive `TvCameraLifecycle` handle (mode `disabled`, no deadlines). Additive to ABI version 1. |
 | `tv_camera_lifecycle_step(handle, json, len, out_buffer)` | Applies one UTF-8 JSON lifecycle event (maximum 64 KiB) and copies its result into a Rust-owned buffer. Additive to ABI version 1. |
 | `tv_camera_lifecycle_destroy(handle)` | Destroys a lifecycle handle; callers must not race it with other calls on the same handle. Additive to ABI version 1. |
+| `tv_controls_create(out)` | Creates an empty `TvControls` handle. Additive to ABI version 1. |
+| `tv_controls_step(handle, json, len, out_buffer)` | Applies one UTF-8 JSON controls event (maximum 64 KiB) and copies its result into a Rust-owned buffer. Additive to ABI version 1. |
+| `tv_controls_destroy(handle)` | Destroys a controls handle; callers must not race it with other calls on the same handle. Additive to ABI version 1. |
 | `tv_core_version(out)` | Writes the core version as UTF-8 without a terminator to a Rust-owned buffer; free it with `tv_buffer_free`. Additive to ABI version 1. |
 | `tv_update_evaluate(installed, installed_len, http_status, body, body_len, out)` | Compares the installed version with a GitHub `releases/latest` answer and writes an UpdateOutcome JSON to a Rust-owned buffer. Pure: no network and no state. Additive to ABI version 1. |
 
@@ -59,6 +62,91 @@ Each event is one UTF-8 JSON object with a `type` string and the fields below. U
 Every successful event returns one object, `{"value": <event-specific>, "state": {...}}`. The `state` object is flat, has the same keys for every event, and is read after the event is applied: `generation`, `camera_id`, `mode`, `capture_mode`, `always_on`, `eligible` (true in `face` or `light_only` mode), `acquisition_pending`, `should_keep_session` (true when `eligible` and `always_on` are set and the capture mode is `continuous_monitoring` or `continuous_return`), `settling_until`, `assessment_deadline` and `acquisition_deadline` (seconds on the shell's clock, or `null` when not armed), and `assessment_token` (which wraps after `u64::MAX`).
 
 A rejected event returns `TV_INVALID_ARGUMENT` and leaves the lifecycle unchanged, because each event is fully validated before any field changes. Input larger than 64 KiB returns `TV_SIZE_LIMIT` before parsing, as `tv_submit` does. A null handle or output pointer, or null input with a non-zero length, returns `TV_INVALID_ARGUMENT`. A panic or a poisoned internal lock returns `TV_INTERNAL`. On `TV_OK` the caller owns the returned buffer and frees it with `tv_buffer_free`. Do not use a handle after `tv_camera_lifecycle_destroy`.
+
+### Controls ABI
+
+The controls machine is a separate opaque `TvControls` handle, not a `TvCore`. It owns the manual-control queue for slider and hardware-key changes: it decides which command the shell submits to the core and which DDC primitive the shell runs next, and it reports each outcome back through events. The shell runs the DDC primitives and every `tv_submit` call. This surface is additive to core ABI version 1 and changes no existing function.
+
+Each event is one UTF-8 JSON object with a string `type` and a number `now`. Unknown fields, duplicate keys, non-finite numbers and trailing data are rejected, and a rejected event leaves the state unchanged.
+
+- `now`: monotonic seconds from the shell clock (`CMClockGetHostTimeClock` on macOS, `steady_clock` on Windows). It must be finite. A `now` smaller than the previous one is clamped to the previous one, so a mis-ordered event never moves a deadline backward.
+
+| `type` | Fields | When the shell sends it |
+|---|---|---|
+| `configure` | `brightness_step` and `volume_step` (required finite numbers, each clamped to whole points 1 to 15; a non-finite value is rejected), `keys_enabled` (required Boolean; `false` also clears the volume owner, and a `volume_owner` in the same event is then ignored), `volume_owner` (optional string or null; absent leaves it unchanged, null clears it) | At start and when the key step setting or key routing changes |
+| `observe` | `revision` (u64), `monitors` (array), `pending_actions` (array) | After every snapshot publish, in snapshot order |
+| `monitor_profile` | `monitor_id`, `manufacturer` (EDID code, may be empty) | After discovery of a DDC-capable monitor |
+| `monitor_removed` | `monitor_id` | When the shell drops a monitor |
+| `display_power` | `on` (Boolean) | When the session reports displays off or on |
+| `slider` | `monitor_id`, `feature` (`brightness` or `volume`), `value` (number) | On every slider value change |
+| `key` | `key`, `phase` (`down` or `up`), `repeat` (Boolean), `fine` (Boolean), `owner` (object or null) | On every decoded volume, mute or brightness key event |
+| `submitted` | `token` (u64), `accepted` (Boolean) | After the shell passed a `command_json` or `result_json` to `tv_submit` |
+| `attempt_done` | `token` (u64), `ok` (Boolean), `error` (`none`, `unsupported`, `io`, `disconnected`; present when `ok` is false), `value` (number or null; raw readback for reads) | After the shell ran one DDC primitive |
+| `tick` | none | When the shell timer for `next_deadline` fires |
+| `query_draft` | `monitor_id`, `feature` | When the UI needs the value to draw |
+| `shutdown` | none | On application exit |
+
+### `observe` and `key` details
+
+- `observe` carries the snapshot's `monitors` and `pending_actions`. In each channel, `observed` is the normalized 0 to 100 percentage (the snapshot's `normalized` field), and `min` and `max` are the raw device range. A snapshot older than the last applied revision is ignored; an equal revision is accepted. Each array is capped at 64 monitors and 128 pending actions; more is rejected. `kind` is one of `set_brightness`, `set_volume` or `read_brightness`; an action of another kind fails with `unsupported` and the failure is reported. A pending action's `value` is the raw device target, which the machine rounds.
+- A channel is eligible when it is supported, its observed value is non-null, the display is not `asleep`, the identity is `stable`, and `max` is greater than `min`.
+- `key` is `volume_up`, `volume_down`, `mute`, `brightness_up` or `brightness_down`; the matching feature is derived from the key. `owner` is the target the shell resolved. A `null` owner, or one that does not resolve to a supported, awake target with a known level from 0 to 100, means there is no eligible target, so the machine answers `{"consume": false}` for the whole sequence. A change of the `volume_owner` set by `configure` clears all remembered mute levels; a different `owner` on a key event does not.
+- The shell owns the swallow decision on Windows; macOS uses the returned `consume`.
+
+### Controls result
+
+Every successful event returns one object:
+
+```json
+{
+  "value": null,
+  "effects": [ ],
+  "next_deadline": null
+}
+```
+
+- `next_deadline` is the absolute monotonic time, in seconds, of the next `tick` the machine needs, or `null`. The shell keeps exactly one timer armed for it and re-arms it from every result. A `tick` before the deadline does nothing harmful.
+- `value` depends on the event:
+
+| Event | `value` |
+|---|---|
+| `slider` | `{ "draft": <number>, "status": "pending" }`, or `null` when the target was ignored (unknown monitor, ineligible, asleep, draft cap, non-finite) |
+| `key` | `{ "consume": <Boolean> }` |
+| `query_draft` | `{ "has_draft": <Boolean>, "draft": <number>, "status": "ready", "pending" or "failed" }` |
+| any other event | `null` |
+
+- For an idle control, `draft` is the latest observed value, so the UI can always draw `draft`.
+
+Effects are an ordered array. The shell executes them in order, outside any lock it holds for its own state.
+
+| `type` | Fields | Shell action |
+|---|---|---|
+| `submit_command` | `token`, `command_json` | Pass `command_json` verbatim to `tv_submit`; then send `submitted {token, accepted}`, where `accepted` is true when `tv_submit` returned `TV_OK`. |
+| `run_attempt` | `token`, `monitor_id`, `op` (`read` or `write`), `code` (VCP code: 16 brightness, 98 volume), `value` (raw; present for `write`) | Run exactly one DDC primitive on the DDC worker; then send `attempt_done {token, ...}`. The primitive's internal framing (macOS write-twice and checksum seed fallback, Windows single call) is a shell detail and counts as one attempt. |
+| `submit_result` | `token`, `result_json` | Pass `result_json` verbatim to `tv_submit`; then send `submitted {token, accepted}`. |
+| `draft_changed` | `monitor_id`, `feature` | Repaint the control by calling `query_draft`. |
+
+- Tokens are unique per effect and are never reused during a run. An `attempt_done` or `submitted` with an unknown or already-finished token is accepted and ignored.
+- `command_json` is exactly one of `{"type":"set_brightness",...}` or `{"type":"set_volume",...}`, with the fields the core already accepts, including `connection_generation`. `result_json` is a `hardware_result` the core already accepts: `{"type":"hardware_result","action_id":N,"generation":G,"ok":true,"value":RAW}`, or the same with `"ok":false` and `"error"` set to `io`, `unsupported`, `disconnected` or `ambiguous`. `value` is a raw readback, never a percentage.
+- `command_json` and `result_json` are passed to `tv_submit` exactly as the machine produced them. The outcome is reported back to the machine with `submitted`, so the machine can resubmit or drop a result.
+
+### Controls errors and threading
+
+| Condition | Result |
+|---|---|
+| Malformed JSON, unknown `type`, unknown field, duplicate key, non-finite number, missing or mistyped field | `TV_INVALID_ARGUMENT`, state unchanged |
+| Event over 64 KiB | `TV_SIZE_LIMIT`, state unchanged |
+| Null handle or null `out` | `TV_INVALID_ARGUMENT` |
+| Panic inside a step, or a poisoned lock | `TV_INTERNAL`; the shell should stop using the handle. The Windows wrapper instead returns an empty reply on any non-OK status and ignores that event |
+| Unknown `monitor_id` on `slider` or `monitor_removed` | Accepted, ignored (`value` null) |
+| `key` whose `owner` is null or unknown | Accepted; `value` is `{"consume": false}` |
+| `submitted` or `attempt_done` with an unknown token | Accepted, ignored |
+| Event after `shutdown` | Accepted, ignored |
+
+- Failures write nothing to `out`. On `TV_OK` the caller owns the returned buffer and frees it with `tv_buffer_free`.
+- The handle holds one `Mutex`, so calls are serialized. The lock is a leaf lock: it is never held across I/O, and callers must not hold another lock that a step could wait on. The shell must never take its core lock for a controls call.
+- `tv_controls_destroy` must not race other calls on the same handle, and the handle must not be used after it.
+- For the rationale behind this protocol, see [ADR 0029](adr/0029-core-owned-manual-control-queue-and-ddc-dispatch.md).
 
 ### Update check ABI
 

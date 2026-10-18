@@ -1,0 +1,199 @@
+{
+  "description": "A pending draft is dropped when its monitor leaves the snapshot and when its generation changes.",
+  "name": "disconnect",
+  "steps": [
+    {
+      "event": {
+        "monitors": [
+          {
+            "brightness": {
+              "max": 100,
+              "min": 0,
+              "observed": 41.0,
+              "supported": true
+            },
+            "display_state": "awake",
+            "generation": 1,
+            "id": "m1",
+            "identity_status": "stable",
+            "volume": {
+              "max": 100,
+              "min": 0,
+              "observed": 20.0,
+              "supported": true
+            }
+          }
+        ],
+        "now": 1.0,
+        "pending_actions": [],
+        "revision": 1,
+        "type": "observe"
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "feature": "brightness",
+        "monitor_id": "m1",
+        "now": 1.0,
+        "type": "slider",
+        "value": 30.0
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": 1.02,
+        "value": {
+          "draft": 30.0,
+          "status": "pending"
+        }
+      }
+    },
+    {
+      "event": {
+        "monitors": [],
+        "now": 1.25,
+        "pending_actions": [],
+        "revision": 2,
+        "type": "observe"
+      },
+      "expect": {
+        "effects": [
+          {
+            "feature": "brightness",
+            "monitor_id": "m1",
+            "type": "draft_changed"
+          }
+        ],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "feature": "brightness",
+        "monitor_id": "m1",
+        "now": 1.25,
+        "type": "query_draft"
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": null,
+        "value": {
+          "draft": 0.0,
+          "has_draft": false,
+          "status": "ready"
+        }
+      }
+    },
+    {
+      "event": {
+        "monitors": [
+          {
+            "brightness": {
+              "max": 100,
+              "min": 0,
+              "observed": 41.0,
+              "supported": true
+            },
+            "display_state": "awake",
+            "generation": 1,
+            "id": "m1",
+            "identity_status": "stable",
+            "volume": {
+              "max": 100,
+              "min": 0,
+              "observed": 20.0,
+              "supported": true
+            }
+          }
+        ],
+        "now": 1.25,
+        "pending_actions": [],
+        "revision": 3,
+        "type": "observe"
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "feature": "brightness",
+        "monitor_id": "m1",
+        "now": 1.5,
+        "type": "slider",
+        "value": 30.0
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": 1.52,
+        "value": {
+          "draft": 30.0,
+          "status": "pending"
+        }
+      }
+    },
+    {
+      "event": {
+        "monitors": [
+          {
+            "brightness": {
+              "max": 100,
+              "min": 0,
+              "observed": 41.0,
+              "supported": true
+            },
+            "display_state": "awake",
+            "generation": 2,
+            "id": "m1",
+            "identity_status": "stable",
+            "volume": {
+              "max": 100,
+              "min": 0,
+              "observed": 20.0,
+              "supported": true
+            }
+          }
+        ],
+        "now": 1.5,
+        "pending_actions": [],
+        "revision": 4,
+        "type": "observe"
+      },
+      "expect": {
+        "effects": [
+          {
+            "feature": "brightness",
+            "monitor_id": "m1",
+            "type": "draft_changed"
+          }
+        ],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "feature": "brightness",
+        "monitor_id": "m1",
+        "now": 1.5,
+        "type": "query_draft"
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": null,
+        "value": {
+          "draft": 41.0,
+          "has_draft": false,
+          "status": "ready"
+        }
+      }
+    }
+  ]
+}

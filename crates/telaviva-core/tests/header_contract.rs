@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::c_void;
-use telaviva_core::ffi::{self, TvBuffer, TvCameraLifecycle, TvCore, TvSnapshotReady};
+use telaviva_core::ffi::{self, TvBuffer, TvCameraLifecycle, TvControls, TvCore, TvSnapshotReady};
 
 const HEADER: &str = include_str!("../../../include/telaviva_core.h");
 const FFI_SOURCE: &str = include_str!("../src/ffi.rs");
@@ -47,6 +47,15 @@ fn exports() -> Vec<Export> {
     ) -> i32 = ffi::tv_camera_lifecycle_step;
     let camera_destroy: unsafe extern "C" fn(*mut TvCameraLifecycle) =
         ffi::tv_camera_lifecycle_destroy;
+    let controls_create: unsafe extern "C" fn(*mut *mut TvControls) -> i32 =
+        ffi::tv_controls_create;
+    let controls_step: unsafe extern "C" fn(
+        *mut TvControls,
+        *const u8,
+        usize,
+        *mut TvBuffer,
+    ) -> i32 = ffi::tv_controls_step;
+    let controls_destroy: unsafe extern "C" fn(*mut TvControls) = ffi::tv_controls_destroy;
     let core_version: unsafe extern "C" fn(*mut TvBuffer) -> i32 = ffi::tv_core_version;
     let update_evaluate: unsafe extern "C" fn(
         *const u8,
@@ -106,6 +115,21 @@ fn exports() -> Vec<Export> {
             name: "tv_camera_lifecycle_destroy",
             prototype: "void tv_camera_lifecycle_destroy(TvCameraLifecycle *)",
             address: camera_destroy as usize,
+        },
+        Export {
+            name: "tv_controls_create",
+            prototype: "int32_t tv_controls_create(TvControls **)",
+            address: controls_create as usize,
+        },
+        Export {
+            name: "tv_controls_step",
+            prototype: "int32_t tv_controls_step(TvControls *, const uint8_t *, size_t, TvBuffer *)",
+            address: controls_step as usize,
+        },
+        Export {
+            name: "tv_controls_destroy",
+            prototype: "void tv_controls_destroy(TvControls *)",
+            address: controls_destroy as usize,
         },
         Export {
             name: "tv_core_version",
@@ -537,7 +561,7 @@ fn header_constants_match_rust_status_codes() {
 #[test]
 fn header_declares_opaque_handles_as_incomplete_types() {
     let header = parse_header(HEADER);
-    for handle in ["TvCore", "TvCameraLifecycle"] {
+    for handle in ["TvCore", "TvCameraLifecycle", "TvControls"] {
         assert!(
             header.opaque.contains(handle),
             "include/telaviva_core.h must declare {handle} as an incomplete typedef"

@@ -1,0 +1,170 @@
+{
+  "description": "A brightness drag coalesces into one write, a second drag waits for the in-flight command, and the readback is observed.",
+  "name": "drag_slider",
+  "steps": [
+    {
+      "event": {
+        "monitors": [
+          {
+            "brightness": {
+              "max": 100,
+              "min": 0,
+              "observed": 41.0,
+              "supported": true
+            },
+            "display_state": "awake",
+            "generation": 1,
+            "id": "m1",
+            "identity_status": "stable",
+            "volume": {
+              "max": 100,
+              "min": 0,
+              "observed": 20.0,
+              "supported": true
+            }
+          }
+        ],
+        "now": 1.0,
+        "pending_actions": [],
+        "revision": 1,
+        "type": "observe"
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "feature": "brightness",
+        "monitor_id": "m1",
+        "now": 1.0,
+        "type": "slider",
+        "value": 20.0
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": 1.02,
+        "value": {
+          "draft": 20.0,
+          "status": "pending"
+        }
+      }
+    },
+    {
+      "event": {
+        "feature": "brightness",
+        "monitor_id": "m1",
+        "now": 1.0078125,
+        "type": "slider",
+        "value": 60.0
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": 1.02,
+        "value": {
+          "draft": 60.0,
+          "status": "pending"
+        }
+      }
+    },
+    {
+      "event": {
+        "feature": "brightness",
+        "monitor_id": "m1",
+        "now": 1.015625,
+        "type": "slider",
+        "value": 37.0
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": 1.02,
+        "value": {
+          "draft": 37.0,
+          "status": "pending"
+        }
+      }
+    },
+    {
+      "event": {
+        "now": 1.25,
+        "type": "tick"
+      },
+      "expect": {
+        "effects": [
+          {
+            "command_json": "{\"connection_generation\":1,\"monitor_id\":\"m1\",\"type\":\"set_brightness\",\"value\":37.0}",
+            "token": 1,
+            "type": "submit_command"
+          }
+        ],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "accepted": true,
+        "now": 1.25,
+        "token": 1,
+        "type": "submitted"
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "feature": "brightness",
+        "monitor_id": "m1",
+        "now": 1.5,
+        "type": "slider",
+        "value": 50.0
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": 1.52,
+        "value": {
+          "draft": 50.0,
+          "status": "pending"
+        }
+      }
+    },
+    {
+      "event": {
+        "monitors": [
+          {
+            "brightness": {
+              "max": 100,
+              "min": 0,
+              "observed": 37.0,
+              "supported": true
+            },
+            "display_state": "awake",
+            "generation": 1,
+            "id": "m1",
+            "identity_status": "stable",
+            "volume": {
+              "max": 100,
+              "min": 0,
+              "observed": 20.0,
+              "supported": true
+            }
+          }
+        ],
+        "now": 3.0,
+        "pending_actions": [],
+        "revision": 2,
+        "type": "observe"
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": 1.52,
+        "value": null
+      }
+    }
+  ]
+}

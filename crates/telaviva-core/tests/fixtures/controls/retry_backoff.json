@@ -1,0 +1,157 @@
+{
+  "description": "A pending read fails with io three times, waiting 0.2 s then 1.0 s between attempts, and the final failure is submitted.",
+  "name": "retry_backoff",
+  "steps": [
+    {
+      "event": {
+        "monitors": [
+          {
+            "brightness": {
+              "max": 100,
+              "min": 0,
+              "observed": 41.0,
+              "supported": true
+            },
+            "display_state": "awake",
+            "generation": 1,
+            "id": "m1",
+            "identity_status": "stable",
+            "volume": {
+              "max": 100,
+              "min": 0,
+              "observed": 20.0,
+              "supported": true
+            }
+          }
+        ],
+        "now": 1.0,
+        "pending_actions": [
+          {
+            "generation": 8,
+            "id": 17,
+            "kind": "read_brightness",
+            "monitor_id": "m1",
+            "value": null
+          }
+        ],
+        "revision": 1,
+        "type": "observe"
+      },
+      "expect": {
+        "effects": [
+          {
+            "code": 16,
+            "monitor_id": "m1",
+            "op": "read",
+            "token": 1,
+            "type": "run_attempt"
+          }
+        ],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "error": "io",
+        "now": 1.0,
+        "ok": false,
+        "token": 1,
+        "type": "attempt_done",
+        "value": null
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": 1.2,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "now": 1.25,
+        "type": "tick"
+      },
+      "expect": {
+        "effects": [
+          {
+            "code": 16,
+            "monitor_id": "m1",
+            "op": "read",
+            "token": 2,
+            "type": "run_attempt"
+          }
+        ],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "error": "io",
+        "now": 1.25,
+        "ok": false,
+        "token": 2,
+        "type": "attempt_done",
+        "value": null
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": 2.25,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "now": 2.5,
+        "type": "tick"
+      },
+      "expect": {
+        "effects": [
+          {
+            "code": 16,
+            "monitor_id": "m1",
+            "op": "read",
+            "token": 3,
+            "type": "run_attempt"
+          }
+        ],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "error": "io",
+        "now": 2.5,
+        "ok": false,
+        "token": 3,
+        "type": "attempt_done",
+        "value": null
+      },
+      "expect": {
+        "effects": [
+          {
+            "result_json": "{\"action_id\":17,\"error\":\"io\",\"generation\":8,\"ok\":false,\"type\":\"hardware_result\"}",
+            "token": 4,
+            "type": "submit_result"
+          }
+        ],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "accepted": true,
+        "now": 2.5,
+        "token": 4,
+        "type": "submitted"
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": null,
+        "value": null
+      }
+    }
+  ]
+}

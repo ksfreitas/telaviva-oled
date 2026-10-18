@@ -1,4 +1,7 @@
 use crate::camera_lifecycle::{CameraLifecycle, StepError, MAX_EVENT_BYTES};
+use crate::controls::{
+    Controls, StepError as ControlsStepError, MAX_EVENT_BYTES as CONTROLS_MAX_EVENT_BYTES,
+};
 use crate::update::{self, UpdateError};
 use crate::{Core, CoreOptions};
 use serde::Deserialize;
@@ -48,6 +51,14 @@ pub struct TvCameraLifecycle {
 
 const fn assert_send_sync<T: Send + Sync>() {}
 const _: () = assert_send_sync::<TvCameraLifecycle>();
+
+/// Opaque handle for the controls machine. Like `TvCameraLifecycle`, it is `Send` and `Sync`
+/// through its mutex alone, and the assertion below keeps that true.
+pub struct TvControls {
+    controls: Mutex<Controls>,
+}
+
+const _: () = assert_send_sync::<TvControls>();
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -351,6 +362,84 @@ pub unsafe extern "C" fn tv_camera_lifecycle_destroy(handle: *mut TvCameraLifecy
     let _ = catch_unwind(AssertUnwindSafe(|| {
         if !handle.is_null() {
             drop(Box::from_raw(handle));
+        }
+    }));
+}
+
+#[no_mangle]
+/// Creates an empty controls handle.
+///
+/// # Safety
+/// `out` must point to a writable handle pointer.
+pub unsafe extern "C" fn tv_controls_create(out: *mut *mut TvControls) -> i32 {
+    guarded(|| {
+        if out.is_null() {
+            return TV_INVALID_ARGUMENT;
+        }
+        *out = Box::into_raw(Box::new(TvControls {
+            controls: Mutex::new(Controls::new()),
+        }));
+        TV_OK
+    })
+}
+
+#[no_mangle]
+/// Applies one UTF-8 JSON event and copies the JSON result into a Rust-owned buffer.
+///
+/// A rejected event returns `TV_INVALID_ARGUMENT` (or `TV_SIZE_LIMIT` when it is longer than
+/// 64 KiB), leaves the controls unchanged and writes no buffer.
+///
+/// # Safety
+/// `controls` must be live; `json` must point to `len` readable bytes when non-null; `out` must
+/// point to a writable `TvBuffer`.
+pub unsafe extern "C" fn tv_controls_step(
+    controls: *mut TvControls,
+    json: *const u8,
+    len: usize,
+    out: *mut TvBuffer,
+) -> i32 {
+    guarded(|| {
+        if controls.is_null() || out.is_null() || (len > 0 && json.is_null()) {
+            return TV_INVALID_ARGUMENT;
+        }
+        if len > CONTROLS_MAX_EVENT_BYTES {
+            return TV_SIZE_LIMIT;
+        }
+        let h = &*controls;
+        let input = if len == 0 {
+            &[][..]
+        } else {
+            slice::from_raw_parts(json, len)
+        };
+        let result = {
+            let Ok(mut machine) = h.controls.lock() else {
+                return TV_INTERNAL;
+            };
+            machine.step(input)
+        };
+        let text = match result {
+            Ok(text) => text,
+            Err(ControlsStepError::InputTooLarge { .. }) => return TV_SIZE_LIMIT,
+            Err(_) => return TV_INVALID_ARGUMENT,
+        };
+        let bytes = text.into_bytes().into_boxed_slice();
+        let written = bytes.len();
+        let ptr = Box::into_raw(bytes) as *mut u8;
+        (*out).data = ptr;
+        (*out).len = written;
+        TV_OK
+    })
+}
+
+#[no_mangle]
+/// Destroys a controls handle. A null handle is ignored.
+///
+/// # Safety
+/// `controls` must be null or a live handle with no concurrent calls.
+pub unsafe extern "C" fn tv_controls_destroy(controls: *mut TvControls) {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        if !controls.is_null() {
+            drop(Box::from_raw(controls));
         }
     }));
 }

@@ -1,0 +1,248 @@
+{
+  "description": "An idle brightness key intent rebases to a readback that moved 30 points outside the settle window.",
+  "name": "external_change",
+  "steps": [
+    {
+      "event": {
+        "brightness_step": 5,
+        "keys_enabled": true,
+        "now": 1.0,
+        "type": "configure",
+        "volume_step": 5
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "monitors": [
+          {
+            "brightness": {
+              "max": 100,
+              "min": 0,
+              "observed": 41.0,
+              "supported": true
+            },
+            "display_state": "awake",
+            "generation": 1,
+            "id": "m1",
+            "identity_status": "stable",
+            "volume": {
+              "max": 100,
+              "min": 0,
+              "observed": 20.0,
+              "supported": true
+            }
+          }
+        ],
+        "now": 1.0,
+        "pending_actions": [],
+        "revision": 1,
+        "type": "observe"
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "fine": false,
+        "key": "brightness_up",
+        "now": 1.0,
+        "owner": {
+          "generation": 1,
+          "monitor_id": "m1"
+        },
+        "phase": "down",
+        "repeat": false,
+        "type": "key"
+      },
+      "expect": {
+        "effects": [
+          {
+            "feature": "brightness",
+            "monitor_id": "m1",
+            "type": "draft_changed"
+          }
+        ],
+        "next_deadline": 1.02,
+        "value": {
+          "consume": true
+        }
+      }
+    },
+    {
+      "event": {
+        "fine": false,
+        "key": "brightness_up",
+        "now": 1.0,
+        "owner": {
+          "generation": 1,
+          "monitor_id": "m1"
+        },
+        "phase": "up",
+        "repeat": false,
+        "type": "key"
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": 1.02,
+        "value": {
+          "consume": true
+        }
+      }
+    },
+    {
+      "event": {
+        "now": 1.25,
+        "type": "tick"
+      },
+      "expect": {
+        "effects": [
+          {
+            "command_json": "{\"connection_generation\":1,\"monitor_id\":\"m1\",\"type\":\"set_brightness\",\"value\":46.0}",
+            "token": 1,
+            "type": "submit_command"
+          }
+        ],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "accepted": true,
+        "now": 1.25,
+        "token": 1,
+        "type": "submitted"
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "monitors": [
+          {
+            "brightness": {
+              "max": 100,
+              "min": 0,
+              "observed": 71.0,
+              "supported": true
+            },
+            "display_state": "awake",
+            "generation": 1,
+            "id": "m1",
+            "identity_status": "stable",
+            "volume": {
+              "max": 100,
+              "min": 0,
+              "observed": 20.0,
+              "supported": true
+            }
+          }
+        ],
+        "now": 12.0,
+        "pending_actions": [],
+        "revision": 2,
+        "type": "observe"
+      },
+      "expect": {
+        "effects": [
+          {
+            "feature": "brightness",
+            "monitor_id": "m1",
+            "type": "draft_changed"
+          }
+        ],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "fine": false,
+        "key": "brightness_up",
+        "now": 12.0,
+        "owner": {
+          "generation": 1,
+          "monitor_id": "m1"
+        },
+        "phase": "down",
+        "repeat": false,
+        "type": "key"
+      },
+      "expect": {
+        "effects": [
+          {
+            "feature": "brightness",
+            "monitor_id": "m1",
+            "type": "draft_changed"
+          }
+        ],
+        "next_deadline": 12.02,
+        "value": {
+          "consume": true
+        }
+      }
+    },
+    {
+      "event": {
+        "fine": false,
+        "key": "brightness_up",
+        "now": 12.0,
+        "owner": {
+          "generation": 1,
+          "monitor_id": "m1"
+        },
+        "phase": "up",
+        "repeat": false,
+        "type": "key"
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": 12.02,
+        "value": {
+          "consume": true
+        }
+      }
+    },
+    {
+      "event": {
+        "now": 12.25,
+        "type": "tick"
+      },
+      "expect": {
+        "effects": [
+          {
+            "command_json": "{\"connection_generation\":1,\"monitor_id\":\"m1\",\"type\":\"set_brightness\",\"value\":76.0}",
+            "token": 2,
+            "type": "submit_command"
+          }
+        ],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "accepted": true,
+        "now": 12.25,
+        "token": 2,
+        "type": "submitted"
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": null,
+        "value": null
+      }
+    }
+  ]
+}

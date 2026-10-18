@@ -11,6 +11,7 @@ extern "C" {
 #define TV_CORE_ABI_VERSION 1u
 typedef struct TvCore TvCore;
 typedef struct TvCameraLifecycle TvCameraLifecycle;
+typedef struct TvControls TvControls;
 typedef struct TvBuffer { uint8_t *data; size_t len; } TvBuffer;
 typedef void (*TvSnapshotReady)(uint64_t revision, void *userdata);
 
@@ -57,6 +58,19 @@ int32_t tv_camera_lifecycle_step(TvCameraLifecycle *lifecycle, const uint8_t *js
                                  size_t json_len, TvBuffer *out_buffer);
 /* Destroys a lifecycle handle; NULL is ignored. */
 void tv_camera_lifecycle_destroy(TvCameraLifecycle *lifecycle);
+
+/* Controls machine, additive to ABI version 1. Events are UTF-8 JSON objects with a "type"
+ * member and the same status and buffer rules as the camera lifecycle. */
+/* Creates an empty controls machine. Returns TV_INVALID_ARGUMENT when out_controls is NULL. */
+int32_t tv_controls_create(TvControls **out_controls);
+/* Applies one UTF-8 JSON event (at most 64 KiB) and copies the JSON result into out_buffer.
+ * A longer input returns TV_SIZE_LIMIT. Malformed JSON or an invalid event returns
+ * TV_INVALID_ARGUMENT. Both failures leave the machine unchanged and write no buffer. A handle
+ * poisoned by an earlier panic returns TV_INTERNAL. Free a written buffer with tv_buffer_free. */
+int32_t tv_controls_step(TvControls *controls, const uint8_t *json, size_t json_len,
+                         TvBuffer *out_buffer);
+/* Destroys a controls handle; NULL is ignored. */
+void tv_controls_destroy(TvControls *controls);
 
 /* Core version and update evaluation, additive to ABI version 1. Both are pure: no network and
  * no state. Free every written buffer with tv_buffer_free. */

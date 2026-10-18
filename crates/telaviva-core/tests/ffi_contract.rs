@@ -3,7 +3,7 @@ use std::{
     ptr,
     sync::atomic::{AtomicU64, Ordering},
 };
-use telaviva_core::ffi::{self, TvBuffer, TvCore};
+use telaviva_core::ffi::{self, TvBuffer, TvControls, TvCore};
 
 static CALLBACK_REVISION: AtomicU64 = AtomicU64::new(0);
 extern "C" fn ready(revision: u64, _userdata: *mut c_void) {
@@ -227,6 +227,105 @@ fn ffi_rejects_invalid_inference_device_and_keeps_auto() {
         ffi::tv_buffer_free(&mut buffer);
         assert_eq!(snapshot["settings"]["inference_device"], "auto");
         ffi::tv_destroy(core);
+    }
+}
+
+#[test]
+fn ffi_controls_round_trips_configure_and_frees_buffer() {
+    unsafe {
+        let mut controls: *mut TvControls = ptr::null_mut();
+        assert_eq!(ffi::tv_controls_create(&mut controls), ffi::TV_OK);
+        let event = br#"{"type":"configure","now":1.0,"brightness_step":5,"volume_step":5,"keys_enabled":true}"#;
+        let mut buffer = TvBuffer {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        assert_eq!(
+            ffi::tv_controls_step(controls, event.as_ptr(), event.len(), &mut buffer),
+            ffi::TV_OK
+        );
+        let result: serde_json::Value =
+            serde_json::from_slice(std::slice::from_raw_parts(buffer.data, buffer.len)).unwrap();
+        ffi::tv_buffer_free(&mut buffer);
+        assert!(buffer.data.is_null());
+        assert_eq!(buffer.len, 0);
+        let object = result.as_object().expect("the result is a JSON object");
+        for key in ["value", "effects", "next_deadline"] {
+            assert!(object.contains_key(key), "missing key {key}");
+        }
+        ffi::tv_controls_destroy(controls);
+    }
+}
+
+#[test]
+fn ffi_controls_rejects_null_arguments() {
+    unsafe {
+        assert_eq!(
+            ffi::tv_controls_create(ptr::null_mut()),
+            ffi::TV_INVALID_ARGUMENT
+        );
+        let mut controls: *mut TvControls = ptr::null_mut();
+        assert_eq!(ffi::tv_controls_create(&mut controls), ffi::TV_OK);
+        let event = br#"{"type":"configure","now":1.0,"brightness_step":5,"volume_step":5,"keys_enabled":true}"#;
+        let mut buffer = TvBuffer {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        assert_eq!(
+            ffi::tv_controls_step(ptr::null_mut(), event.as_ptr(), event.len(), &mut buffer),
+            ffi::TV_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            ffi::tv_controls_step(controls, event.as_ptr(), event.len(), ptr::null_mut()),
+            ffi::TV_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            ffi::tv_controls_step(controls, ptr::null(), 1, &mut buffer),
+            ffi::TV_INVALID_ARGUMENT
+        );
+        assert!(buffer.data.is_null());
+        assert_eq!(buffer.len, 0);
+        ffi::tv_controls_destroy(controls);
+    }
+}
+
+#[test]
+fn ffi_controls_rejects_oversized_and_malformed_events_without_writing_out() {
+    unsafe {
+        let mut controls: *mut TvControls = ptr::null_mut();
+        assert_eq!(ffi::tv_controls_create(&mut controls), ffi::TV_OK);
+        let oversized = vec![b' '; 64 * 1024 + 1];
+        let mut buffer = TvBuffer {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        assert_eq!(
+            ffi::tv_controls_step(controls, oversized.as_ptr(), oversized.len(), &mut buffer),
+            ffi::TV_SIZE_LIMIT
+        );
+        assert!(buffer.data.is_null());
+        assert_eq!(buffer.len, 0);
+
+        // A sentinel proves that a failed step does not write to the out buffer.
+        let mut sentinel = TvBuffer {
+            data: 1usize as *mut u8,
+            len: 42,
+        };
+        let malformed = b"{";
+        assert_eq!(
+            ffi::tv_controls_step(controls, malformed.as_ptr(), malformed.len(), &mut sentinel),
+            ffi::TV_INVALID_ARGUMENT
+        );
+        assert_eq!(sentinel.data, 1usize as *mut u8);
+        assert_eq!(sentinel.len, 42);
+        ffi::tv_controls_destroy(controls);
+    }
+}
+
+#[test]
+fn ffi_controls_destroy_ignores_null() {
+    unsafe {
+        ffi::tv_controls_destroy(ptr::null_mut());
     }
 }
 

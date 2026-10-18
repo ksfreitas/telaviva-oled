@@ -1,0 +1,235 @@
+{
+  "description": "Sleep drops a pending draft and nothing replays on wake. A pending write waits for display power on and a 2.0 s grace before it runs.",
+  "name": "sleep_and_wake",
+  "steps": [
+    {
+      "event": {
+        "monitors": [
+          {
+            "brightness": {
+              "max": 100,
+              "min": 0,
+              "observed": 41.0,
+              "supported": true
+            },
+            "display_state": "awake",
+            "generation": 1,
+            "id": "m1",
+            "identity_status": "stable",
+            "volume": {
+              "max": 100,
+              "min": 0,
+              "observed": 20.0,
+              "supported": true
+            }
+          }
+        ],
+        "now": 1.0,
+        "pending_actions": [],
+        "revision": 1,
+        "type": "observe"
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "feature": "brightness",
+        "monitor_id": "m1",
+        "now": 1.0,
+        "type": "slider",
+        "value": 30.0
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": 1.02,
+        "value": {
+          "draft": 30.0,
+          "status": "pending"
+        }
+      }
+    },
+    {
+      "event": {
+        "monitors": [
+          {
+            "brightness": {
+              "max": 100,
+              "min": 0,
+              "observed": 41.0,
+              "supported": true
+            },
+            "display_state": "asleep",
+            "generation": 1,
+            "id": "m1",
+            "identity_status": "stable",
+            "volume": {
+              "max": 100,
+              "min": 0,
+              "observed": 20.0,
+              "supported": true
+            }
+          }
+        ],
+        "now": 1.5,
+        "pending_actions": [],
+        "revision": 2,
+        "type": "observe"
+      },
+      "expect": {
+        "effects": [
+          {
+            "feature": "brightness",
+            "monitor_id": "m1",
+            "type": "draft_changed"
+          }
+        ],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "monitors": [
+          {
+            "brightness": {
+              "max": 100,
+              "min": 0,
+              "observed": 41.0,
+              "supported": true
+            },
+            "display_state": "awake",
+            "generation": 1,
+            "id": "m1",
+            "identity_status": "stable",
+            "volume": {
+              "max": 100,
+              "min": 0,
+              "observed": 20.0,
+              "supported": true
+            }
+          }
+        ],
+        "now": 2.0,
+        "pending_actions": [],
+        "revision": 3,
+        "type": "observe"
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "now": 2.25,
+        "type": "tick"
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "now": 3.0,
+        "on": false,
+        "type": "display_power"
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "monitors": [
+          {
+            "brightness": {
+              "max": 100,
+              "min": 0,
+              "observed": 41.0,
+              "supported": true
+            },
+            "display_state": "awake",
+            "generation": 1,
+            "id": "m1",
+            "identity_status": "stable",
+            "volume": {
+              "max": 100,
+              "min": 0,
+              "observed": 20.0,
+              "supported": true
+            }
+          }
+        ],
+        "now": 3.0,
+        "pending_actions": [
+          {
+            "generation": 8,
+            "id": 17,
+            "kind": "set_brightness",
+            "monitor_id": "m1",
+            "value": 60.0
+          }
+        ],
+        "revision": 4,
+        "type": "observe"
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "now": 10.0,
+        "on": true,
+        "type": "display_power"
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": 12.0,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "now": 11.999,
+        "type": "tick"
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": 12.0,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "now": 12.0,
+        "type": "tick"
+      },
+      "expect": {
+        "effects": [
+          {
+            "code": 16,
+            "monitor_id": "m1",
+            "op": "write",
+            "token": 1,
+            "type": "run_attempt",
+            "value": 60.0
+          }
+        ],
+        "next_deadline": null,
+        "value": null
+      }
+    }
+  ]
+}

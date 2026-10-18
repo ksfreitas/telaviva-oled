@@ -1580,7 +1580,7 @@ fn curve_percent(curve: &AmbientCurve, level: f64) -> Option<f64> {
     }
     Some(y0 + (x - x0) * (y1 - y0) / (x1 - x0))
 }
-fn map_normalized(v: f64, min: f64, max: f64) -> f64 {
+pub(crate) fn map_normalized(v: f64, min: f64, max: f64) -> f64 {
     min + (v / 100.0) * (max - min)
 }
 // Inverse of map_normalized: a raw device value as a percentage of its range.

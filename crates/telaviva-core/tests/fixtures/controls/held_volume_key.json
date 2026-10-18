@@ -1,0 +1,186 @@
+{
+  "description": "A held volume_up key steps the pending target on each repeat and writes once at the tick.",
+  "name": "held_volume_key",
+  "steps": [
+    {
+      "event": {
+        "brightness_step": 5,
+        "keys_enabled": true,
+        "now": 1.0,
+        "type": "configure",
+        "volume_owner": "m1",
+        "volume_step": 5
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "monitors": [
+          {
+            "brightness": {
+              "max": 100,
+              "min": 0,
+              "observed": 41.0,
+              "supported": true
+            },
+            "display_state": "awake",
+            "generation": 1,
+            "id": "m1",
+            "identity_status": "stable",
+            "volume": {
+              "max": 100,
+              "min": 0,
+              "observed": 20.0,
+              "supported": true
+            }
+          }
+        ],
+        "now": 1.0,
+        "pending_actions": [],
+        "revision": 1,
+        "type": "observe"
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "fine": false,
+        "key": "volume_up",
+        "now": 1.0,
+        "owner": {
+          "generation": 1,
+          "monitor_id": "m1"
+        },
+        "phase": "down",
+        "repeat": false,
+        "type": "key"
+      },
+      "expect": {
+        "effects": [
+          {
+            "feature": "volume",
+            "monitor_id": "m1",
+            "type": "draft_changed"
+          }
+        ],
+        "next_deadline": 1.02,
+        "value": {
+          "consume": true
+        }
+      }
+    },
+    {
+      "event": {
+        "fine": false,
+        "key": "volume_up",
+        "now": 1.0078125,
+        "owner": {
+          "generation": 1,
+          "monitor_id": "m1"
+        },
+        "phase": "down",
+        "repeat": true,
+        "type": "key"
+      },
+      "expect": {
+        "effects": [
+          {
+            "feature": "volume",
+            "monitor_id": "m1",
+            "type": "draft_changed"
+          }
+        ],
+        "next_deadline": 1.02,
+        "value": {
+          "consume": true
+        }
+      }
+    },
+    {
+      "event": {
+        "fine": false,
+        "key": "volume_up",
+        "now": 1.015625,
+        "owner": {
+          "generation": 1,
+          "monitor_id": "m1"
+        },
+        "phase": "down",
+        "repeat": true,
+        "type": "key"
+      },
+      "expect": {
+        "effects": [
+          {
+            "feature": "volume",
+            "monitor_id": "m1",
+            "type": "draft_changed"
+          }
+        ],
+        "next_deadline": 1.02,
+        "value": {
+          "consume": true
+        }
+      }
+    },
+    {
+      "event": {
+        "fine": false,
+        "key": "volume_up",
+        "now": 1.25,
+        "owner": {
+          "generation": 1,
+          "monitor_id": "m1"
+        },
+        "phase": "up",
+        "repeat": false,
+        "type": "key"
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": 1.02,
+        "value": {
+          "consume": true
+        }
+      }
+    },
+    {
+      "event": {
+        "now": 1.25,
+        "type": "tick"
+      },
+      "expect": {
+        "effects": [
+          {
+            "command_json": "{\"connection_generation\":1,\"monitor_id\":\"m1\",\"type\":\"set_volume\",\"value\":35.0}",
+            "token": 1,
+            "type": "submit_command"
+          }
+        ],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "accepted": true,
+        "now": 1.25,
+        "token": 1,
+        "type": "submitted"
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": null,
+        "value": null
+      }
+    }
+  ]
+}

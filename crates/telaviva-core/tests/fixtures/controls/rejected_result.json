@@ -1,0 +1,223 @@
+{
+  "description": "A pending write runs, then its read. The result submission is rejected four times: three resubmissions after 0.2 s, 1.0 s and 1.0 s, and the write is never repeated.",
+  "name": "rejected_result",
+  "steps": [
+    {
+      "event": {
+        "monitors": [
+          {
+            "brightness": {
+              "max": 100,
+              "min": 0,
+              "observed": 41.0,
+              "supported": true
+            },
+            "display_state": "awake",
+            "generation": 1,
+            "id": "m1",
+            "identity_status": "stable",
+            "volume": {
+              "max": 100,
+              "min": 0,
+              "observed": 20.0,
+              "supported": true
+            }
+          }
+        ],
+        "now": 1.0,
+        "pending_actions": [
+          {
+            "generation": 8,
+            "id": 17,
+            "kind": "set_brightness",
+            "monitor_id": "m1",
+            "value": 60.0
+          }
+        ],
+        "revision": 1,
+        "type": "observe"
+      },
+      "expect": {
+        "effects": [
+          {
+            "code": 16,
+            "monitor_id": "m1",
+            "op": "write",
+            "token": 1,
+            "type": "run_attempt",
+            "value": 60.0
+          }
+        ],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "now": 1.0,
+        "ok": true,
+        "token": 1,
+        "type": "attempt_done",
+        "value": 60.0
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": 1.06,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "now": 1.25,
+        "type": "tick"
+      },
+      "expect": {
+        "effects": [
+          {
+            "code": 16,
+            "monitor_id": "m1",
+            "op": "read",
+            "token": 2,
+            "type": "run_attempt"
+          }
+        ],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "now": 1.25,
+        "ok": true,
+        "token": 2,
+        "type": "attempt_done",
+        "value": 60.0
+      },
+      "expect": {
+        "effects": [
+          {
+            "result_json": "{\"action_id\":17,\"generation\":8,\"ok\":true,\"type\":\"hardware_result\",\"value\":60.0}",
+            "token": 3,
+            "type": "submit_result"
+          }
+        ],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "accepted": false,
+        "now": 1.25,
+        "token": 3,
+        "type": "submitted"
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": 1.45,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "now": 1.5,
+        "type": "tick"
+      },
+      "expect": {
+        "effects": [
+          {
+            "result_json": "{\"action_id\":17,\"generation\":8,\"ok\":true,\"type\":\"hardware_result\",\"value\":60.0}",
+            "token": 4,
+            "type": "submit_result"
+          }
+        ],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "accepted": false,
+        "now": 1.5,
+        "token": 4,
+        "type": "submitted"
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": 2.5,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "now": 2.5,
+        "type": "tick"
+      },
+      "expect": {
+        "effects": [
+          {
+            "result_json": "{\"action_id\":17,\"generation\":8,\"ok\":true,\"type\":\"hardware_result\",\"value\":60.0}",
+            "token": 5,
+            "type": "submit_result"
+          }
+        ],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "accepted": false,
+        "now": 2.5,
+        "token": 5,
+        "type": "submitted"
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": 3.5,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "now": 3.5,
+        "type": "tick"
+      },
+      "expect": {
+        "effects": [
+          {
+            "result_json": "{\"action_id\":17,\"generation\":8,\"ok\":true,\"type\":\"hardware_result\",\"value\":60.0}",
+            "token": 6,
+            "type": "submit_result"
+          }
+        ],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "accepted": false,
+        "now": 3.5,
+        "token": 6,
+        "type": "submitted"
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": null,
+        "value": null
+      }
+    },
+    {
+      "event": {
+        "now": 4.0,
+        "type": "tick"
+      },
+      "expect": {
+        "effects": [],
+        "next_deadline": null,
+        "value": null
+      }
+    }
+  ]
+}
