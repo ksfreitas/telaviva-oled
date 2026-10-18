@@ -109,18 +109,6 @@
   <data name="flyout.button.quit" xml:space="preserve">
     <value>Sair</value>
   </data>
-  <data name="flyout.presence.detected" xml:space="preserve">
-    <value>Rosto detectado</value>
-  </data>
-  <data name="flyout.presence.absent" xml:space="preserve">
-    <value>Nenhum rosto detectado</value>
-  </data>
-  <data name="flyout.presence.lowlight" xml:space="preserve">
-    <value>Pouca luz</value>
-  </data>
-  <data name="flyout.presence.off" xml:space="preserve">
-    <value>A proteção por presença está desligada</value>
-  </data>
   <data name="app" xml:space="preserve">
     <value>TelaViva OLED</value>
   </data>

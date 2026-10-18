@@ -220,14 +220,6 @@ namespace winrt::TelaViva::implementation
 
     void PopupWindow::UpdateState(const telaviva::host::FlyoutState& state)
     {
-        // The presence row hides entirely when there is no text, and while the core is down.
-        const bool hasPresence = state.coreAvailable && !state.presenceText.empty();
-        PresenceRow().Visibility(hasPresence ? Microsoft::UI::Xaml::Visibility::Visible : Microsoft::UI::Xaml::Visibility::Collapsed);
-        if (hasPresence) {
-            PresenceText().Text(winrt::hstring{ state.presenceText });
-        }
-        PresenceGlyph().Opacity(state.presence == telaviva::host::PresenceIcon::Off ? 0.5 : 1.0);
-
         // The footer camera line is always shown; the warning above the cards only while the core is up.
         CameraStatusText().Text(winrt::hstring{ state.cameraText });
         const bool showNotice = state.coreAvailable && state.cameraNotice.visible;
@@ -304,9 +296,7 @@ namespace winrt::TelaViva::implementation
         flag(CardsScroll().Visibility() == Microsoft::UI::Xaml::Visibility::Visible);
         flag(EmptyPanel().Visibility() == Microsoft::UI::Xaml::Visibility::Visible);
         flag(NoticePanel().Visibility() == Microsoft::UI::Xaml::Visibility::Visible);
-        flag(PresenceRow().Visibility() == Microsoft::UI::Xaml::Visibility::Visible);
         flag(CameraInfoBar().IsOpen());
-        layoutKey.push_back(hash(state.presenceText));
         layoutKey.push_back(hash(state.cameraText));
         layoutKey.push_back(hash(state.cameraNotice.text));
         for (const auto& entry : ordered) {

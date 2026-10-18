@@ -220,6 +220,11 @@ TEST(strings_dropped_keys_absent)
         "hardwareKeys.status.permissionRequired",
         "hardwareKeys.status.permissionRevoked",
         "presenceUnavailable",
+        // Windows popup presence line, removed with the flyout presence row.
+        "flyout.presence.detected",
+        "flyout.presence.absent",
+        "flyout.presence.lowlight",
+        "flyout.presence.off",
     };
     std::string offenders;
     for (const char* locale : {"en-US", "pt-BR"}) {

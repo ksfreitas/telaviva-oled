@@ -486,7 +486,7 @@ namespace winrt::TelaViva::implementation
         });
         RowsPanel().Children().Append(telaviva::host::MakeSettingRow(loc("camera"), winrt::hstring{}, cameraBox_));
 
-        // Same camera glyph as the flyout footer (U+E722), escaped so the source stays ASCII.
+        // Camera glyph (U+E722), escaped so the source stays ASCII.
         // Decorative: the status text beside it already says what the line is.
         xc::FontIcon cameraGlyph;
         cameraGlyph.Glyph(L"\xE722");

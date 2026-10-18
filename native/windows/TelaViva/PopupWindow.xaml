@@ -55,12 +55,6 @@
         </Grid>
 
         <StackPanel x:Name="FooterPanel" Grid.Row="3" Spacing="6" Padding="4,8,4,0">
-            <Grid x:Name="PresenceRow" ColumnDefinitions="Auto,*" ColumnSpacing="8" Visibility="Collapsed">
-                <FontIcon x:Name="PresenceGlyph" Grid.Column="0" Glyph="&#xE722;"
-                          FontFamily="Segoe Fluent Icons" VerticalAlignment="Center" />
-                <TextBlock x:Name="PresenceText" Grid.Column="1" VerticalAlignment="Center"
-                           TextWrapping="Wrap" />
-            </Grid>
             <!-- One row: the camera line is cut with an ellipsis rather than wrapped. -->
             <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
                 <TextBlock x:Name="CameraStatusText" Grid.Column="0" VerticalAlignment="Center"

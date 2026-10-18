@@ -46,7 +46,6 @@ struct CameraNotice {
 struct FlyoutState {
     std::vector<MonitorCardState> monitors;
     PresenceIcon presence = PresenceIcon::Off;
-    std::wstring presenceText;  // empty hides the presence row
     // Footer line, "Camera: <status>".
     std::wstring cameraText;
     CameraNotice cameraNotice;
