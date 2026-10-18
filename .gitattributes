@@ -1,0 +1,14 @@
+# Files whose bytes are read, hashed or embedded as-is must never be converted.
+*.ppm binary
+*.onnx binary
+*.bgra binary
+*.png binary
+*.ico binary
+*.icns binary
+*.car binary
+*.zip binary
+*.dll binary
+*.lib binary
+
+# Shell scripts must keep LF so they run on macOS and in CI shells after a Windows checkout.
+*.sh text eol=lf
