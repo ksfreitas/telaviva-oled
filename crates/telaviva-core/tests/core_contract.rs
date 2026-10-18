@@ -4492,3 +4492,123 @@ fn follow_null_builtin_brightness_emits_no_write() {
     assert_eq!(s["ambient"]["builtin_percent"], Value::Null);
     assert!(s["pending_actions"].as_array().unwrap().is_empty());
 }
+
+#[test]
+fn first_miss_shortens_the_wait_for_the_confirming_check() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    discover_monitor(&mut core, "screen", json!(70));
+    let s = enable_presence(&mut core);
+    assert_eq!(s["camera"]["mode"], "face");
+    // The first sample after enabling is a short resume sample; a present result moves to the presence interval.
+    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(1000.0));
+    let s = presence_sample(&mut core, "present", 10_000);
+    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(10000.0));
+    // First miss: the next check is the short return interval, and nothing dims yet.
+    let s = presence_sample(&mut core, "absent", 20_000);
+    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(1000.0));
+    assert!(s["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|a| a["kind"] != "set_brightness"));
+    assert_eq!(s["monitors"][0]["presence_dimmed"], false);
+    // Confirming miss: the monitor dims and the short interval continues.
+    let s = presence_sample(&mut core, "absent", 30_000);
+    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(1000.0));
+    assert_eq!(s["monitors"][0]["presence_dimmed"], true);
+    let dim = pending_action(&s, "set_brightness");
+    assert_eq!(dim["value"].as_f64(), Some(0.0));
+}
+
+#[test]
+fn present_after_the_first_miss_restores_the_presence_interval() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    discover_monitor(&mut core, "screen", json!(70));
+    enable_presence(&mut core);
+    let s = presence_sample(&mut core, "absent", 10_000);
+    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(1000.0));
+    // Presence clears the miss count and returns to the presence interval.
+    let s = presence_sample(&mut core, "present", 20_000);
+    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(10000.0));
+    // A single new miss is not a confirmed absence, so nothing dims.
+    let s = presence_sample(&mut core, "absent", 30_000);
+    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(1000.0));
+    assert_eq!(s["monitors"][0]["presence_dimmed"], false);
+    assert!(s["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|a| a["kind"] != "set_brightness"));
+}
+
+#[test]
+fn confirmation_cadence_follows_the_return_interval_not_the_presence_interval() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    discover_monitor(&mut core, "screen", json!(70));
+    enable_presence(&mut core);
+    send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"presence_sampling_interval_s":60,"return_sampling_interval_s":2}}),
+    );
+    // A present sample ends the resume state, so the configured presence interval applies.
+    let s = presence_sample(&mut core, "present", 10_000);
+    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(60000.0));
+    let s = presence_sample(&mut core, "absent", 20_000);
+    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(2000.0));
+}
+
+#[test]
+fn unprotected_monitor_misses_do_not_speed_up_sampling() {
+    // Monitor "a" is protected; monitor "b" is excluded with protection_disabled.
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    discover_monitor(&mut core, "a", json!(70));
+    discover_monitor(&mut core, "b", json!(70));
+    enable_presence(&mut core);
+    send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"protection_disabled":["b"]}}),
+    );
+    // The short cadence comes from the protected monitor "a" only.
+    let s = presence_sample(&mut core, "absent", 10_000);
+    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(1000.0));
+    // Only the unprotected monitor "b" is left: the camera is suspended, so there is no
+    // sampling cadence and misses cannot speed it up.
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    discover_monitor(&mut core, "b", json!(70));
+    enable_presence(&mut core);
+    send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"protection_disabled":["b"]}}),
+    );
+    let s = presence_sample(&mut core, "absent", 10_000);
+    assert_eq!(s["camera"]["mode"], "suspended");
+    assert_eq!(s["camera"]["next_sample_in_ms"], Value::Null);
+}
+
+#[test]
+fn insufficient_light_on_the_confirming_sample_clears_the_first_miss() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    discover_monitor(&mut core, "screen", json!(70));
+    enable_presence(&mut core);
+    let s = presence_sample(&mut core, "absent", 10_000);
+    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(1000.0));
+    // Low light clears the miss count and switches to light-only sampling.
+    let s = presence_sample(&mut core, "insufficient_light", 20_000);
+    assert_eq!(s["camera"]["mode"], "light_only");
+    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(10000.0));
+    // Two usable-light samples switch back to face mode.
+    let s = presence_sample(&mut core, "usable_light", 30_000);
+    assert_eq!(s["camera"]["mode"], "light_only");
+    let s = presence_sample(&mut core, "usable_light", 40_000);
+    assert_eq!(s["camera"]["mode"], "face");
+    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(10000.0));
+    // The earlier miss was cleared, so one new absent does not dim the monitor.
+    let s = presence_sample(&mut core, "absent", 50_000);
+    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(1000.0));
+    assert_eq!(s["monitors"][0]["presence_dimmed"], false);
+    assert!(s["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|a| a["kind"] != "set_brightness"));
+}

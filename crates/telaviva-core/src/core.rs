@@ -836,6 +836,15 @@ impl Core {
             && !self.monitor_below_threshold(m)
     }
 
+    // One no-face check is on record and the confirming check is still due. A monitor that does
+    // not drive the camera (unprotected, asleep, ineligible, below the threshold) is excluded, so
+    // its miss count never speeds up the sampling.
+    fn absence_confirmation_pending(&self) -> bool {
+        self.monitors
+            .values()
+            .any(|m| m.misses == 1 && !m.presence_dimmed && self.monitor_is_camera_active(m))
+    }
+
     // Runs after each accepted command. Entering the below-threshold set resets that monitor's
     // miss count; a still-connected monitor leaving it starts a clean camera resume.
     fn sync_brightness_gate(&mut self) {
@@ -1320,7 +1329,10 @@ impl Core {
         let camera_mode = self.camera_mode();
         let cadence = if camera_mode == "face" && self.resume_pending {
             RESUME_FIRST_SAMPLE_MS
-        } else if camera_mode == "face" && self.monitors.values().any(|m| m.presence_dimmed) {
+        } else if camera_mode == "face"
+            && (self.monitors.values().any(|m| m.presence_dimmed)
+                || self.absence_confirmation_pending())
+        {
             self.settings.return_sampling_interval_s * 1000.0
         } else if camera_mode == "face" {
             self.settings.presence_sampling_interval_s * 1000.0

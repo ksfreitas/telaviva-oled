@@ -49,6 +49,7 @@ Presence protection is off until you enable it, and enabling it requests camera 
 
 - Two valid no-face checks dim the monitor, and a returning face clears the presence reason and restores the brightness.
 - Checks run at the sampling interval. While a monitor is dimmed, return checks run faster.
+- After the first no-face check, the confirming check runs after the short return interval (1 second by default, range 0.25 to 5 seconds) instead of a full sampling interval, so the monitor dims about one sampling interval plus about a second after you leave. A present, insufficient-light or unavailable result clears that first miss.
 - The camera stays open during return checks, while inference still follows the configured interval.
 
 ### Camera use

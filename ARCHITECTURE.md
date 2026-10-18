@@ -60,7 +60,7 @@ The user selects an external monitor and adjusts its brightness or volume. The a
 3. Distinguish absent, insufficient-light, and camera-error observations; suspend face inference for insufficient light rather than count it as absence.
 4. While presence-dimmed, check for return at a configurable 1-second default interval. On return, restore the previous brightness subject to any other active protection condition.
 
-Two valid missed checks confirm absence. Camera errors and insufficient illumination do not count as valid no-face observations. Detailed recovery latency, camera errors, and permission handling remain technical design and validation matters.
+Two valid missed checks confirm absence. The confirming check is taken after the short return interval, so dimming takes about one sampling interval plus about a second. Camera errors and insufficient illumination do not count as valid no-face observations. Detailed recovery latency, camera errors, and permission handling remain technical design and validation matters.
 
 ### Screensaver protection
 
@@ -265,6 +265,7 @@ Status: the Windows code is in the repository and covered by automated tests. Wi
 - [ADR-0027](adr/0027-selectable-inference-device-and-igpu-offload.md): Selectable inference device and iGPU offload (Accepted)
 - [ADR-0028](adr/0028-align-windows-toggles-right.md): Windows Settings toggles right-aligned by resetting the ToggleSwitch `MinWidth` in the shared row builder (Accepted)
 - [ADR-0029](adr/0029-core-owned-manual-control-queue-and-ddc-dispatch.md): Core-owned manual-control queue, key policy and DDC dispatch behind a clock-injected handle (Accepted for the core and Windows; macOS adapter pending)
+- [ADR-0030](adr/0030-short-confirmation-wait-after-first-no-face-check.md): Short confirmation wait after the first no-face check, so dimming takes about one sampling interval plus about a second (Accepted)
 
 ## About screen and update check — 2026-10-17
 
@@ -314,3 +315,9 @@ The handle takes one JSON event and returns one JSON result, and every event car
 On Windows, `ControlsDriver` in `native/windows/Platform` drives the handle and `DdcController` runs one primitive per effect. The core's dispatcher keeps one DDC primitive executing at a time across all monitors. The earlier `ManualControls`, `KeyIntentRouter` and `VolumeActionTracker` are no longer used by `AppController`; their files and their tests are removed, and the ported cases live in the Rust contract and unit tests. `DdcTransaction` and `DdcTimingProfile` remain for discovery and the `--probe-ddc` diagnostic. Two Windows behaviors change: DDC writes are now retried (three attempts), and a rejected result submission is resubmitted at most three times instead of re-running the write on every snapshot. `observe` carries each monitor's normalized percentage. Windows native tests pass (614 tests, 0 failed, 2026-10-18); hardware verification is pending, and no Windows hardware support is claimed here.
 
 The macOS shell has not moved to the handle. It still runs its own Swift queue (`ManualMonitorControls`, `HardwareKeyRouter`, and the DDC retry in `DDCTransaction`). The owner decided on 2026-10-18 that the macOS adapter will be implemented by the owner on a Mac, so macOS keeps its own queue until then. The decision is recorded in [ADR 0029](adr/0029-core-owned-manual-control-queue-and-ddc-dispatch.md), which amends ADR 0001 and supersedes the router decisions of ADR 0021 for Windows.
+
+## oled-protection-absence-confirmation-latency — 2026-10-18
+
+[ADR 0030](adr/0030-short-confirmation-wait-after-first-no-face-check.md) changes when the confirming no-face check is taken, not how many are needed. Absence is still confirmed by two valid no-face checks, but after the first one the core reports the short return interval (`return_sampling_interval_s`, 1 second by default) as `camera.next_sample_in_ms`, so the monitor dims about one sampling interval plus about a second after the face leaves instead of about two intervals.
+
+The change lives only in `crates/telaviva-core/src/core.rs` (`absence_confirmation_pending` and the face-mode cadence arm of `snapshot_value`) and is shared by both shells, which already schedule from `next_sample_in_ms`. It adds no setting and no ABI or snapshot-schema change. The low-light handling is unchanged: a dark confirming frame still keeps the camera on for 5 seconds and assesses one frame at the end. Hardware verification of the timing is pending.
