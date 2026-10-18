@@ -1,27 +1,31 @@
 #include "TestHarness.h"
 
 #include "Fakes.h"
-#include "Platform/AccelerationProfiles.h"
 #include "Platform/AdapterCatalog.h"
+#include "Platform/DeviceSelection.h"
 #include "Platform/FrameAnalyzer.h"
 #include "Platform/ICameraBackend.h"
 #include "Platform/InferenceFailureStore.h"
 #include "Platform/InferenceHost.h"
+#include "Platform/ProviderSelection.h"
 #include "Platform/Scheduler.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <utility>
 #include <vector>
 
 using telaviva::AccelerationOptions;
-using telaviva::AccelerationProfile;
 using telaviva::AdapterInfo;
+using telaviva::AdapterKind;
 using telaviva::AnalysisStatus;
 using telaviva::CameraFrame;
+using telaviva::DeviceState;
+using telaviva::FailureKey;
 using telaviva::FailureReason;
 using telaviva::FakeClock;
 using telaviva::FakeScheduler;
@@ -29,6 +33,11 @@ using telaviva::IAdapterCatalog;
 using telaviva::IDetectorApi;
 using telaviva::InferenceFailureStore;
 using telaviva::InferenceHost;
+using telaviva::InferenceReport;
+using telaviva::SelfTestSample;
+using telaviva::adapterDeviceId;
+using telaviva::judgeSelfTest;
+using telaviva::kMaxAcceleratedLatencySeconds;
 
 namespace {
 
@@ -36,11 +45,15 @@ namespace {
 constexpr int kDirectMl = 2;
 constexpr int kCpu = 0;
 
-const wchar_t* const kCpuRuntime = L"C:\\TelaViva\\onnxruntime.dll";
-const wchar_t* const kDirectMlRuntime = L"C:\\TelaViva\\directml\\onnxruntime.dll";
+// One runtime path for the whole host: CPU, accelerated and self-test reference sessions alike.
+const wchar_t* const kRuntime = L"C:\\TelaViva\\onnxruntime.dll";
 const wchar_t* const kModelPath = L"C:\\TelaViva\\face_detection_yunet_2023mar.onnx";
 const char* const kApp = "0.1.0";
 const char* const kDriver = "32.0.21041.1000";
+const char* const kNvidiaDriver = "552.12.0.0";
+// Ids as buildDeviceOptions makes them: the integrated AMD adapter and the discrete NVIDIA adapter, both ordinal 0.
+const char* const kIntegratedId = "gpu:1002:164e:0";
+const char* const kDiscreteId = "gpu:10de:2684:0";
 
 // Scripted seam. A session is accelerated when its selected provider is DirectML,
 // so a DirectML create that registers nothing yields a CPU session, as the ABI does.
@@ -48,18 +61,16 @@ class ScriptedDetectorApi final : public IDetectorApi {
 public:
     explicit ScriptedDetectorApi(FakeClock& clock) : clock_(clock) {}
 
-    // Accelerator script.
-    bool directMlCreateFails = false;
+    // Accelerator script. Create results are scripted per provider and DXGI index.
+    bool directMlCreateFails = false;     // every DirectML create returns nullptr
+    int directMlFailingIndex = -1;        // the DirectML create for this index returns nullptr; -1 never
     int selectedForDirectMl = kDirectMl;  // 0 models a registration failure
     int directMlStatus = 1;
     double directMlSeconds = 0.005;
     int directMlErrorOnCall = 0;  // 1-based accelerated detect call that returns -2; 0 never
-    int runtimeHasDirectMl = 1;
 
     // CPU script.
     int cpuStatus = 1;
-    // 1-based CPU detect call from which every call returns -2; 0 never. The self-test reference is call 1.
-    int cpuErrorFromCall = 0;
     double cpuSeconds = 0.010;
 
     std::vector<int> createProviders;
@@ -67,7 +78,6 @@ public:
     std::vector<uint32_t> createDeviceIndices;  // parallel to createProviders
     int directMlDetects = 0;
     int cpuDetects = 0;
-    int directMlQueries = 0;
     int destroys = 0;
 
     void* create(const std::wstring& runtimePath, const std::wstring&, int provider, uint32_t deviceIndex) override
@@ -75,7 +85,8 @@ public:
         createProviders.push_back(provider);
         createRuntimes.push_back(runtimePath);
         createDeviceIndices.push_back(deviceIndex);
-        if (provider == kDirectMl && directMlCreateFails) {
+        const bool indexFails = directMlFailingIndex >= 0 && deviceIndex == static_cast<uint32_t>(directMlFailingIndex);
+        if (provider == kDirectMl && (directMlCreateFails || indexFails)) {
             return nullptr;
         }
         providers_.push_back(provider == kDirectMl ? selectedForDirectMl : kCpu);
@@ -94,9 +105,6 @@ public:
         }
         ++cpuDetects;
         clock_.advance(cpuSeconds);
-        if (cpuErrorFromCall != 0 && cpuDetects >= cpuErrorFromCall) {
-            return -2;
-        }
         return cpuStatus;
     }
 
@@ -104,11 +112,7 @@ public:
 
     int selectedProvider(void* handle) override { return providerOf(handle); }
 
-    int directmlAvailable() override
-    {
-        ++directMlQueries;
-        return runtimeHasDirectMl;
-    }
+    int directmlAvailable() override { return 1; }
 
     void destroy(void*) override { ++destroys; }
 
@@ -155,46 +159,42 @@ private:
     std::vector<AdapterInfo> adapters_;
 };
 
-AdapterInfo amdAdapter()
+// Integrated AMD adapter, hardware, with the given DXGI index.
+AdapterInfo integratedAdapter(uint32_t index)
 {
     AdapterInfo adapter;
     adapter.vendorId = 0x1002;
     adapter.deviceId = 0x164e;
     adapter.description = "Test Radeon";
     adapter.driverVersion = kDriver;
+    adapter.index = index;
+    adapter.luid = 1;
+    adapter.kind = AdapterKind::Integrated;
     return adapter;
 }
 
-AdapterInfo nvidiaAdapter()
+// Discrete NVIDIA adapter, hardware, with the given DXGI index.
+AdapterInfo discreteAdapter(uint32_t index)
 {
     AdapterInfo adapter;
     adapter.vendorId = 0x10DE;
     adapter.deviceId = 0x2684;
     adapter.description = "Test GeForce";
-    adapter.driverVersion = "552.12.0.0";
+    adapter.driverVersion = kNvidiaDriver;
+    adapter.index = index;
+    adapter.luid = 2;
+    adapter.kind = AdapterKind::Discrete;
     return adapter;
 }
 
-AdapterInfo softwareAdapter()
+// Software renderer that reports the integrated adapter's ids. It takes no ordinal and never matches.
+AdapterInfo softwareAdapter(uint32_t index)
 {
-    AdapterInfo adapter = amdAdapter();
+    AdapterInfo adapter = integratedAdapter(index);
     adapter.description = "Test software renderer";
     adapter.software = true;
+    adapter.kind = AdapterKind::Unknown;
     return adapter;
-}
-
-AccelerationProfile amdProfile()
-{
-    AccelerationProfile profile;
-    profile.id = "amd-test";
-    profile.provider = "directml";
-    profile.vendorId = 0x1002;
-    profile.deviceIds = {0x164e};
-    profile.minDriver = kDriver;
-    profile.maxDriver = "";
-    profile.measurement = "specs/archived/windows-version/validation/measurements.md#amd-test";
-    profile.measuredOn = "2026-10-17";
-    return profile;
 }
 
 // Unique empty directory per test, removed on destruction.
@@ -239,13 +239,11 @@ CameraFrame validFrame()
     return frame;
 }
 
-// Acceleration on: DirectML runtime, the given profiles, a self-test frame and a fake clock.
+// Acceleration on: the given catalog and store, the app version, a self-test frame and a fake clock.
 AccelerationOptions acceleratedOptions(IAdapterCatalog& catalog, InferenceFailureStore& store, FakeClock& clock,
-                                       std::vector<AccelerationProfile> profiles, const char* app = kApp)
+                                       const char* app = kApp)
 {
     AccelerationOptions options;
-    options.directmlRuntimePath = kDirectMlRuntime;
-    options.profiles = std::move(profiles);
     options.adapters = &catalog;
     options.failures = &store;
     options.clock = &clock;
@@ -254,156 +252,369 @@ AccelerationOptions acceleratedOptions(IAdapterCatalog& catalog, InferenceFailur
     return options;
 }
 
-telaviva::FailureKey amdKey(const char* driver = kDriver, const char* app = kApp)
+// Marker key for the integrated adapter, as the host writes it.
+FailureKey integratedKey(const char* driver = kDriver, const char* app = kApp)
 {
-    return telaviva::FailureKey{"amd-test", driver, app};
+    return FailureKey{kIntegratedId, driver, app};
+}
+
+// True when every create() call received the one runtime path the host was constructed with.
+bool everyCreateUsesRuntime(const ScriptedDetectorApi& api, const wchar_t* runtime)
+{
+    for (const std::wstring& path : api.createRuntimes) {
+        if (path != runtime) {
+            return false;
+        }
+    }
+    return !api.createRuntimes.empty();
 }
 
 }  // namespace
 
-TEST(provider_selection_empty_allowlist_uses_cpu_without_accelerator_calls)
+TEST(provider_selection_accelerated_within_limit_passes_even_when_slower_than_cpu)
+{
+    // Speed relative to the CPU is not part of validation: exactly the limit passes against 0.010 s.
+    // The limit is inclusive.
+    CHECK(!judgeSelfTest(SelfTestSample{1, kMaxAcceleratedLatencySeconds}, SelfTestSample{1, 0.010}).has_value());
+    // A sample below the limit passes as well.
+    CHECK(!judgeSelfTest(SelfTestSample{1, kMaxAcceleratedLatencySeconds - 0.001}, SelfTestSample{1, 0.010}).has_value());
+}
+
+TEST(provider_selection_accelerated_over_limit_is_self_test_slow)
+{
+    CHECK(judgeSelfTest(SelfTestSample{1, kMaxAcceleratedLatencySeconds + 0.001}, SelfTestSample{1, 0.010}) ==
+          FailureReason::SelfTestSlow);
+}
+
+TEST(provider_selection_accelerated_not_present_is_self_test_mismatch)
+{
+    CHECK(judgeSelfTest(SelfTestSample{0, 0.005}, SelfTestSample{1, 0.010}) == FailureReason::SelfTestMismatch);
+    CHECK(judgeSelfTest(SelfTestSample{2, 0.005}, SelfTestSample{1, 0.010}) == FailureReason::SelfTestMismatch);
+}
+
+TEST(provider_selection_cpu_not_present_is_self_test_mismatch)
+{
+    CHECK(judgeSelfTest(SelfTestSample{1, 0.005}, SelfTestSample{0, 0.010}) == FailureReason::SelfTestMismatch);
+}
+
+TEST(provider_selection_negative_status_is_self_test_mismatch)
+{
+    CHECK(judgeSelfTest(SelfTestSample{-2, 0.005}, SelfTestSample{1, 0.010}) == FailureReason::SelfTestMismatch);
+    CHECK(judgeSelfTest(SelfTestSample{1, 0.005}, SelfTestSample{-2, 0.010}) == FailureReason::SelfTestMismatch);
+}
+
+TEST(provider_selection_auto_uses_integrated_adapter_index_and_ends_accelerated)
 {
     FakeClock clock;
     ScriptedDetectorApi api(clock);
     FakeScheduler scheduler;
-    ScriptedCatalog catalog({amdAdapter()});
+    // The discrete adapter is first in DXGI order, so the integrated adapter is at index 1.
+    const std::vector<AdapterInfo> adapters = {discreteAdapter(0), integratedAdapter(1)};
+    ScriptedCatalog catalog(adapters);
     TempDir dir;
     InferenceFailureStore store(dir.path());
-    InferenceHost host(api, scheduler, kCpuRuntime, kModelPath, acceleratedOptions(catalog, store, clock, {}));
+    InferenceHost host(api, scheduler, kRuntime, kModelPath, acceleratedOptions(catalog, store, clock));
+
+    CHECK(!host.report().decided);
+    CHECK(host.detect(validFrame()).status == AnalysisStatus::Present);
+    CHECK_EQ(host.activeProvider(), kDirectMl);
+    // Accelerated create carries the integrated index; the CPU reference follows it.
+    CHECK(api.createProviders.size() == 2 && api.createProviders[0] == kDirectMl &&
+          api.createDeviceIndices[0] == 1u && api.createProviders[1] == kCpu);
+    CHECK_EQ(api.directMlDetects, 2);  // self-test call, then the real frame
+    CHECK_EQ(api.cpuDetects, 1);
+    CHECK(everyCreateUsesRuntime(api, kRuntime));
+    const InferenceReport report = host.report();
+    CHECK(report.decided);
+    CHECK(report.state == DeviceState::Ok);
+    CHECK(!report.reason.has_value());
+    CHECK(report.requestedId == "auto");
+    CHECK(report.activeId == adapterDeviceId(adapters, 1));
+    CHECK(report.activeId == kIntegratedId);
+    CHECK(report.activeLabel == adapters[1].description);
+    CHECK(store.records().empty());
+}
+
+TEST(provider_selection_auto_with_only_discrete_adapter_never_creates_directml_session)
+{
+    FakeClock clock;
+    ScriptedDetectorApi api(clock);
+    FakeScheduler scheduler;
+    ScriptedCatalog catalog({discreteAdapter(0)});
+    TempDir dir;
+    InferenceFailureStore store(dir.path());
+    InferenceHost host(api, scheduler, kRuntime, kModelPath, acceleratedOptions(catalog, store, clock));
 
     CHECK(host.detect(validFrame()).status == AnalysisStatus::Present);
     CHECK_EQ(host.activeProvider(), kCpu);
     CHECK_EQ(api.createsWith(kDirectMl), std::size_t(0));
-    CHECK_EQ(api.directMlQueries, 0);
-    CHECK_EQ(catalog.queries, 0);
+    CHECK_EQ(api.directMlDetects, 0);
+    CHECK(everyCreateUsesRuntime(api, kRuntime));
+    const InferenceReport report = host.report();
+    CHECK(report.state == DeviceState::AutoCpu);
+    CHECK(report.activeId == "cpu");
+    CHECK(!report.reason.has_value());
     CHECK(store.records().empty());
-    CHECK(api.createRuntimes.size() == 1 && api.createRuntimes[0] == kCpuRuntime);
 }
 
-TEST(provider_selection_matching_profile_keeps_directml_when_self_test_passes)
+TEST(provider_selection_software_adapter_at_index_zero_does_not_shift_integrated_index)
 {
     FakeClock clock;
     ScriptedDetectorApi api(clock);
     FakeScheduler scheduler;
-    ScriptedCatalog catalog({amdAdapter()});
+    // The software adapter takes DXGI index 0 but no ordinal, so the integrated adapter keeps id ordinal 0.
+    ScriptedCatalog catalog({softwareAdapter(0), integratedAdapter(1)});
     TempDir dir;
     InferenceFailureStore store(dir.path());
-    InferenceHost host(api, scheduler, kCpuRuntime, kModelPath,
-                       acceleratedOptions(catalog, store, clock, {amdProfile()}));
+    InferenceHost host(api, scheduler, kRuntime, kModelPath, acceleratedOptions(catalog, store, clock));
 
     CHECK(host.detect(validFrame()).status == AnalysisStatus::Present);
     CHECK_EQ(host.activeProvider(), kDirectMl);
-    // Accelerated session, then the CPU reference used only by the self-test.
     CHECK(api.createProviders.size() == 2 && api.createProviders[0] == kDirectMl &&
-          api.createProviders[1] == kCpu);
-    CHECK(api.createRuntimes.size() == 2 && api.createRuntimes[0] == kDirectMlRuntime &&
-          api.createRuntimes[1] == kDirectMlRuntime);
-    CHECK_EQ(api.directMlDetects, 2);  // self-test call, then the real frame
-    CHECK_EQ(api.cpuDetects, 1);
-    CHECK(store.records().empty());
-    CHECK_EQ(catalog.queries, 1);
+          api.createDeviceIndices[0] == 1u);
+    CHECK(host.report().activeId == kIntegratedId);
 }
 
-TEST(provider_selection_register_failure_falls_back_to_cpu_and_records_marker)
+TEST(provider_selection_explicit_discrete_adapter_ignores_its_marker_and_uses_own_index)
+{
+    FakeClock clock;
+    ScriptedDetectorApi api(clock);
+    FakeScheduler scheduler;
+    const std::vector<AdapterInfo> adapters = {discreteAdapter(0), integratedAdapter(1)};
+    ScriptedCatalog catalog(adapters);
+    TempDir dir;
+    InferenceFailureStore store(dir.path());
+    // Same driver as the live adapter, so clearIfChanged keeps it; an explicit choice must still ignore it.
+    store.record(FailureKey{kDiscreteId, kNvidiaDriver, kApp}, FailureReason::RuntimeError);
+    InferenceHost host(api, scheduler, kRuntime, kModelPath, acceleratedOptions(catalog, store, clock));
+    host.setPreference(kDiscreteId);
+
+    CHECK(host.detect(validFrame()).status == AnalysisStatus::Present);
+    CHECK_EQ(host.activeProvider(), kDirectMl);
+    CHECK(api.createProviders.size() == 2 && api.createProviders[0] == kDirectMl &&
+          api.createDeviceIndices[0] == 0u);
+    const InferenceReport report = host.report();
+    CHECK(report.state == DeviceState::Ok);
+    CHECK(report.activeId == kDiscreteId);
+    CHECK(report.activeLabel == adapters[0].description);
+    CHECK(!report.reason.has_value());
+    CHECK(store.records().size() == 1);
+}
+
+TEST(provider_selection_auto_register_failure_falls_back_to_cpu_and_records_marker)
 {
     FakeClock clock;
     ScriptedDetectorApi api(clock);
     api.selectedForDirectMl = kCpu;  // the ABI reports CPU when registration fails
     FakeScheduler scheduler;
-    ScriptedCatalog catalog({amdAdapter()});
+    ScriptedCatalog catalog({integratedAdapter(0)});
     TempDir dir;
     InferenceFailureStore store(dir.path());
-    InferenceHost host(api, scheduler, kCpuRuntime, kModelPath,
-                       acceleratedOptions(catalog, store, clock, {amdProfile()}));
+    InferenceHost host(api, scheduler, kRuntime, kModelPath, acceleratedOptions(catalog, store, clock));
 
     CHECK(host.detect(validFrame()).status == AnalysisStatus::Present);
     CHECK_EQ(host.activeProvider(), kCpu);
     CHECK_EQ(api.directMlDetects, 0);
+    CHECK_EQ(api.createsWith(kCpu), std::size_t(1));
     CHECK(store.records().size() == 1 && store.records()[0].reason == FailureReason::RegisterFailed);
-    CHECK(store.records().size() == 1 && store.records()[0].key == amdKey());
+    CHECK(store.records().size() == 1 && store.records()[0].key == integratedKey());
+    const InferenceReport report = host.report();
+    CHECK(report.state == DeviceState::AutoCpu);
+    CHECK(report.reason.has_value() && *report.reason == FailureReason::RegisterFailed);
 }
 
-TEST(provider_selection_session_failure_falls_back_to_cpu_and_records_marker)
+TEST(provider_selection_explicit_register_failure_fails_without_marker)
 {
     FakeClock clock;
     ScriptedDetectorApi api(clock);
-    api.directMlCreateFails = true;
+    api.selectedForDirectMl = kCpu;
     FakeScheduler scheduler;
-    ScriptedCatalog catalog({amdAdapter()});
+    ScriptedCatalog catalog({integratedAdapter(0)});
     TempDir dir;
     InferenceFailureStore store(dir.path());
-    InferenceHost host(api, scheduler, kCpuRuntime, kModelPath,
-                       acceleratedOptions(catalog, store, clock, {amdProfile()}));
+    InferenceHost host(api, scheduler, kRuntime, kModelPath, acceleratedOptions(catalog, store, clock));
+    host.setPreference(kIntegratedId);
 
     CHECK(host.detect(validFrame()).status == AnalysisStatus::Present);
     CHECK_EQ(host.activeProvider(), kCpu);
-    CHECK(store.records().size() == 1 && store.records()[0].reason == FailureReason::SessionFailed);
+    CHECK_EQ(api.directMlDetects, 0);
+    CHECK(store.records().empty());
+    const InferenceReport report = host.report();
+    CHECK(report.state == DeviceState::Failed);
+    CHECK(report.reason.has_value() && *report.reason == FailureReason::RegisterFailed);
+    CHECK(report.activeId == "cpu");
 }
 
-TEST(provider_selection_self_test_mismatch_falls_back_to_cpu_and_records_marker)
+TEST(provider_selection_auto_self_test_mismatch_falls_back_to_cpu_and_records_marker)
 {
     FakeClock clock;
     ScriptedDetectorApi api(clock);
     api.directMlStatus = 0;  // absent on DirectML, present on CPU
     FakeScheduler scheduler;
-    ScriptedCatalog catalog({amdAdapter()});
+    ScriptedCatalog catalog({integratedAdapter(0)});
     TempDir dir;
     InferenceFailureStore store(dir.path());
-    InferenceHost host(api, scheduler, kCpuRuntime, kModelPath,
-                       acceleratedOptions(catalog, store, clock, {amdProfile()}));
+    InferenceHost host(api, scheduler, kRuntime, kModelPath, acceleratedOptions(catalog, store, clock));
 
     CHECK(host.detect(validFrame()).status == AnalysisStatus::Present);
     CHECK_EQ(host.activeProvider(), kCpu);
     CHECK(store.records().size() == 1 && store.records()[0].reason == FailureReason::SelfTestMismatch);
+    CHECK(store.records().size() == 1 && store.records()[0].key == integratedKey());
     // Both self-test sessions are destroyed; the real frame runs on a new CPU session.
     CHECK_EQ(api.destroys, 2);
+    CHECK(host.report().state == DeviceState::AutoCpu);
 }
 
-TEST(provider_selection_self_test_error_counts_as_mismatch)
+TEST(provider_selection_auto_self_test_slow_falls_back_to_cpu_and_records_marker)
 {
     FakeClock clock;
     ScriptedDetectorApi api(clock);
-    api.directMlErrorOnCall = 1;  // the self-test call itself fails
+    api.directMlSeconds = kMaxAcceleratedLatencySeconds + 0.05;  // over the limit, whatever the CPU takes
     FakeScheduler scheduler;
-    ScriptedCatalog catalog({amdAdapter()});
+    ScriptedCatalog catalog({integratedAdapter(0)});
     TempDir dir;
     InferenceFailureStore store(dir.path());
-    InferenceHost host(api, scheduler, kCpuRuntime, kModelPath,
-                       acceleratedOptions(catalog, store, clock, {amdProfile()}));
-
-    CHECK(host.detect(validFrame()).status == AnalysisStatus::Present);
-    CHECK_EQ(host.activeProvider(), kCpu);
-    CHECK(store.records().size() == 1 && store.records()[0].reason == FailureReason::SelfTestMismatch);
-}
-
-TEST(provider_selection_self_test_slower_than_cpu_falls_back_to_cpu_and_records_marker)
-{
-    FakeClock clock;
-    ScriptedDetectorApi api(clock);
-    api.directMlSeconds = 0.020;  // CPU reference takes 0.010 s on the same frame
-    FakeScheduler scheduler;
-    ScriptedCatalog catalog({amdAdapter()});
-    TempDir dir;
-    InferenceFailureStore store(dir.path());
-    InferenceHost host(api, scheduler, kCpuRuntime, kModelPath,
-                       acceleratedOptions(catalog, store, clock, {amdProfile()}));
+    InferenceHost host(api, scheduler, kRuntime, kModelPath, acceleratedOptions(catalog, store, clock));
 
     CHECK(host.detect(validFrame()).status == AnalysisStatus::Present);
     CHECK_EQ(host.activeProvider(), kCpu);
     CHECK(store.records().size() == 1 && store.records()[0].reason == FailureReason::SelfTestSlow);
+    CHECK(store.records().size() == 1 && store.records()[0].key == integratedKey());
+    CHECK(host.report().state == DeviceState::AutoCpu);
 }
 
-TEST(provider_selection_runtime_error_on_later_detect_switches_to_cpu_for_process)
+TEST(provider_selection_explicit_self_test_mismatch_fails_without_marker)
+{
+    FakeClock clock;
+    ScriptedDetectorApi api(clock);
+    api.directMlStatus = 0;
+    FakeScheduler scheduler;
+    ScriptedCatalog catalog({integratedAdapter(0)});
+    TempDir dir;
+    InferenceFailureStore store(dir.path());
+    InferenceHost host(api, scheduler, kRuntime, kModelPath, acceleratedOptions(catalog, store, clock));
+    host.setPreference(kIntegratedId);
+
+    CHECK(host.detect(validFrame()).status == AnalysisStatus::Present);
+    CHECK_EQ(host.activeProvider(), kCpu);
+    CHECK(store.records().empty());
+    const InferenceReport report = host.report();
+    CHECK(report.state == DeviceState::Failed);
+    CHECK(report.reason.has_value() && *report.reason == FailureReason::SelfTestMismatch);
+}
+
+TEST(provider_selection_explicit_self_test_slow_fails_without_marker)
+{
+    FakeClock clock;
+    ScriptedDetectorApi api(clock);
+    api.directMlSeconds = kMaxAcceleratedLatencySeconds + 0.05;
+    FakeScheduler scheduler;
+    ScriptedCatalog catalog({integratedAdapter(0)});
+    TempDir dir;
+    InferenceFailureStore store(dir.path());
+    InferenceHost host(api, scheduler, kRuntime, kModelPath, acceleratedOptions(catalog, store, clock));
+    host.setPreference(kIntegratedId);
+
+    CHECK(host.detect(validFrame()).status == AnalysisStatus::Present);
+    CHECK_EQ(host.activeProvider(), kCpu);
+    CHECK(store.records().empty());
+    const InferenceReport report = host.report();
+    CHECK(report.state == DeviceState::Failed);
+    CHECK(report.reason.has_value() && *report.reason == FailureReason::SelfTestSlow);
+}
+
+TEST(provider_selection_second_host_skips_integrated_adapter_with_marker)
+{
+    FakeClock clock;
+    FakeScheduler scheduler;
+    ScriptedCatalog catalog({integratedAdapter(0)});
+    TempDir dir;
+    InferenceFailureStore store(dir.path());
+    {
+        // The first host fails the self-test on the integrated adapter and writes the marker.
+        ScriptedDetectorApi first(clock);
+        first.directMlStatus = 0;
+        InferenceHost host(first, scheduler, kRuntime, kModelPath, acceleratedOptions(catalog, store, clock));
+        CHECK(host.detect(validFrame()).status == AnalysisStatus::Present);
+    }
+    CHECK(store.records().size() == 1 && store.records()[0].reason == FailureReason::SelfTestMismatch);
+
+    // A second host over the same store does not try the marked adapter again.
+    ScriptedDetectorApi second(clock);
+    InferenceHost host(second, scheduler, kRuntime, kModelPath, acceleratedOptions(catalog, store, clock));
+    CHECK(host.detect(validFrame()).status == AnalysisStatus::Present);
+    CHECK_EQ(host.activeProvider(), kCpu);
+    CHECK_EQ(second.createsWith(kDirectMl), std::size_t(0));
+    CHECK_EQ(second.directMlDetects, 0);
+    CHECK(everyCreateUsesRuntime(second, kRuntime));
+    CHECK(host.report().state == DeviceState::AutoCpu);
+    CHECK(store.records().size() == 1);
+}
+
+TEST(provider_selection_marker_for_other_driver_is_cleared_and_adapter_retried)
+{
+    FakeClock clock;
+    ScriptedDetectorApi api(clock);
+    FakeScheduler scheduler;
+    ScriptedCatalog catalog({integratedAdapter(0)});
+    TempDir dir;
+    InferenceFailureStore store(dir.path());
+    store.record(integratedKey("31.0.0.1"), FailureReason::RuntimeError);
+    InferenceHost host(api, scheduler, kRuntime, kModelPath, acceleratedOptions(catalog, store, clock));
+
+    CHECK(host.detect(validFrame()).status == AnalysisStatus::Present);
+    CHECK_EQ(host.activeProvider(), kDirectMl);
+    CHECK(host.report().state == DeviceState::Ok);
+    CHECK(store.records().empty());
+}
+
+TEST(provider_selection_marker_for_other_app_version_is_cleared_and_adapter_retried)
+{
+    FakeClock clock;
+    ScriptedDetectorApi api(clock);
+    FakeScheduler scheduler;
+    ScriptedCatalog catalog({integratedAdapter(0)});
+    TempDir dir;
+    InferenceFailureStore store(dir.path());
+    store.record(integratedKey(kDriver, "0.0.9"), FailureReason::SelfTestMismatch);
+    InferenceHost host(api, scheduler, kRuntime, kModelPath, acceleratedOptions(catalog, store, clock));
+
+    CHECK(host.detect(validFrame()).status == AnalysisStatus::Present);
+    CHECK_EQ(host.activeProvider(), kDirectMl);
+    CHECK(host.report().state == DeviceState::Ok);
+    CHECK(store.records().empty());
+}
+
+TEST(provider_selection_auto_session_failure_falls_back_to_cpu_and_records_marker)
+{
+    FakeClock clock;
+    ScriptedDetectorApi api(clock);
+    api.directMlFailingIndex = 0;  // the DirectML create for the integrated adapter fails
+    FakeScheduler scheduler;
+    ScriptedCatalog catalog({integratedAdapter(0)});
+    TempDir dir;
+    InferenceFailureStore store(dir.path());
+    InferenceHost host(api, scheduler, kRuntime, kModelPath, acceleratedOptions(catalog, store, clock));
+
+    CHECK(host.detect(validFrame()).status == AnalysisStatus::Present);
+    CHECK_EQ(host.activeProvider(), kCpu);
+    CHECK_EQ(api.createsWith(kDirectMl), std::size_t(1));
+    CHECK_EQ(api.directMlDetects, 0);
+    CHECK(store.records().size() == 1 && store.records()[0].reason == FailureReason::SessionFailed);
+    CHECK(store.records().size() == 1 && store.records()[0].key == integratedKey());
+    CHECK(host.report().state == DeviceState::AutoCpu);
+}
+
+TEST(provider_selection_auto_runtime_error_switches_to_cpu_and_records_marker)
 {
     FakeClock clock;
     ScriptedDetectorApi api(clock);
     api.directMlErrorOnCall = 3;  // self-test is call 1, the first real frame is call 2
     FakeScheduler scheduler;
-    ScriptedCatalog catalog({amdAdapter()});
+    ScriptedCatalog catalog({integratedAdapter(0)});
     TempDir dir;
     InferenceFailureStore store(dir.path());
-    InferenceHost host(api, scheduler, kCpuRuntime, kModelPath,
-                       acceleratedOptions(catalog, store, clock, {amdProfile()}));
+    InferenceHost host(api, scheduler, kRuntime, kModelPath, acceleratedOptions(catalog, store, clock));
 
     CHECK(host.detect(validFrame()).status == AnalysisStatus::Present);
     CHECK_EQ(host.activeProvider(), kDirectMl);
@@ -411,104 +622,14 @@ TEST(provider_selection_runtime_error_on_later_detect_switches_to_cpu_for_proces
     CHECK(host.detect(validFrame()).status == AnalysisStatus::Present);
     CHECK_EQ(host.activeProvider(), kCpu);
     CHECK(store.records().size() == 1 && store.records()[0].reason == FailureReason::RuntimeError);
-    CHECK(store.records().size() == 1 && store.records()[0].key == amdKey());
+    CHECK(store.records().size() == 1 && store.records()[0].key == integratedKey());
+    CHECK(host.report().state == DeviceState::AutoCpu);
+    CHECK(host.report().reason.has_value() && *host.report().reason == FailureReason::RuntimeError);
 
-    // Later frames stay on CPU for the rest of the process.
+    // Later frames stay on CPU for the rest of the session.
     CHECK(host.detect(validFrame()).status == AnalysisStatus::Present);
     CHECK_EQ(api.directMlDetects, 3);
     CHECK_EQ(api.createsWith(kDirectMl), std::size_t(1));
-}
-
-TEST(provider_selection_runtime_error_with_failing_cpu_retry_reports_error_not_absent)
-{
-    FakeClock clock;
-    ScriptedDetectorApi api(clock);
-    api.directMlErrorOnCall = 2;  // self-test is call 1, the first real frame is call 2
-    api.cpuErrorFromCall = 2;  // the self-test reference (call 1) succeeds; the retry (call 2) fails
-    FakeScheduler scheduler;
-    ScriptedCatalog catalog({amdAdapter()});
-    TempDir dir;
-    InferenceFailureStore store(dir.path());
-    InferenceHost host(api, scheduler, kCpuRuntime, kModelPath,
-                       acceleratedOptions(catalog, store, clock, {amdProfile()}));
-
-    CHECK(host.detect(validFrame()).status == AnalysisStatus::Error);
-    CHECK_EQ(host.activeProvider(), kCpu);
-    CHECK(store.records().size() == 1 && store.records()[0].reason == FailureReason::RuntimeError);
-}
-
-TEST(provider_selection_marker_for_same_key_uses_cpu_without_trying)
-{
-    FakeClock clock;
-    ScriptedDetectorApi api(clock);
-    FakeScheduler scheduler;
-    ScriptedCatalog catalog({amdAdapter()});
-    TempDir dir;
-    InferenceFailureStore store(dir.path());
-    store.record(amdKey(), FailureReason::SelfTestSlow);
-    InferenceHost host(api, scheduler, kCpuRuntime, kModelPath,
-                       acceleratedOptions(catalog, store, clock, {amdProfile()}));
-
-    CHECK(host.detect(validFrame()).status == AnalysisStatus::Present);
-    CHECK_EQ(host.activeProvider(), kCpu);
-    CHECK_EQ(api.createsWith(kDirectMl), std::size_t(0));
-    CHECK_EQ(api.directMlDetects, 0);
-    CHECK(store.records().size() == 1 && store.records()[0].reason == FailureReason::SelfTestSlow);
-}
-
-TEST(provider_selection_marker_for_other_driver_is_cleared_and_acceleration_retried)
-{
-    FakeClock clock;
-    ScriptedDetectorApi api(clock);
-    FakeScheduler scheduler;
-    ScriptedCatalog catalog({amdAdapter()});
-    TempDir dir;
-    InferenceFailureStore store(dir.path());
-    store.record(amdKey("31.0.0.1"), FailureReason::RuntimeError);
-    InferenceHost host(api, scheduler, kCpuRuntime, kModelPath,
-                       acceleratedOptions(catalog, store, clock, {amdProfile()}));
-
-    CHECK(host.detect(validFrame()).status == AnalysisStatus::Present);
-    CHECK_EQ(host.activeProvider(), kDirectMl);
-    CHECK(store.records().empty());
-}
-
-TEST(provider_selection_marker_for_other_app_version_is_cleared_and_acceleration_retried)
-{
-    FakeClock clock;
-    ScriptedDetectorApi api(clock);
-    FakeScheduler scheduler;
-    ScriptedCatalog catalog({amdAdapter()});
-    TempDir dir;
-    InferenceFailureStore store(dir.path());
-    store.record(amdKey(kDriver, "0.0.9"), FailureReason::SelfTestMismatch);
-    InferenceHost host(api, scheduler, kCpuRuntime, kModelPath,
-                       acceleratedOptions(catalog, store, clock, {amdProfile()}));
-
-    CHECK(host.detect(validFrame()).status == AnalysisStatus::Present);
-    CHECK_EQ(host.activeProvider(), kDirectMl);
-    CHECK(store.records().empty());
-}
-
-TEST(provider_selection_directml_request_never_changes_cpu_default_without_matching_adapter)
-{
-    FakeClock clock;
-    ScriptedDetectorApi api(clock);
-    FakeScheduler scheduler;
-    // The profile's vendor is present only as a software adapter, and the hardware adapter is another vendor.
-    ScriptedCatalog catalog({nvidiaAdapter(), softwareAdapter()});
-    TempDir dir;
-    InferenceFailureStore store(dir.path());
-    InferenceHost host(api, scheduler, kCpuRuntime, kModelPath,
-                       acceleratedOptions(catalog, store, clock, {amdProfile()}));
-
-    CHECK(host.detect(validFrame()).status == AnalysisStatus::Present);
-    CHECK_EQ(host.activeProvider(), kCpu);
-    CHECK_EQ(api.createsWith(kDirectMl), std::size_t(0));
-    CHECK_EQ(api.directMlDetects, 0);
-    CHECK_EQ(api.directMlQueries, 0);
-    CHECK(store.records().empty());
-    CHECK(api.createRuntimes.size() == 1 && api.createRuntimes[0] == kCpuRuntime);
 }
 
 TEST(provider_selection_idle_release_recreates_accelerated_session_without_second_self_test)
@@ -516,11 +637,10 @@ TEST(provider_selection_idle_release_recreates_accelerated_session_without_secon
     FakeClock clock;
     ScriptedDetectorApi api(clock);
     FakeScheduler scheduler;
-    ScriptedCatalog catalog({amdAdapter()});
+    ScriptedCatalog catalog({integratedAdapter(0)});
     TempDir dir;
     InferenceFailureStore store(dir.path());
-    InferenceHost host(api, scheduler, kCpuRuntime, kModelPath,
-                       acceleratedOptions(catalog, store, clock, {amdProfile()}));
+    InferenceHost host(api, scheduler, kRuntime, kModelPath, acceleratedOptions(catalog, store, clock));
 
     host.detect(validFrame());
     host.releaseIdle();
@@ -528,53 +648,7 @@ TEST(provider_selection_idle_release_recreates_accelerated_session_without_secon
     CHECK_EQ(host.activeProvider(), kDirectMl);
     CHECK_EQ(api.createsWith(kDirectMl), std::size_t(2));
     CHECK_EQ(api.cpuDetects, 1);  // the reference from the first self-test only
+    CHECK(everyCreateUsesRuntime(api, kRuntime));
+    CHECK(host.report().state == DeviceState::Ok);
     CHECK(store.records().empty());
-}
-
-TEST(provider_selection_directml_session_gets_matched_adapter_index_and_never_index_zero_non_match)
-{
-    FakeClock clock;
-    ScriptedDetectorApi api(clock);
-    FakeScheduler scheduler;
-    // The non-matching adapter sits at index 0; the profile's adapter is at index 1 in DXGI order.
-    AdapterInfo other = nvidiaAdapter();
-    other.index = 0;
-    AdapterInfo matched = amdAdapter();
-    matched.index = 1;
-    ScriptedCatalog catalog({other, matched});
-    TempDir dir;
-    InferenceFailureStore store(dir.path());
-    InferenceHost host(api, scheduler, kCpuRuntime, kModelPath,
-                       acceleratedOptions(catalog, store, clock, {amdProfile()}));
-
-    CHECK(host.detect(validFrame()).status == AnalysisStatus::Present);
-    CHECK_EQ(host.activeProvider(), kDirectMl);
-    // Accelerated create carries the matched index; the CPU reference always carries 0.
-    CHECK(api.createProviders.size() == 2 && api.createDeviceIndices.size() == 2 &&
-          api.createProviders[0] == kDirectMl && api.createDeviceIndices[0] == 1u &&
-          api.createProviders[1] == kCpu && api.createDeviceIndices[1] == 0u);
-    for (std::size_t i = 0; i < api.createProviders.size(); ++i) {
-        CHECK(api.createProviders[i] != kDirectMl || api.createDeviceIndices[i] != 0u);
-    }
-}
-
-TEST(provider_selection_software_adapter_at_index_zero_does_not_shift_matched_index)
-{
-    FakeClock clock;
-    ScriptedDetectorApi api(clock);
-    FakeScheduler scheduler;
-    AdapterInfo software = softwareAdapter();
-    software.index = 0;
-    AdapterInfo matched = amdAdapter();
-    matched.index = 1;
-    ScriptedCatalog catalog({software, matched});
-    TempDir dir;
-    InferenceFailureStore store(dir.path());
-    InferenceHost host(api, scheduler, kCpuRuntime, kModelPath,
-                       acceleratedOptions(catalog, store, clock, {amdProfile()}));
-
-    CHECK(host.detect(validFrame()).status == AnalysisStatus::Present);
-    CHECK_EQ(host.activeProvider(), kDirectMl);
-    CHECK(api.createProviders.size() == 2 && api.createDeviceIndices.size() == 2);
-    CHECK(api.createProviders[0] == kDirectMl && api.createDeviceIndices[0] == 1u);
 }

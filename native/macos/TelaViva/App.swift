@@ -44,8 +44,9 @@ struct TelaVivaApp: App {
     var body: some Scene {
         Settings {
             SettingsView(core: appDelegate.core, navigation: appDelegate.settingsNavigation,
-                         updateChecker: appDelegate.updateChecker, installedVersion: appDelegate.installedVersion)
-                .frame(minWidth: 560, minHeight: 560)
+                         updateChecker: appDelegate.updateChecker, installedVersion: appDelegate.installedVersion,
+                         inferenceReport: appDelegate.camera.inferenceReport)
+                .frame(minWidth: 760, minHeight: 560)
         }
         .commands { CommandGroup(replacing: .newItem) {} }
     }

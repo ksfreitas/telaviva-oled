@@ -584,6 +584,7 @@ Snapshot parseSnapshot(const std::string& text)
         snapshot.settings.brightness_key_step = intOr(*settings, "brightness_key_step", 5);
         snapshot.settings.screensaver_targets = numberMapField(*settings, "screensaver_targets");
         snapshot.settings.protection_disabled = stringSetField(*settings, "protection_disabled");
+        snapshot.settings.inference_device = stringOr(*settings, "inference_device", "auto");
         snapshot.settings.ambientCurves = ambientCurvesField(*settings, "ambient_curves");
     }
 

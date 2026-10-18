@@ -15,20 +15,21 @@ purpose = "Any-face detection without identity recognition"
 
 [runtime]
 name = "ONNX Runtime"
-version = "1.20.1"
+version = "1.23.0"
 platform = "macos-arm64"
-source = "https://github.com/microsoft/onnxruntime/releases/download/v1.20.1/onnxruntime-osx-arm64-1.20.1.tgz"
-archive_sha256 = "b678fc3c2354c771fea4fba420edeccfba205140088334df801e7fc40e83a57a"
-dylib_sha256 = "530cdb5a0de774677d369a83ec8912b0242e9769acd12d34b61412ee6ae368ae"
+source = "https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-osx-arm64-1.23.0.tgz"
+archive_sha256 = "8182db0ebb5caa21036a3c78178f17fabb98a7916bdab454467c8f4cf34bcfdf"
+dylib_sha256 = "d3859aecdb70ea099f5b5f4185fe16f0527c6680b18731e6e96fc971ec767cca"
 license = "MIT"
 notices = "licenses/inference/ONNXRUNTIME-THIRD-PARTY-NOTICES.txt"
 default_provider = "CPU"
-coreml_policy = "Explicit candidate only; CPU fallback; energy benefit not verified"
+coreml_policy = "Explicit compute-unit candidate; CPU fallback; energy benefit not verified"
 
 # Windows x64 runtime (specs/archived/windows-version, Phase 5 T070).
 # Pins computed locally with tools/inference/fetch-windows-runtime.ps1 -ComputeOnly
 # on 2026-10-17 from a fresh download; the GitHub release assets publish no digests.
-# The default shipped provider is CPU. DirectML is a reserved variant (see below).
+# The CPU variant is no longer shipped or used by the build; it stays pinned only for
+# fetch-windows-runtime.ps1 -Variant cpu. The Windows package ships the DirectML build below.
 [runtime.windows-x64.cpu]
 version = "1.20.1"
 source = "https://github.com/microsoft/onnxruntime/releases/download/v1.20.1/onnxruntime-win-x64-1.20.1.zip"
@@ -38,8 +39,9 @@ dll = "onnxruntime.dll"
 dll_sha256 = "4cb41e89b8bf30578e1dd95e9c40292d61974a4bfcd666409302c4f0c5aa8ce0"
 license = "MIT"
 
-# DirectML variant (specs/archived/windows-version, Phase 5 T094). Not shipped by default: the app
-# selects it only through a measured acceleration profile (architecture Decision 3).
+# DirectML build (specs/archived/windows-version, Phase 5 T094). The Windows package ships this build as its
+# only onnxruntime.dll; it also runs the CPU provider. The device is chosen by the inference_device setting
+# (Automatic uses the integrated GPU when a self-test passes, otherwise CPU).
 # Pins were computed locally on 2026-10-17 with
 # tools/inference/fetch-windows-runtime.ps1 -Variant directml -ComputeOnly; the script refuses placeholders.
 # DirectML.dll is the in-box Windows system component and is never redistributed.

@@ -45,3 +45,8 @@ Neither shell showed the installed version, the project address or the credits, 
 - The Windows projects do not compile with `/utf-8`: non-ASCII text in C++ sources must be written as universal character names (the architect's name in `AboutPage.xaml.cpp` is).
 - The macOS app is not sandboxed today. If a sandbox is ever introduced it needs `com.apple.security.network.client` for this check.
 - Windows enforces a single instance, so the About page can only be inspected on a build while no other `TelaViva.exe` is running.
+
+
+## Amendment 2026-10-18: macOS About entry point
+
+At the owner's request, remove the About button from the macOS menu-bar popup. The About page remains in Settings > About. Windows retains its Settings page and tray right-click menu entry. The update-check trigger, network contract and caching policy are unchanged.

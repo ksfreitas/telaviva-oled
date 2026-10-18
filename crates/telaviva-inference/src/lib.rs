@@ -1,6 +1,9 @@
 use ndarray::Array4;
 #[cfg(target_os = "macos")]
-use ort::execution_providers::{CoreMLExecutionProvider, ExecutionProvider};
+use ort::{
+    execution_providers::{CoreMLExecutionProvider, ExecutionProvider},
+    AsPointer,
+};
 // `as _` brings the trait methods (register, is_available, supported_by_platform) into scope
 // without clashing with the CoreML import above.
 #[cfg(feature = "directml")]
@@ -133,10 +136,11 @@ pub unsafe extern "C" fn tv_inference_create_with_provider(
     )
 }
 
-/// Creates a session like `tv_inference_create_with_provider`, and registers DirectML on the
-/// adapter at `device_index` (index into the DXGI adapter enumeration order as seen by ONNX
-/// Runtime). The index is used only for provider 2 and ignored otherwise. An index the runtime
-/// cannot register falls back to CPU with provider 0, the same as any failing accelerator.
+/// Creates a session like `tv_inference_create_with_provider` with a provider-specific index:
+/// CoreML uses 0 for ALL, 1 for CPUAndNeuralEngine, or 2 for CPUAndGPU; DirectML uses the DXGI
+/// adapter index as seen by ONNX Runtime; CPU ignores the index. Unsupported CoreML indices return
+/// invalid argument. If an accelerator cannot be registered, the call falls back to CPU and the
+/// selected provider is 0.
 ///
 /// # Safety
 /// All pointers must be valid for reads/writes as appropriate and point to NUL-terminated UTF-8 paths.
@@ -152,11 +156,14 @@ pub unsafe extern "C" fn tv_inference_create_with_provider_device(
         if runtime_abs_path.is_null() || model_abs_path.is_null() || out_handle.is_null() {
             return INVALID_ARGUMENT;
         }
+        *out_handle = ptr::null_mut();
         let requested = match ProviderKind::from_code(provider) {
             Some(kind) => kind,
             None => return INVALID_ARGUMENT,
         };
-        *out_handle = ptr::null_mut();
+        if requested == ProviderKind::CoreMl && coreml_compute_units(device_index).is_none() {
+            return INVALID_ARGUMENT;
+        }
         let runtime = match c_path(runtime_abs_path) {
             Some(path) => path,
             None => return INVALID_ARGUMENT,
@@ -259,17 +266,63 @@ fn attach_accelerator(
 ) -> ort::Result<SessionBuilder> {
     match kind {
         #[cfg(target_os = "macos")]
-        ProviderKind::CoreMl => {
-            builder.with_execution_providers([CoreMLExecutionProvider::default().build()])
-        }
+        ProviderKind::CoreMl => register_coreml(builder, device_index),
         #[cfg(feature = "directml")]
         ProviderKind::DirectMl => register_directml(builder, device_index),
         _ => {
-            // Without DirectML compiled in, the index has no effect; the session stays on CPU.
+            // Providers unavailable in this target build stay on CPU; their index has no effect.
             let _ = device_index;
             Ok(builder)
         }
     }
+}
+
+/// Maps the public CoreML device index to ONNX Runtime's `MLComputeUnits` option.
+fn coreml_compute_units(device_index: u32) -> Option<&'static str> {
+    match device_index {
+        0 => Some("ALL"),
+        1 => Some("CPUAndNeuralEngine"),
+        2 => Some("CPUAndGPU"),
+        _ => None,
+    }
+}
+
+/// Registers CoreML with an explicit compute-unit policy. A registration error is returned to
+/// the caller so session creation retries on CPU and reports provider 0.
+#[cfg(target_os = "macos")]
+fn register_coreml(builder: SessionBuilder, device_index: u32) -> ort::Result<SessionBuilder> {
+    use std::ffi::CString;
+
+    let compute_units = coreml_compute_units(device_index)
+        .ok_or_else(|| ort::Error::new("invalid CoreML compute-unit index"))?;
+    let provider = CString::new("CoreML")?;
+    let key = CString::new("MLComputeUnits")?;
+    let value = CString::new(compute_units)?;
+    let keys = [key.as_ptr()];
+    let values = [value.as_ptr()];
+    let api = ort::api();
+    let append = api
+        .SessionOptionsAppendExecutionProvider
+        .ok_or_else(|| ort::Error::new("ONNX Runtime string provider API is unavailable"))?;
+    let status = unsafe {
+        append(
+            builder.ptr() as *mut _,
+            provider.as_ptr(),
+            keys.as_ptr(),
+            values.as_ptr(),
+            keys.len(),
+        )
+    };
+    if !status.is_null() {
+        let message = unsafe {
+            let raw = api.GetErrorMessage.expect("GetErrorMessage is available")(status);
+            let message = CStr::from_ptr(raw).to_string_lossy().into_owned();
+            api.ReleaseStatus.expect("ReleaseStatus is available")(status);
+            message
+        };
+        return Err(ort::Error::new(message));
+    }
+    Ok(builder)
 }
 
 /// Registers DirectML on the adapter at `device_index`. `register` is used instead of
@@ -750,6 +803,33 @@ mod header_contract_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn maps_coreml_device_indices_to_compute_units() {
+        assert_eq!(coreml_compute_units(0), Some("ALL"));
+        assert_eq!(coreml_compute_units(1), Some("CPUAndNeuralEngine"));
+        assert_eq!(coreml_compute_units(2), Some("CPUAndGPU"));
+        assert_eq!(coreml_compute_units(3), None);
+        assert_eq!(coreml_compute_units(u32::MAX), None);
+    }
+
+    #[test]
+    fn coreml_provider_rejects_invalid_compute_unit_index() {
+        let runtime = std::ffi::CString::new("/tmp/nonexistent-onnxruntime.dylib").unwrap();
+        let model = std::ffi::CString::new("/tmp/nonexistent-model.onnx").unwrap();
+        let mut handle = ptr::null_mut();
+        let result = unsafe {
+            tv_inference_create_with_provider_device(
+                runtime.as_ptr(),
+                model.as_ptr(),
+                PROVIDER_COREML_CANDIDATE,
+                3,
+                &mut handle,
+            )
+        };
+        assert_eq!(result, INVALID_ARGUMENT);
+        assert!(handle.is_null());
+    }
 
     #[test]
     fn validates_frame_lengths_dimensions_stride_and_caps() {

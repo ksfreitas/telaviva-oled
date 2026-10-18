@@ -51,6 +51,13 @@ namespace TelaViva
         AutomaticBrightnessPage();
     }
 
+    // Advanced page (inference device). SetHost and RefreshStrings are implementation-only, reached through get_self.
+    [default_interface]
+    runtimeclass AdvancedPage : Microsoft.UI.Xaml.Controls.UserControl
+    {
+        AdvancedPage();
+    }
+
     // About page. SetHost and RefreshStrings are implementation-only, reached through get_self.
     [default_interface]
     runtimeclass AboutPage : Microsoft.UI.Xaml.Controls.UserControl

@@ -38,6 +38,11 @@
                         <FontIcon Glyph="&#xE706;" FontFamily="Segoe Fluent Icons" />
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
+                <NavigationViewItem x:Name="AdvancedItem">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE950;" FontFamily="Segoe Fluent Icons" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
                 <NavigationViewItem x:Name="AboutItem">
                     <NavigationViewItem.Icon>
                         <FontIcon Glyph="&#xE946;" FontFamily="Segoe Fluent Icons" />

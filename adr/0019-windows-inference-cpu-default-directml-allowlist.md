@@ -1,6 +1,6 @@
 # ADR-0019: Windows inference: CPU by default, DirectML only for measured device profiles with a failure marker
 
-**Status:** Accepted
+**Status:** Accepted; default/runtime/allowlist policy amended by [ADR 0027](0027-selectable-inference-device-and-igpu-offload.md)
 **Date:** 2026-10-17
 **Feature:** windows-version
 **Spec:** [Archived spec](../specs/archived/windows-version/spec.md)
@@ -42,3 +42,7 @@
 
 - ONNX Runtime binds one runtime per process, so the runtime variant is chosen before the first detector is created (see [architecture](../specs/archived/windows-version/architecture.md), Technical Constraints).
 - Do not add a profile entry without its `measurement` reference recorded in the validation notes.
+
+## Amendment 2026-10-18: Validated device selection
+
+[ADR 0027](0027-selectable-inference-device-and-igpu-offload.md) replaces the CPU-default profile allowlist and separate runtime variants with Automatic (integrated GPU, then CPU), manual GPU choices, one DirectML-capable runtime and a 125 ms validation budget. Failure markers apply to Automatic only. The live DXGI/DirectML index mapping was confirmed on the development desktop by per-LUID utilization; this does not establish universal hardware compatibility. NPU remains reserved and DirectML.dll remains OS-supplied.

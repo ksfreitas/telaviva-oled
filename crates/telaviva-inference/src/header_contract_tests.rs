@@ -35,19 +35,19 @@ struct Export {
 /// signature at compile time, so a drift in `lib.rs` fails to compile here.
 fn exports() -> Vec<Export> {
     let create: unsafe extern "C" fn(
-        *const std::ffi::c_char,
-        *const std::ffi::c_char,
+        *const c_char,
+        *const c_char,
         *mut *mut TvInferenceHandle,
     ) -> i32 = tv_inference_create;
     let create_with_provider: unsafe extern "C" fn(
-        *const std::ffi::c_char,
-        *const std::ffi::c_char,
+        *const c_char,
+        *const c_char,
         i32,
         *mut *mut TvInferenceHandle,
     ) -> i32 = tv_inference_create_with_provider;
     let create_with_provider_device: unsafe extern "C" fn(
-        *const std::ffi::c_char,
-        *const std::ffi::c_char,
+        *const c_char,
+        *const c_char,
         i32,
         u32,
         *mut *mut TvInferenceHandle,
@@ -599,6 +599,13 @@ fn header_declares_handle_as_opaque_type() {
         !header.structs.contains_key("TvInferenceHandle"),
         "include/telaviva_inference.h must not give TvInferenceHandle a field list"
     );
+}
+
+#[test]
+fn header_documents_provider_specific_device_index_values() {
+    assert!(HEADER.contains("0 = ALL, 1 = CPUAndNeuralEngine, 2 ="));
+    assert!(HEADER.contains("Any other CoreML index returns -1."));
+    assert!(HEADER.contains("index into the DXGI adapter enumeration order"));
 }
 
 #[test]

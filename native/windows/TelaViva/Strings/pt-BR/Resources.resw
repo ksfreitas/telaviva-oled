@@ -268,6 +268,45 @@
   <data name="settings.tab.about" xml:space="preserve">
     <value>Sobre</value>
   </data>
+  <data name="settings.tab.advanced" xml:space="preserve">
+    <value>Avançado</value>
+  </data>
+  <data name="inference.title" xml:space="preserve">
+    <value>Dispositivo de inferência</value>
+  </data>
+  <data name="inference.help" xml:space="preserve">
+    <value>Onde a detecção de rostos é executada. O modo Automático usa o vídeo integrado quando ele funciona e a CPU nos demais casos.</value>
+  </data>
+  <data name="inference.discreteHelp" xml:space="preserve">
+    <value>Uma placa de vídeo dedicada nunca é escolhida automaticamente, pois pode consumir mais energia que a CPU.</value>
+  </data>
+  <data name="inference.auto" xml:space="preserve">
+    <value>Automático</value>
+  </data>
+  <data name="inference.cpu" xml:space="preserve">
+    <value>CPU</value>
+  </data>
+  <data name="inference.kind.integrated" xml:space="preserve">
+    <value>GPU integrada</value>
+  </data>
+  <data name="inference.kind.discrete" xml:space="preserve">
+    <value>GPU dedicada</value>
+  </data>
+  <data name="inference.missing" xml:space="preserve">
+    <value>Dispositivo indisponível</value>
+  </data>
+  <data name="inference.inUse" xml:space="preserve">
+    <value>Em uso: {0}</value>
+  </data>
+  <data name="inference.notDecided" xml:space="preserve">
+    <value>O dispositivo é escolhido quando a detecção começa.</value>
+  </data>
+  <data name="inference.notice.unavailable" xml:space="preserve">
+    <value>O dispositivo escolhido não está disponível. O modo Automático está sendo usado.</value>
+  </data>
+  <data name="inference.notice.failed" xml:space="preserve">
+    <value>O dispositivo escolhido não conseguiu executar a detecção. A CPU está sendo usada.</value>
+  </data>
   <data name="about.version" xml:space="preserve">
     <value>Versão</value>
   </data>

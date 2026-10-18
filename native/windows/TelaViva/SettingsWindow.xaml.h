@@ -13,7 +13,7 @@
 namespace winrt::TelaViva::implementation
 {
     // Pages that SelectPage can show; App uses it to open Settings on a given page.
-    enum class SettingsPage { General, Keyboard, Ambient, About };
+    enum class SettingsPage { General, Keyboard, Ambient, Advanced, About };
 
     struct SettingsWindow : SettingsWindowT<SettingsWindow>
     {
@@ -39,6 +39,7 @@ namespace winrt::TelaViva::implementation
         winrt::TelaViva::GeneralPage general_{ nullptr };
         winrt::TelaViva::KeyboardPage keyboard_{ nullptr };
         winrt::TelaViva::AutomaticBrightnessPage ambient_{ nullptr };
+        winrt::TelaViva::AdvancedPage advanced_{ nullptr };
         winrt::TelaViva::AboutPage about_{ nullptr };
     };
 }

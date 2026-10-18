@@ -12,6 +12,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace telaviva {
 
@@ -68,6 +69,17 @@ std::string hexId(uint32_t value)
     char text[16];
     std::snprintf(text, sizeof text, "0x%04x", static_cast<unsigned>(value));
     return text;
+}
+
+// Driver of the catalog adapter with the given device id, empty when none has it.
+std::string driverOf(const std::vector<AdapterInfo>& adapters, const std::string& id)
+{
+    for (std::size_t i = 0; i < adapters.size(); ++i) {
+        if (adapterDeviceId(adapters, i) == id) {
+            return adapters[i].driverVersion;
+        }
+    }
+    return {};
 }
 
 AnalysisStatus mapDetect(int code)
@@ -158,8 +170,7 @@ InferenceHost::InferenceHost(IDetectorApi& api, IScheduler& scheduler, std::wstr
       runtimePath_(std::move(runtimePath)),
       modelPath_(std::move(modelPath)),
       idleRelease_(idleRelease),
-      acceleration_(std::move(acceleration)),
-      boundRuntime_(runtimePath_)
+      acceleration_(std::move(acceleration))
 {
 }
 
@@ -230,6 +241,35 @@ void InferenceHost::releaseIdle()
     }
 }
 
+void InferenceHost::setPreference(const std::string& id)
+{
+    TimerId stale = kInvalidTimerId;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (id == preference_) {
+            return;
+        }
+        preference_ = id;
+        stale = idleTimer_;
+        idleTimer_ = kInvalidTimerId;
+        ++armGeneration_;
+        destroyLocked();
+        mode_ = Mode::Undecided;
+        report_ = InferenceReport{};
+        report_.requestedId = id;
+        report_.decided = false;
+    }
+    if (stale != kInvalidTimerId) {
+        scheduler_.cancel(stale);
+    }
+}
+
+InferenceReport InferenceHost::report() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return report_;
+}
+
 int InferenceHost::activeProvider() const
 {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -271,78 +311,106 @@ bool InferenceHost::ensureSessionLocked()
         FailureReason failure = FailureReason::SessionFailed;
         handle_ = openAcceleratedLocked(failure);
         if (handle_ == nullptr) {
-            recordLocked(failure);
-            mode_ = Mode::Cpu;
-            logLocked("inference engine: cpu (DirectML " + std::string(failureReasonName(failure)) +
-                      " on reopen; marker recorded)");
+            rejectAcceleratedLocked(failure, " on reopen");
         }
     }
     if (handle_ != nullptr) {
         return true;
     }
-    handle_ = api_.create(boundRuntime_, modelPath_, kProviderCpu, kCpuDeviceIndex);
+    handle_ = api_.create(runtimePath_, modelPath_, kProviderCpu, kCpuDeviceIndex);
     return handle_ != nullptr;
 }
 
 void InferenceHost::decideLocked()
 {
-    mode_ = Mode::Cpu;
-    const AccelerationOptions& options = acceleration_;
-    if (options.profiles.empty()) {
-        logLocked("inference engine: cpu (no acceleration profiles)");
+    // The catalog is read once per decision. Without a catalog there is no GPU candidate.
+    const std::vector<AdapterInfo> adapters =
+        acceleration_.adapters != nullptr ? acceleration_.adapters->adapters() : std::vector<AdapterInfo>{};
+    const auto hasMarker = [this, &adapters](const std::string& id) {
+        if (acceleration_.failures == nullptr) {
+            return false;
+        }
+        const std::string driver = driverOf(adapters, id);
+        // Drops markers written for another driver or app version, so a change makes the adapter eligible again.
+        acceleration_.failures->clearIfChanged(driver, acceleration_.appVersion);
+        return acceleration_.failures->hasMarker(FailureKey{id, driver, acceleration_.appVersion});
+    };
+    choice_ = resolveDevice(preference_, adapters, hasMarker);
+
+    if (!choice_.useGpu) {
+        reportCpuLocked(choice_.state, std::nullopt);
+        logLocked("inference engine: cpu (preference " + preference_ + ")");
         return;
     }
-    if (options.directmlRuntimePath.empty() || options.adapters == nullptr || options.failures == nullptr ||
-        options.clock == nullptr || !hasValidLayout(options.selfTestFrame)) {
-        logLocked("inference engine: cpu (acceleration is not configured)");
+    if (acceleration_.clock == nullptr || !hasValidLayout(acceleration_.selfTestFrame)) {
+        // A missing clock or an invalid self-test frame means no GPU: CPU, reported as an automatic fallback.
+        reportCpuLocked(DeviceState::AutoCpu, std::nullopt);
+        logLocked("inference engine: cpu (preference " + preference_ +
+                  ", clock or self-test frame is not configured)");
         return;
     }
 
-    const std::optional<AccelerationMatch> match =
-        findAccelerationMatch(options.profiles, options.adapters->adapters());
-    if (!match.has_value()) {
-        logLocked("inference engine: cpu (no adapter matches an acceleration profile)");
-        return;
-    }
-    activeKey_ = FailureKey{match->profile.id, match->adapter.driverVersion, options.appVersion};
-    activeAdapter_ = match->adapter;
-    // Drops markers written for another driver or app version, so a change makes the profile eligible again.
-    options.failures->clearIfChanged(match->adapter.driverVersion, options.appVersion);
-    if (options.failures->hasMarker(activeKey_)) {
-        logLocked("inference engine: cpu (failure marker for profile " + activeKey_.profile + ")");
-        return;
+    activeKey_ = FailureKey{choice_.id, choice_.adapter.driverVersion, acceleration_.appVersion};
+    if (acceleration_.failures != nullptr) {
+        // Drops markers written for another driver or app version. Markers are optional.
+        acceleration_.failures->clearIfChanged(choice_.adapter.driverVersion, acceleration_.appVersion);
     }
 
-    // The DirectML runtime is bound for the process from here on, even if this attempt fails.
-    boundRuntime_ = options.directmlRuntimePath;
     FailureReason failure = FailureReason::SessionFailed;
     void* accelerated = openAcceleratedLocked(failure);
     if (accelerated == nullptr) {
-        recordLocked(failure);
-        logLocked("inference engine: cpu (DirectML " + std::string(failureReasonName(failure)) +
-                  "; marker recorded)");
+        rejectAcceleratedLocked(failure, "");
         return;
     }
 
     const std::optional<FailureReason> verdict = selfTestLocked(accelerated);
     if (verdict.has_value()) {
         api_.destroy(accelerated);
-        recordLocked(*verdict);
-        logLocked("inference engine: cpu (DirectML self-test " + std::string(failureReasonName(*verdict)) +
-                  "; marker recorded)");
+        rejectAcceleratedLocked(*verdict, "");
         return;
     }
 
     handle_ = accelerated;
     mode_ = Mode::Accelerated;
-    logLocked("inference engine: directml (adapter vendor " + hexId(activeAdapter_.vendorId) + " device " +
-              hexId(activeAdapter_.deviceId) + ", driver " + activeAdapter_.driverVersion + ")");
+    report_.requestedId = preference_;
+    report_.activeId = choice_.id;
+    report_.activeLabel = choice_.adapter.description;
+    report_.state = choice_.state;
+    report_.reason = std::nullopt;
+    report_.decided = true;
+    logLocked("inference engine: directml (adapter vendor " + hexId(choice_.adapter.vendorId) + " device " +
+              hexId(choice_.adapter.deviceId) + ", driver " + choice_.adapter.driverVersion + ")");
+}
+
+void InferenceHost::reportCpuLocked(DeviceState state, std::optional<FailureReason> reason)
+{
+    mode_ = Mode::Cpu;
+    report_.requestedId = preference_;
+    report_.activeId = "cpu";
+    report_.activeLabel = "CPU";
+    report_.state = state;
+    report_.reason = reason;
+    report_.decided = true;
+}
+
+void InferenceHost::rejectAcceleratedLocked(FailureReason reason, const char* when)
+{
+    recordLocked(reason);
+    if (choice_.viaAuto) {
+        const DeviceState state = choice_.state == DeviceState::Unavailable ? DeviceState::Unavailable
+                                                                            : DeviceState::AutoCpu;
+        reportCpuLocked(state, reason);
+    } else {
+        reportCpuLocked(DeviceState::Failed, reason);
+    }
+    logLocked("inference engine: cpu (preference " + preference_ + ", DirectML " +
+              std::string(failureReasonName(reason)) + when + (choice_.viaAuto ? "; marker recorded" : "") + ")");
 }
 
 void* InferenceHost::openAcceleratedLocked(FailureReason& failure)
 {
     // The index comes from the DXGI match in decideLocked, never from a fixed value.
-    void* accelerated = api_.create(boundRuntime_, modelPath_, kProviderDirectMl, activeAdapter_.index);
+    void* accelerated = api_.create(runtimePath_, modelPath_, kProviderDirectMl, choice_.adapter.index);
     if (accelerated == nullptr) {
         failure = FailureReason::SessionFailed;
         return nullptr;
@@ -361,7 +429,7 @@ void* InferenceHost::openAcceleratedLocked(FailureReason& failure)
 std::optional<FailureReason> InferenceHost::selfTestLocked(void* accelerated)
 {
     const SelfTestSample acceleratedSample = timedSelfTestLocked(accelerated);
-    void* reference = api_.create(boundRuntime_, modelPath_, kProviderCpu, kCpuDeviceIndex);
+    void* reference = api_.create(runtimePath_, modelPath_, kProviderCpu, kCpuDeviceIndex);
     if (reference == nullptr) {
         // A failed reference session is an error, and an error counts as a failed self-test.
         return FailureReason::SelfTestMismatch;
@@ -386,10 +454,11 @@ int InferenceHost::fallBackToCpuLocked(const CameraFrame& frame)
 {
     recordLocked(FailureReason::RuntimeError);
     destroyLocked();
-    mode_ = Mode::Cpu;
-    logLocked("inference engine: cpu (DirectML runtime error; marker recorded)");
+    reportCpuLocked(choice_.viaAuto ? DeviceState::AutoCpu : DeviceState::Failed, FailureReason::RuntimeError);
+    logLocked("inference engine: cpu (preference " + preference_ + ", DirectML runtime error" +
+              (choice_.viaAuto ? "; marker recorded" : "") + ")");
     // Retry the failing frame on CPU, so the caller never sees a false absence.
-    handle_ = api_.create(boundRuntime_, modelPath_, kProviderCpu, kCpuDeviceIndex);
+    handle_ = api_.create(runtimePath_, modelPath_, kProviderCpu, kCpuDeviceIndex);
     if (handle_ == nullptr) {
         return TV_INFERENCE_ERROR_RUNTIME;
     }
@@ -398,7 +467,8 @@ int InferenceHost::fallBackToCpuLocked(const CameraFrame& frame)
 
 void InferenceHost::recordLocked(FailureReason reason)
 {
-    if (acceleration_.failures != nullptr) {
+    // Markers are written only for an automatic candidate; an explicit choice is never blocked by one.
+    if (choice_.viaAuto && acceleration_.failures != nullptr) {
         acceleration_.failures->record(activeKey_, reason);
     }
 }

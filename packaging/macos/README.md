@@ -10,8 +10,8 @@ and does not provide Developer ID distribution or notarization.
 - Rust toolchain
 - Python 3
 - The repository-pinned YuNet model. The `scripts/build-macos.sh` helper fetches the
-  pinned ONNX Runtime on the first build, checks its hashes, and reuses it on
-  later builds. Packaging verifies both inference assets again.
+  pinned ONNX Runtime when missing or outdated, checks its hashes, and reuses
+  verified copies on later builds. Packaging verifies both inference assets again.
 
 ## Build
 
@@ -42,7 +42,8 @@ selected configuration from the repository root first:
 - Debug: `cargo build --workspace --locked`
 - Release: `cargo build --workspace --release --target aarch64-apple-darwin --locked`
 
-The Xcode project does not bundle the ONNX Runtime, the models or the licenses,
+The Xcode project generates the same-source inference self-test frame as the
+packaging script. It does not bundle the ONNX Runtime, the models or the licenses,
 so `./scripts/build-macos.sh` remains the verified build path (see
 [ADR 0009](../../adr/0009-app-icons-liquid-glass-and-presence-status-icon.md)).
 

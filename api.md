@@ -164,7 +164,7 @@ Header: [`include/telaviva_inference.h`](include/telaviva_inference.h). `TvInfer
 
 `tv_inference_detect_bgra` accepts caller-owned top-down BGRA8 bytes with length, width, height, and stride, and returns status: absent `0`, present `1`, or insufficient light `2`; negative values indicate invalid argument `-1`, runtime `-2`, model `-3`, or panic `-4`. It never returns `3` (unavailable), which only the create functions return. `tv_inference_assess_light_bgra` performs quality-only light assessment, returning `0` for sufficient light, `2` for insufficient light, or a negative error. `tv_inference_coreml_available` reports runtime capability, while `tv_inference_selected_provider` reports the selected provider. Call `tv_inference_destroy` to release the handle. Frame data is processed synchronously and is not retained or logged.
 
-Hardware camera behavior, DDC writes/restoration, and a measured DirectML energy benefit are not established by these interfaces or their source-level tests. NPU providers are not implemented.
+Hardware camera behavior, DDC writes/restoration, and any accelerator energy benefit are not established by these interfaces or their source-level tests. NPU providers are not implemented.
 
 ## External monitor hardware keys
 
@@ -187,7 +187,7 @@ Provider values:
 | `TV_INFERENCE_PROVIDER_CPU` | `0` | CPU. Always available. |
 | `TV_INFERENCE_PROVIDER_COREML_CANDIDATE` | `1` | CoreML candidate. Only macOS builds register it; other builds fall back to CPU. |
 | `TV_INFERENCE_PROVIDER_DIRECTML_CANDIDATE` | `2` | DirectML candidate. An unavailable or failing DirectML registration falls back to CPU. |
-| `3` | reserved | Reserved for a future NPU provider. The create functions reject it with `-1`. The value `3` is also the create-function unavailable status and is not a provider value. |
+| `3` | reserved | Reserved. NPU providers are out of scope. The create functions reject it with `-1`. The value `3` is also the create-function unavailable status and is not a provider value. |
 
 ```c
 int32_t tv_inference_create_with_provider_device(const char *runtime_abs_path,
@@ -199,10 +199,44 @@ int32_t tv_inference_create_with_provider_device(const char *runtime_abs_path,
 int32_t tv_inference_directml_available(void);
 ```
 
-`tv_inference_create_with_provider_device` is `tv_inference_create_with_provider` with a DirectML adapter index added. It has the same paths, return codes and handle rules as `tv_inference_create`. `device_index` is an index into the DXGI adapter enumeration order (`IDXGIFactory1::EnumAdapters1`) as seen by ONNX Runtime. It applies only to provider `2` and is ignored for providers `0` and `1`. Index `0` gives the same session as `tv_inference_create_with_provider`. An index that ONNX Runtime cannot register falls back to CPU: the return value is still `0` and `tv_inference_selected_provider` reports `0`. The index-to-adapter mapping is not yet confirmed against the DXGI order; the Windows measurement notes infer it from latency.
+`tv_inference_create_with_provider_device` is `tv_inference_create_with_provider` with a DirectML adapter index added. It has the same paths, return codes and handle rules as `tv_inference_create`. `device_index` is an index into the DXGI adapter enumeration order (`IDXGIFactory1::EnumAdapters1`) as seen by ONNX Runtime for provider `2`. For provider `1` (CoreML), it selects compute units: `0` = `ALL`, `1` = `CPUAndNeuralEngine`, `2` = `CPUAndGPU`; other values return `-1`. Provider `0` ignores the index. Registration failure falls back to CPU and `tv_inference_selected_provider` reports `0`. Index `0` gives the same session as `tv_inference_create_with_provider`. An index that ONNX Runtime cannot register falls back to CPU: the return value is still `0` and `tv_inference_selected_provider` reports `0`. On the Windows development desktop the `EnumAdapters1` index selected the same physical adapter as the DXGI and DXCore LUID classification (index 0 the discrete RTX, index 1 the integrated Radeon, confirmed by per-LUID GPU utilisation); this is one machine, so the Windows shell still takes the index from the live DXGI catalog and never assumes it.
 
-`tv_inference_directml_available` returns `1` only when all of these hold: the build was compiled with the `directml` cargo feature (off by default), the platform supports DirectML, a successful create call has initialized the runtime, and the loaded runtime lists the DirectML provider. In every other case it returns `0`, including builds without the `directml` feature and calls made before the runtime is initialized. It never returns an error and does not need a created detector.
+`tv_inference_directml_available` returns `1` only when all of these hold: the build was compiled with the `directml` cargo feature (off by default; the shipped Windows `telaviva_inference.dll` enables it), the platform supports DirectML, a successful create call has initialized the runtime, and the loaded runtime lists the DirectML provider. In every other case it returns `0`, including builds without the `directml` feature and calls made before the runtime is initialized. It never returns an error and does not need a created detector.
 
 `tv_inference_selected_provider` returns `2` when the session was built with DirectML.
 
-The default Windows runtime is the ONNX Runtime CPU build. A DirectML-enabled runtime is a reserved variant that is not shipped by default. On the Windows test machine, a DirectML session returned the same status and confidence as CPU on the test fixture. Energy was not measured, so no energy benefit is claimed (see [the Windows measurements](specs/archived/windows-version/validation/measurements.md)).
+The shipped Windows runtime is the DirectML build of ONNX Runtime 1.20.1, installed as `onnxruntime.dll`. Its DirectX and DirectML dependencies are delay-loaded, so the CPU provider works where DirectML is missing, and a single runtime serves every device (the runtime path is bound once per process). `DirectML.dll` is the operating system's copy and is not redistributed. Which device runs detection is chosen by the setting below. On the Windows test machine a DirectML session returned the same status and confidence as CPU on the test fixture; energy was not measured, so no energy benefit is claimed (see [the Windows measurements](specs/archived/windows-version/validation/measurements.md)).
+
+## inference-device-selection
+
+### Setting `inference_device`
+
+Settings schema 1 adds `inference_device`, a string with default `"auto"`. Older files load with `auto`; as with the earlier additive schema-1 fields, a build without this field treats a `settings.json` that contains it as corrupt, because it rejects unknown fields. This is additive to core ABI version 1 and changes no function signature.
+
+| Value | Meaning | Used on |
+|---|---|---|
+| `auto` | The platform chain, validated, with CPU fallback | both |
+| `cpu` | CPU provider only | both |
+| `ane` | CoreML with the Neural Engine preference | macOS |
+| `gpu` | CoreML with the GPU preference | macOS |
+| `gpu:<vendor>:<device>:<ordinal>` | A specific GPU: 4 lowercase hex digits for the PCI vendor and device ids, then the decimal ordinal among adapters with the same ids (1 to 3 digits) | Windows |
+
+`update_settings` accepts `inference_device` as a string of at most 32 characters in exactly one of the shapes above, and rejects anything else (empty, uppercase, a missing segment, a non-string) with an error that names `inference_device`, leaving the settings unchanged. The core accepts every shape on every platform and does not know the platform; a shell that cannot map a stored value to a present device behaves as `auto` for that run, reports it as unavailable, and keeps the stored value.
+
+### Windows behavior
+
+- `auto` uses the first non-software adapter that DXCore reports as integrated (`IsIntegrated`, matched to the DXGI adapter by LUID) and has no failure marker, and the CPU otherwise. A discrete GPU, or an adapter whose kind could not be classified, is never chosen by `auto`, but can be chosen by its id.
+- An accelerated device is used only after it creates a session with provider `2`, returns present for the bundled self-test frame as a CPU reference session does, and answers within 125 ms. It does not need to be faster than the CPU. On any failure, and on a runtime error later, detection moves to the CPU and the failed frame is retried there.
+- Under `auto` a failure writes a marker `(device id, driver, app version)` to `inference-failures.json`, which later launches respect until the driver or app version changes. An explicit choice neither reads nor writes markers.
+- The shell exposes a report (requested id, active id and label, a state of `ok`, `auto_cpu`, `unavailable` or `failed`, and the failure reason) to the Advanced page. It is not part of the core snapshot.
+
+The Windows Advanced page lists Automatic, each hardware GPU by name and kind, and CPU.
+
+
+### macOS behavior
+
+The Advanced page lists Automatic, Neural Engine preference, GPU preference and CPU. The shell forwards changes through `PresenceCamera.setInferenceDevice`, releases the detector, and creates the new session lazily at the next face-detection request. A shell-owned observable report carries requested/active ids, active label, state (`ok`, `auto_cpu`, `unavailable`, `failed`), failure reason and whether the session has been decided; none of this enters the shared core snapshot.
+
+CoreML uses the provider's string `MLComputeUnits` option through the versioned runtime API. macOS bundles ONNX Runtime 1.23.0 with unchanged `ort` rc.9/API 20 bindings; Windows retains 1.20.1. The initial macOS 1.22.0 target was replaced after reproducing a runtime process-exit mutex abort, including CPU-only sessions.
+
+The shell checks the bundled self-test frame against a CPU reference and the same 125 ms budget as Windows. A candidate failure selects CPU; a runtime accelerator error retries the same frame on CPU and retains CPU for the preference session, including after idle detector release. Successful validation is also retained across idle recreation. A changed preference resets the decision. A foreign-platform id is retained, behaves as Automatic and reports `unavailable`. CoreML preferences do not prove which physical compute unit executed individual operators. No network use is added.

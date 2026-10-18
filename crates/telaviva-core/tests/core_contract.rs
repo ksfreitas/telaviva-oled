@@ -269,6 +269,117 @@ fn key_step_settings_are_optional_default_five_persisted_and_range_checked() {
 }
 
 #[test]
+fn inference_device_defaults_to_auto_and_older_files_without_the_key_load() {
+    assert_eq!(Settings::default().inference_device, "auto");
+    let old = Settings::from_json(
+        br#"{"schema_version":1,"locale":"pt-BR","presence_protection_enabled":true}"#,
+    )
+    .unwrap();
+    assert_eq!(old.inference_device, "auto");
+}
+
+#[test]
+fn inference_device_accepts_documented_values_and_rejects_others() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    assert_eq!(core.settings().unwrap().inference_device, "auto");
+    for value in [
+        "auto",
+        "cpu",
+        "ane",
+        "gpu",
+        "gpu:1002:164e:0",
+        "gpu:10de:2684:12",
+    ] {
+        let snapshot = send(
+            &mut core,
+            json!({"type":"update_settings","settings":{"inference_device":value}}),
+        );
+        assert_eq!(snapshot["settings"]["inference_device"], value);
+        assert_eq!(core.settings().unwrap().inference_device, value);
+    }
+    let too_long = "a".repeat(33);
+    for invalid in [
+        "",
+        "AUTO",
+        "Gpu",
+        "ane ",
+        "gpu:1:2:0",
+        "gpu:1002:164e",
+        "gpu:1002:164E:0",
+        "gpu:1002:164e:",
+        "gpu:1002:164e:1234",
+        "npu",
+        "cuda:0",
+        too_long.as_str(),
+    ] {
+        let event = json!({"type":"update_settings","settings":{"inference_device":invalid}});
+        let error = core
+            .submit_json(&serde_json::to_vec(&event).unwrap())
+            .unwrap_err();
+        assert!(error.contains("inference_device"), "{invalid:?}: {error}");
+        assert_eq!(
+            core.settings().unwrap().inference_device,
+            "gpu:10de:2684:12"
+        );
+    }
+}
+
+#[test]
+fn inference_device_is_persisted_and_reloaded() {
+    let root =
+        std::env::temp_dir().join(format!("telaviva-inference-device-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&root);
+    let path = root.join("settings.json");
+    std::fs::write(
+        &path,
+        br#"{"schema_version":1,"presence_protection_enabled":true}"#,
+    )
+    .unwrap();
+    let mut core = Core::new(CoreOptions {
+        config_path: Some(path.clone()),
+        ..CoreOptions::default()
+    })
+    .unwrap();
+    assert_eq!(core.settings().unwrap().inference_device, "auto");
+    send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"inference_device":"gpu:1002:164e:0"}}),
+    );
+    let persisted: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(persisted["schema_version"], 1);
+    assert_eq!(persisted["inference_device"], "gpu:1002:164e:0");
+    let reloaded = Core::new(CoreOptions {
+        config_path: Some(path.clone()),
+        ..CoreOptions::default()
+    })
+    .unwrap();
+    assert_eq!(reloaded.settings().unwrap(), core.settings().unwrap());
+    assert_eq!(
+        reloaded.settings().unwrap().inference_device,
+        "gpu:1002:164e:0"
+    );
+    let before_file = std::fs::read(&path).unwrap();
+    assert!(core
+        .submit_json(br#"{"type":"update_settings","settings":{"inference_device":"GPU"}}"#)
+        .is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), before_file);
+    assert_eq!(core.settings().unwrap().inference_device, "gpu:1002:164e:0");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn inference_device_rejects_non_string_values() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    for invalid in [json!(3), json!(true)] {
+        let event = json!({"type":"update_settings","settings":{"inference_device":invalid}});
+        assert!(core
+            .submit_json(&serde_json::to_vec(&event).unwrap())
+            .is_err());
+        assert_eq!(core.settings().unwrap().inference_device, "auto");
+    }
+}
+
+#[test]
 fn presence_min_brightness_defaults_to_20_is_range_checked_and_persisted() {
     assert_eq!(Settings::default().presence_min_brightness_percent, 20.0);
     assert_eq!(

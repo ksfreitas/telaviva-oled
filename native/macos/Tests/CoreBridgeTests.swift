@@ -14,8 +14,10 @@ private struct CoreBridgeTests {
         hardwareBrightnessKeyDuringProtections()
         coreSettingsKeyStepJSON()
         coreSettingsPresenceThresholdJSON()
+        coreSettingsInferenceDeviceJSON()
         keyStepSettingsReachRouterThroughCore()
         cameraHistoryDecodesAndStaysOutOfSaves()
+        inferenceDeviceRoundTripsThroughCore()
         cameraSelectionRoundTripsThroughCore()
         coreSettingsAmbientFieldsJSON()
         ambientCurvePointsJSON()
@@ -288,6 +290,19 @@ private struct CoreBridgeTests {
                "absent presence brightness threshold is emitted as the default of 20")
     }
 
+    private static func coreSettingsInferenceDeviceJSON() {
+        let withDevice = decodeSettings(["inference_device": "ane"])
+        expect(withDevice.inference_device == "ane", "inference device decodes from a snapshot that carries it")
+        expect((withDevice.json["inference_device"] as? String) == "ane",
+               "inference device is emitted when present")
+
+        // Older snapshots do not contain the additive setting; unrelated saves still emit its default.
+        let withoutDevice = decodeSettings([:])
+        expect(withoutDevice.inference_device == nil, "older snapshots without inference_device still decode")
+        expect((withoutDevice.json["inference_device"] as? String) == "auto",
+               "an absent inference device is emitted as the default")
+    }
+
     private static func keyStepSettingsReachRouterThroughCore() {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("telaviva-core-bridge-tests-\(UUID().uuidString)", isDirectory: true)
@@ -405,6 +420,26 @@ private struct CoreBridgeTests {
         // The camera is sent only by selectCamera(_:), so a settings payload never carries it or the read-only history.
         expect(withHistory.json["selected_camera_id"] == nil && withHistory.json["camera_history"] == nil,
                "settings payloads never carry the camera selection or the read-only history")
+    }
+
+    private static func inferenceDeviceRoundTripsThroughCore() {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("telaviva-inference-device-tests-\(UUID().uuidString)", isDirectory: true)
+        try! FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let bridge = CoreBridge(configPath: directory.appendingPathComponent("settings.json"))
+        expect(waitUntil { bridge.snapshot.settings?.inference_device == "auto" },
+               "core snapshots publish the default inference device")
+        var settings = bridge.snapshot.settings!
+        settings.inference_device = "ane"
+        bridge.updateSettings(settings)
+        expect(waitUntil { bridge.snapshot.settings?.inference_device == "ane" },
+               "a settings save publishes the selected inference device")
+
+        var shutdownFinished = false
+        bridge.beginShutdown { shutdownFinished = true }
+        expect(waitUntil { shutdownFinished }, "core shuts down before the temporary directory is removed")
     }
 
     private static func cameraSelectionRoundTripsThroughCore() {

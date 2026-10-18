@@ -12,7 +12,7 @@ Implementation is in progress. The repository contains a Cargo workspace, shared
 - `CHANGELOG.md`: release history, starting with Unreleased.
 - `docs/`: user guide with the detailed behavior of each feature; the README is the short entry point.
 - `adr/`: permanent architecture decision records.
-- `specs/oled-monitor-protection/`: holds only navigation pointers to archived records for the initial application's requirements, technical architecture, and runtime contracts.
+- `specs/archived/`: the archived record of each completed feature (specification, design, plan and validation reports). Use `ARCHITECTURE.md`, `api.md` and `adr/` for the current design; the initial application's records are in `specs/archived/external-monitor-control-and-oled-presence-protection/`.
 - `crates/telaviva-core/`: shared policy, settings and native-shell C ABI.
 - `crates/telaviva-inference/`: image quality assessment and local YuNet/ONNX detection.
 - `native/macos/`: native SwiftUI/AppKit shell and macOS device adapters.
@@ -29,7 +29,7 @@ Implementation is in progress. The repository contains a Cargo workspace, shared
 - Presence means detecting any face, without identifying a specific person or requiring face enrollment.
 - Keep intended behavior distinct from implemented and hardware-verified capabilities.
 - Determine monitor capabilities, platform limitations, and failure behavior during design; do not assume uniform DDC support.
-- Follow the selected design in `ARCHITECTURE.md`, `api.md` and the ADRs in `adr/` (especially `adr/0001-native-shell-and-rust-core.md`): native SwiftUI/AppKit and WinUI 3 shells, one shared Rust core with a versioned C ABI, local YuNet inference through ONNX Runtime, and conditional low-energy acceleration.
+- Follow the selected design in `ARCHITECTURE.md`, `api.md` and the ADRs in `adr/` (especially `adr/0001-native-shell-and-rust-core.md`): native SwiftUI/AppKit and WinUI 3 shells, one shared Rust core with a versioned C ABI, local YuNet inference through ONNX Runtime, and a selectable inference device with validated acceleration and CPU fallback.
 - Use only open-source redistributed dependencies and assets. Initial macOS support targets Apple Silicon; Intel is deferred and DDC compatibility remains connection-specific, including on M1.
 - Follow the process conventions in ARCHITECTURE.md. Documentation and commit language default to en-US.
 - Everything implemented from now on applies to both platforms (macOS and Windows) in the same change, with equivalent behavior, localized strings (en-US and pt-BR) and tests on each, unless the owner explicitly scopes a task to one platform. The MacBook features are called Laptop (en-US) and Notebook (pt-BR) on Windows UI only.

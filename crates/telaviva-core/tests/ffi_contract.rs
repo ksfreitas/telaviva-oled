@@ -181,6 +181,56 @@ fn ffi_builtin_display_reaches_the_snapshot() {
 }
 
 #[test]
+fn ffi_inference_device_setting_reaches_the_snapshot() {
+    unsafe {
+        let mut core: *mut TvCore = ptr::null_mut();
+        assert_eq!(
+            ffi::tv_create(1, ptr::null(), 0, None, ptr::null_mut(), &mut core),
+            ffi::TV_OK
+        );
+        let cmd =
+            br#"{"type":"update_settings","settings":{"inference_device":"gpu:1002:164e:0"}}"#;
+        assert_eq!(ffi::tv_submit(core, cmd.as_ptr(), cmd.len()), ffi::TV_OK);
+        let mut buffer = TvBuffer {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        assert_eq!(ffi::tv_snapshot(core, &mut buffer), ffi::TV_OK);
+        let snapshot: serde_json::Value =
+            serde_json::from_slice(std::slice::from_raw_parts(buffer.data, buffer.len)).unwrap();
+        ffi::tv_buffer_free(&mut buffer);
+        assert_eq!(snapshot["settings"]["inference_device"], "gpu:1002:164e:0");
+        ffi::tv_destroy(core);
+    }
+}
+
+#[test]
+fn ffi_rejects_invalid_inference_device_and_keeps_auto() {
+    unsafe {
+        let mut core: *mut TvCore = ptr::null_mut();
+        assert_eq!(
+            ffi::tv_create(1, ptr::null(), 0, None, ptr::null_mut(), &mut core),
+            ffi::TV_OK
+        );
+        let invalid = br#"{"type":"update_settings","settings":{"inference_device":"GPU"}}"#;
+        assert_eq!(
+            ffi::tv_submit(core, invalid.as_ptr(), invalid.len()),
+            ffi::TV_INVALID_ARGUMENT
+        );
+        let mut buffer = TvBuffer {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        assert_eq!(ffi::tv_snapshot(core, &mut buffer), ffi::TV_OK);
+        let snapshot: serde_json::Value =
+            serde_json::from_slice(std::slice::from_raw_parts(buffer.data, buffer.len)).unwrap();
+        ffi::tv_buffer_free(&mut buffer);
+        assert_eq!(snapshot["settings"]["inference_device"], "auto");
+        ffi::tv_destroy(core);
+    }
+}
+
+#[test]
 fn ffi_presence_observation_reaches_the_snapshot() {
     unsafe {
         let mut core: *mut TvCore = ptr::null_mut();

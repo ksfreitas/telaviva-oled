@@ -39,7 +39,7 @@ fi
 rustup target add aarch64-apple-darwin
 
 RUNTIME="$ROOT/tools/inference/runtime/macos-arm64/libonnxruntime.dylib"
-if [ ! -f "$RUNTIME" ]; then
+if ! "$ROOT/tools/inference/fetch-macos-runtime.sh" --check; then
   for tool in curl shasum tar; do
     command -v "$tool" >/dev/null 2>&1 || fail "Missing $tool, needed to fetch the pinned ONNX Runtime."
   done

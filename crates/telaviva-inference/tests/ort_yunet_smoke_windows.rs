@@ -10,7 +10,7 @@ use telaviva_inference::{
 #[test]
 fn bundled_runtime_executes_pinned_yunet_model_on_cpu_windows() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let runtime_path = root.join("tools/inference/runtime/windows-x64/onnxruntime.dll");
+    let runtime_path = root.join("tools/inference/runtime/windows-x64-directml/onnxruntime.dll");
     // The runtime is fetched locally and is not part of a clean checkout, so skip.
     if !runtime_path.is_file() {
         eprintln!(
@@ -18,7 +18,7 @@ fn bundled_runtime_executes_pinned_yunet_model_on_cpu_windows() {
             runtime_path.display()
         );
         eprintln!(
-            "run tools/inference/fetch-windows-runtime.ps1 to enable bundled_runtime_executes_pinned_yunet_model_on_cpu_windows"
+            "run tools/inference/fetch-windows-runtime.ps1 -Variant directml to enable bundled_runtime_executes_pinned_yunet_model_on_cpu_windows"
         );
         return;
     }
