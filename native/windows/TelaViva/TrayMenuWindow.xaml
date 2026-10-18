@@ -72,6 +72,13 @@
                 <TextBlock x:Name="SettingsText" VerticalAlignment="Center" />
             </StackPanel>
         </Button>
+        <Button x:Name="AboutItem" Style="{StaticResource TrayMenuItemStyle}">
+            <StackPanel Orientation="Horizontal" Spacing="12">
+                <FontIcon Glyph="&#xE946;" FontFamily="Segoe Fluent Icons" FontSize="16"
+                          VerticalAlignment="Center" AutomationProperties.AccessibilityView="Raw" />
+                <TextBlock x:Name="AboutText" VerticalAlignment="Center" />
+            </StackPanel>
+        </Button>
         <Button x:Name="QuitItem" Style="{StaticResource TrayMenuItemStyle}">
             <StackPanel Orientation="Horizontal" Spacing="12">
                 <FontIcon Glyph="&#xE711;" FontFamily="Segoe Fluent Icons" FontSize="16"

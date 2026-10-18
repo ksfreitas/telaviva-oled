@@ -47,6 +47,15 @@ fn exports() -> Vec<Export> {
     ) -> i32 = ffi::tv_camera_lifecycle_step;
     let camera_destroy: unsafe extern "C" fn(*mut TvCameraLifecycle) =
         ffi::tv_camera_lifecycle_destroy;
+    let core_version: unsafe extern "C" fn(*mut TvBuffer) -> i32 = ffi::tv_core_version;
+    let update_evaluate: unsafe extern "C" fn(
+        *const u8,
+        usize,
+        u32,
+        *const u8,
+        usize,
+        *mut TvBuffer,
+    ) -> i32 = ffi::tv_update_evaluate;
     vec![
         Export {
             name: "tv_abi_version",
@@ -97,6 +106,16 @@ fn exports() -> Vec<Export> {
             name: "tv_camera_lifecycle_destroy",
             prototype: "void tv_camera_lifecycle_destroy(TvCameraLifecycle *)",
             address: camera_destroy as usize,
+        },
+        Export {
+            name: "tv_core_version",
+            prototype: "int32_t tv_core_version(TvBuffer *)",
+            address: core_version as usize,
+        },
+        Export {
+            name: "tv_update_evaluate",
+            prototype: "int32_t tv_update_evaluate(const uint8_t *, size_t, uint32_t, const uint8_t *, size_t, TvBuffer *)",
+            address: update_evaluate as usize,
         },
     ]
 }

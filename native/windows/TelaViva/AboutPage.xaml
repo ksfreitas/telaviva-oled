@@ -1,0 +1,31 @@
+<!-- Copyright (c) Microsoft Corporation.
+     Licensed under the MIT License. -->
+<UserControl
+    x:Class="TelaViva.AboutPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <!-- Text is set in code from Str(key) (ADR 0015). -->
+    <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="24,8,24,24"
+                  AutomationProperties.LandmarkType="Main">
+        <StackPanel Spacing="8">
+            <TextBlock x:Name="PageTitle" Style="{StaticResource TitleTextBlockStyle}"
+                       TextWrapping="Wrap" Margin="0,0,0,8"
+                       AutomationProperties.HeadingLevel="Level1" />
+            <StackPanel HorizontalAlignment="Center" Spacing="4" Margin="0,8,0,16">
+                <Image x:Name="AppIconImage" Width="96" Height="96"
+                       AutomationProperties.AccessibilityView="Raw" />
+                <TextBlock x:Name="ProductName" Style="{StaticResource SubtitleTextBlockStyle}"
+                           HorizontalAlignment="Center" TextAlignment="Center" />
+                <TextBlock x:Name="VersionText" Style="{StaticResource CaptionTextBlockStyle}"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           HorizontalAlignment="Center" TextAlignment="Center"
+                           IsTextSelectionEnabled="True" />
+            </StackPanel>
+            <StackPanel x:Name="RowsPanel" Spacing="8" />
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

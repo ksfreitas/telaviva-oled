@@ -58,6 +58,19 @@ int32_t tv_camera_lifecycle_step(TvCameraLifecycle *lifecycle, const uint8_t *js
 /* Destroys a lifecycle handle; NULL is ignored. */
 void tv_camera_lifecycle_destroy(TvCameraLifecycle *lifecycle);
 
+/* Core version and update evaluation, additive to ABI version 1. Both are pure: no network and
+ * no state. Free every written buffer with tv_buffer_free. */
+/* Writes the core version (UTF-8, no terminator) to out. Free with tv_buffer_free. */
+int32_t tv_core_version(TvBuffer *out);
+/* Compares the installed version with a GitHub releases/latest answer and writes the
+ * UpdateOutcome JSON to out. Free with tv_buffer_free. Pure: no network, no state.
+ * body may be NULL only when body_len is 0. Returns TV_SIZE_LIMIT when body_len exceeds 1 MiB
+ * or installed_len exceeds 64 bytes; out is written only on TV_OK. */
+int32_t tv_update_evaluate(const uint8_t *installed, size_t installed_len,
+                           uint32_t http_status,
+                           const uint8_t *body, size_t body_len,
+                           TvBuffer *out);
+
 #ifdef __cplusplus
 }
 #endif

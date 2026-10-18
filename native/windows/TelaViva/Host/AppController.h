@@ -76,12 +76,20 @@ public:
     bool removeCalibrationPoint(const std::string& monitorId, int point) override;
     void endCalibration(telaviva::CalibrationEndReason reason) override;
 
+    // ISettingsHost, About page.
+    telaviva::UpdateChecker& updateChecker() override;
+    const std::string& appVersion() const override;
+
     // The Settings pages reach the controller through this interface.
     ISettingsHost* settingsHost();
 
 private:
     struct Services;
     std::unique_ptr<Services> services_;
+    // Built in the constructor from the core version. Declared after services_, so it is destroyed
+    // first; it shares no state with the other services.
+    std::string appVersion_;
+    std::shared_ptr<telaviva::UpdateChecker> updateChecker_;
 };
 
 }  // namespace telaviva::host

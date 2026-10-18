@@ -106,7 +106,8 @@
       <Command>copy /Y "$(MSBuildThisFileDirectory)..\build\rust\telaviva_core.dll" "$(OutDir)"
 copy /Y "$(MSBuildThisFileDirectory)..\build\rust\telaviva_inference.dll" "$(OutDir)"
 if not exist "$(OutDir)Assets" mkdir "$(OutDir)Assets"
-if exist "$(MSBuildThisFileDirectory)Assets\*.ico" copy /Y "$(MSBuildThisFileDirectory)Assets\*.ico" "$(OutDir)Assets\"</Command>
+if exist "$(MSBuildThisFileDirectory)Assets\*.ico" copy /Y "$(MSBuildThisFileDirectory)Assets\*.ico" "$(OutDir)Assets\"
+if exist "$(MSBuildThisFileDirectory)Assets\*.png" copy /Y "$(MSBuildThisFileDirectory)Assets\*.png" "$(OutDir)Assets\"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
@@ -156,6 +157,9 @@ if exist "$(MSBuildThisFileDirectory)Assets\*.ico" copy /Y "$(MSBuildThisFileDir
     <ClInclude Include="AutomaticBrightnessPage.xaml.h">
       <DependentUpon>AutomaticBrightnessPage.xaml</DependentUpon>
     </ClInclude>
+    <ClInclude Include="AboutPage.xaml.h">
+      <DependentUpon>AboutPage.xaml</DependentUpon>
+    </ClInclude>
     <ClInclude Include="CalibrationDialog.xaml.h">
       <DependentUpon>CalibrationDialog.xaml</DependentUpon>
     </ClInclude>
@@ -182,6 +186,9 @@ if exist "$(MSBuildThisFileDirectory)Assets\*.ico" copy /Y "$(MSBuildThisFileDir
       <SubType>Designer</SubType>
     </Page>
     <Page Include="AutomaticBrightnessPage.xaml">
+      <SubType>Designer</SubType>
+    </Page>
+    <Page Include="AboutPage.xaml">
       <SubType>Designer</SubType>
     </Page>
     <Page Include="CalibrationDialog.xaml">
@@ -215,6 +222,9 @@ if exist "$(MSBuildThisFileDirectory)Assets\*.ico" copy /Y "$(MSBuildThisFileDir
     </ClCompile>
     <ClCompile Include="AutomaticBrightnessPage.xaml.cpp">
       <DependentUpon>AutomaticBrightnessPage.xaml</DependentUpon>
+    </ClCompile>
+    <ClCompile Include="AboutPage.xaml.cpp">
+      <DependentUpon>AboutPage.xaml</DependentUpon>
     </ClCompile>
     <ClCompile Include="CalibrationDialog.xaml.cpp">
       <DependentUpon>CalibrationDialog.xaml</DependentUpon>

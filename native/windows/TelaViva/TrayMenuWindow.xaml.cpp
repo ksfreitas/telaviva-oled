@@ -19,6 +19,7 @@
 #include <dwmapi.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 
@@ -175,6 +176,13 @@ namespace winrt::TelaViva::implementation
             }
         });
 
+        AboutItem().Click([this](auto const&, auto const&) {
+            AppWindow().Hide();
+            if (openAbout_) {
+                openAbout_();
+            }
+        });
+
         QuitItem().Click([this](auto const&, auto const&) {
             AppWindow().Hide();
             if (quit_) {
@@ -182,22 +190,25 @@ namespace winrt::TelaViva::implementation
             }
         });
 
-        // Up and Down move between the two items; Tab is handled by the focus engine.
+        // Up and Down move between the rows in visual order; Tab is handled by the focus engine.
         MenuPanel().KeyDown([this](auto const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args) {
             const auto key = args.Key();
             if (key != winrt::Windows::System::VirtualKey::Up && key != winrt::Windows::System::VirtualKey::Down) {
                 return;
             }
-            // With two rows, an arrow from one row goes to the other. With no row focused, Down takes
-            // the first row and Up the last.
-            Microsoft::UI::Xaml::Controls::Button target = SettingsItem();
-            if (const auto source = args.OriginalSource().try_as<Microsoft::UI::Xaml::Controls::Button>()) {
-                target = (source == SettingsItem()) ? QuitItem() : SettingsItem();
+            const std::array<Microsoft::UI::Xaml::Controls::Button, 3> rows{ SettingsItem(), AboutItem(), QuitItem() };
+            // Down moves to the next row and Up to the previous one, wrapping at either end. With no row
+            // focused, Down takes the first row and Up the last.
+            const bool down = key == winrt::Windows::System::VirtualKey::Down;
+            size_t target = down ? 0 : rows.size() - 1;
+            const auto source = args.OriginalSource().try_as<Microsoft::UI::Xaml::Controls::Button>();
+            for (size_t i = 0; i < rows.size(); ++i) {
+                if (source && source == rows[i]) {
+                    target = down ? (i + 1) % rows.size() : (i + rows.size() - 1) % rows.size();
+                    break;
+                }
             }
-            else if (key == winrt::Windows::System::VirtualKey::Up) {
-                target = QuitItem();
-            }
-            static_cast<void>(target.Focus(Microsoft::UI::Xaml::FocusState::Keyboard));
+            static_cast<void>(rows[target].Focus(Microsoft::UI::Xaml::FocusState::Keyboard));
             args.Handled(true);
         });
 
@@ -223,9 +234,10 @@ namespace winrt::TelaViva::implementation
         applyFrameAttributes(hwnd_);
     }
 
-    void TrayMenuWindow::SetActions(std::function<void()> openSettings, std::function<void()> quit)
+    void TrayMenuWindow::SetActions(std::function<void()> openSettings, std::function<void()> openAbout, std::function<void()> quit)
     {
         openSettings_ = std::move(openSettings);
+        openAbout_ = std::move(openAbout);
         quit_ = std::move(quit);
     }
 
@@ -234,6 +246,10 @@ namespace winrt::TelaViva::implementation
         const winrt::hstring settingsText = localized("tray.menu.settings");
         SettingsText().Text(settingsText);
         Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(SettingsItem(), settingsText);
+
+        const winrt::hstring aboutText = localized("tray.menu.about");
+        AboutText().Text(aboutText);
+        Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(AboutItem(), aboutText);
 
         const winrt::hstring quitText = localized("tray.menu.quit");
         QuitText().Text(quitText);

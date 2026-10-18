@@ -22,6 +22,7 @@ private struct CoreBridgeTests {
         monitorFollowAndProtectionDecode()
         ambientSnapshotDecodes()
         builtInDisplayReportReachesTheSnapshot()
+        updateCheckerUsesRealCore()
         print("Core bridge asynchronous tests passed")
     }
 
@@ -599,6 +600,21 @@ private struct CoreBridgeTests {
         var shutdownFinished = false
         bridge.beginShutdown { shutdownFinished = true }
         expect(waitUntil { shutdownFinished }, "shutdown completes before the temporary directory is removed")
+    }
+
+    private static func updateCheckerUsesRealCore() {
+        #if TELAVIVA_CORE
+        expect((CoreUpdate.version() ?? "").isEmpty == false, "the real core reports a non-empty version")
+        expect(CoreUpdate.evaluate(installed: "0.1.0", status: 404, body: Data())?.status == "no_release",
+               "a 404 evaluated by the real core is no_release")
+        let latest = Data(#"{"tag_name":"v999.0.0"}"#.utf8)
+        let available = CoreUpdate.evaluate(installed: "0.1.0", status: 200, body: latest)
+        expect(available?.status == "update_available" && available?.remoteVersion == "999.0.0" &&
+               available?.releaseURL == "https://github.com/ksfreitas/telaviva-oled/releases/tag/v999.0.0",
+               "a newer tag evaluated by the real core is update_available with its release URL")
+        expect(CoreUpdate.evaluate(installed: "not-a-version", status: 200, body: latest) == nil,
+               "a malformed installed version is rejected by the real core")
+        #endif
     }
 
     private static func waitUntil(timeout: TimeInterval = 5, _ predicate: () -> Bool) -> Bool {

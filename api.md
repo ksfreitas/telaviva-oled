@@ -20,6 +20,8 @@ Header: [`include/telaviva_core.h`](include/telaviva_core.h). ABI version: `1` (
 | `tv_camera_lifecycle_create(out)` | Creates an inactive `TvCameraLifecycle` handle (mode `disabled`, no deadlines). Additive to ABI version 1. |
 | `tv_camera_lifecycle_step(handle, json, len, out_buffer)` | Applies one UTF-8 JSON lifecycle event (maximum 64 KiB) and copies its result into a Rust-owned buffer. Additive to ABI version 1. |
 | `tv_camera_lifecycle_destroy(handle)` | Destroys a lifecycle handle; callers must not race it with other calls on the same handle. Additive to ABI version 1. |
+| `tv_core_version(out)` | Writes the core version as UTF-8 without a terminator to a Rust-owned buffer; free it with `tv_buffer_free`. Additive to ABI version 1. |
+| `tv_update_evaluate(installed, installed_len, http_status, body, body_len, out)` | Compares the installed version with a GitHub `releases/latest` answer and writes an UpdateOutcome JSON to a Rust-owned buffer. Pure: no network and no state. Additive to ABI version 1. |
 
 Return codes are `TV_OK=0`, `TV_INVALID_ARGUMENT=1`, `TV_ABI_MISMATCH=2`, `TV_CLOSED=3`, `TV_INTERNAL=4`, and `TV_SIZE_LIMIT=5`. The callback receives a revision and caller-owned `userdata`; it does not transfer a snapshot. Core buffers and pointers must follow the lifetimes stated in the header. Do not destroy a core concurrently with another call.
 
@@ -57,6 +59,54 @@ Each event is one UTF-8 JSON object with a `type` string and the fields below. U
 Every successful event returns one object, `{"value": <event-specific>, "state": {...}}`. The `state` object is flat, has the same keys for every event, and is read after the event is applied: `generation`, `camera_id`, `mode`, `capture_mode`, `always_on`, `eligible` (true in `face` or `light_only` mode), `acquisition_pending`, `should_keep_session` (true when `eligible` and `always_on` are set and the capture mode is `continuous_monitoring` or `continuous_return`), `settling_until`, `assessment_deadline` and `acquisition_deadline` (seconds on the shell's clock, or `null` when not armed), and `assessment_token` (which wraps after `u64::MAX`).
 
 A rejected event returns `TV_INVALID_ARGUMENT` and leaves the lifecycle unchanged, because each event is fully validated before any field changes. Input larger than 64 KiB returns `TV_SIZE_LIMIT` before parsing, as `tv_submit` does. A null handle or output pointer, or null input with a non-zero length, returns `TV_INVALID_ARGUMENT`. A panic or a poisoned internal lock returns `TV_INTERNAL`. On `TV_OK` the caller owns the returned buffer and frees it with `tv_buffer_free`. Do not use a handle after `tv_camera_lifecycle_destroy`.
+
+### Update check ABI
+
+The core evaluates an update check and nothing else. The native shell performs the HTTPS request to the GitHub releases API, off the UI thread, and passes the installed version, the HTTP status and the response body to `tv_update_evaluate`. Both functions are pure: they perform no network access and keep no state, and nothing is written to disk. `tv_core_version` returns the installed core version. These functions are additive to ABI version 1: `tv_abi_version()` still returns `1` and `TV_CORE_ABI_VERSION` stays `1`.
+
+`tv_core_version(out)` writes the core version as UTF-8 without a terminator. `out` is written only on `TV_OK`.
+
+`tv_update_evaluate(installed, installed_len, http_status, body, body_len, out)` takes these parameters:
+
+- `installed` and `installed_len`: the installed version as UTF-8, in `MAJOR.MINOR.PATCH` form with an optional `-prerelease`. Empty input, invalid UTF-8 or a malformed version is rejected. The length may not exceed 64 bytes.
+- `http_status`: the HTTP status code of the GitHub response.
+- `body` and `body_len`: the response body. The pointer may be null only when `body_len` is `0`. The body may not exceed 1 MiB.
+- `out`: receives the UpdateOutcome JSON.
+
+Return codes:
+
+- `TV_OK`: `out` is written, including for non-success outcomes such as `rate_limited`.
+- `TV_INVALID_ARGUMENT`: null `out`, a null pointer with a non-zero length, or an empty, malformed or non-UTF-8 `installed`.
+- `TV_SIZE_LIMIT`: `body_len` greater than 1 MiB, or `installed_len` greater than 64 bytes.
+- `TV_INTERNAL`: a panic was caught.
+
+`out` is written only on `TV_OK`. The caller owns the written buffer and frees it with `tv_buffer_free`.
+
+UpdateOutcome is UTF-8 JSON:
+
+```json
+{"status":"update_available","remote_version":"0.2.0","release_url":"https://github.com/ksfreitas/telaviva-oled/releases/tag/v0.2.0"}
+```
+
+| `status` | Meaning | Fields |
+|---|---|---|
+| `update_available` | The remote version is newer than the installed version. | `remote_version`, `release_url` |
+| `up_to_date` | The remote version is the same as or older than the installed version. | `remote_version` |
+| `no_release` | HTTP 404, or the release is a draft or pre-release. | none |
+| `rate_limited` | HTTP 403 or 429. | none |
+| `http_error` | Any other non-200 status. | none |
+| `invalid_response` | HTTP 200 with an unusable body. | none |
+
+On a 200 response the core reads `tag_name`, `draft` and `prerelease`; all other fields are ignored. `tag_name` must match `^[vV]?[0-9A-Za-z.+-]+$` after trimming, and `remote_version` is the tag without its leading `v` or `V`.
+
+`release_url` is always built by the core as `https://github.com/ksfreitas/telaviva-oled/releases/tag/<tag_name>`. The `html_url` sent by the server is never used.
+
+Semver rules:
+
+- A version is `MAJOR.MINOR.PATCH`, three unsigned decimal numbers without leading zeros, with an optional `-prerelease` made of dot-separated `[0-9A-Za-z-]+` identifiers. An optional `+build` suffix is ignored. A single leading `v` or `V` is accepted for tags only.
+- Any other form, such as two or four parts, empty parts, signs or spaces, is malformed.
+- Versions compare by the numeric values of the three numbers, so `0.10.0` is newer than `0.9.0`. With equal numbers, a pre-release is lower than the release.
+- A remote pre-release is never offered as an update.
 
 ### Camera lifecycle and display sleep
 

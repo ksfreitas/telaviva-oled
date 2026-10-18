@@ -25,7 +25,7 @@ This document records agreed intent with implementation in progress. The reposit
 
 - Repository architecture: modular monolith, delivered as a desktop application.
 - Initial target operating systems: macOS on Apple Silicon and Windows 11 x64 (ARM64 later; Windows 10 out of scope). Intel Mac support is deferred; affected M1 monitor/connection limitations are accepted and surfaced explicitly.
-- Implementation: Rust for shared application policy and inference, with Swift/macOS and future C++/Windows presentation and device adapters.
+- Implementation: Rust for shared application policy and inference, with Swift/macOS and C++/Windows presentation and device adapters.
 - Build tooling: Cargo for the shared core, Xcode for the macOS shell, MSBuild for the Windows shell; one repository and modular application.
 - UI: SwiftUI/AppKit on macOS and C++/WinRT with WinUI 3 on Windows 11; shared Rust core through a versioned C ABI. No web frontend runtime.
 - Face detection: bundled YuNet model with ONNX Runtime via ort; CPU by default and fallback, OS-supplied CoreML on macOS, and DirectML on Windows only for device profiles with a recorded energy benefit (none recorded yet). NPU routes are deferred.
@@ -90,6 +90,7 @@ The C headers in `include/` are checked against the Rust C ABI by the `header_co
 - branch_template: <type>/<short-description>
 - commit_types: feat, bug, hotfix, chore
 - sonarqube_mode: none
+- platform_scope: every new feature is implemented on both macOS and Windows in the same change unless the owner scopes it to one platform
 
 Keep permanent decision records in `adr/`. When a feature is finalized, preserve its reasoning in an ADR and archive its specification rather than discarding it. No project-specific skills directory is configured. SonarQube connectivity is not configured and can be determined when analysis is first requested.
 
@@ -259,3 +260,14 @@ Status: the Windows code is in the repository and covered by automated tests. Wi
 - [ADR-0023](adr/0023-windows-laptop-naming-and-notebook.md): Windows UI says "Laptop" and "Notebook"; core identifiers unchanged
 - [ADR-0024](adr/0024-windows-zip-distribution-and-hkcu-run.md): Windows distribution: unpackaged zip with a per-user PowerShell installer and HKCU Run for launch at login
 - [ADR-0025](adr/0025-windows-app-sdk-license-versus-open-source-rule.md): Windows App SDK license versus the open-source-only rule (Proposed; owner decision open)
+- [ADR-0026](adr/0026-about-screen-and-github-update-check.md): About screen and an informational update check against GitHub releases (Accepted)
+
+## About screen and update check — 2026-10-17
+
+The About page is implemented on both shells: a macOS tab in the Settings window and a Windows NavigationView page. Both are reached from Settings and from an "About TelaViva OLED" menu entry (the menu bar popover and the tray flyout). The page shows the app icon, name and installed version, the project's GitHub link, the two credits, and an update status (checking, up to date, update available with the remote version, or could not check). Strings are localized per shell in en-US and pt-BR.
+
+The Rust core exports `tv_core_version` and `tv_update_evaluate`. Both are pure and additive to ABI version 1: `tv_core_version` returns the core's version, and `tv_update_evaluate` compares the installed version with a GitHub `releases/latest` answer and returns a status. The core builds the release URL itself and never opens a URL from the server's answer.
+
+The platform HTTP stacks perform the single GET (`URLSession` on macOS, WinHTTP on Windows), off the UI thread, with bounded timeouts. The check runs only when the About page opens or "Check now" is pressed. There is no setting, no persistence and no background polling. The result is cached in memory only: successful outcomes for 6 hours, failures for 30 seconds.
+
+The version has a single source, `crates/telaviva-core/Cargo.toml`. The other copies are checked by `crates/telaviva-core/tests/version_consistency.rs`, and the release rules are listed in [AGENTS.md](AGENTS.md#release-version). The update check is the first outbound request the app makes; the privacy wording in [README.md](README.md#privacy) describes it. Rendered and hardware acceptance of the page is not claimed here.

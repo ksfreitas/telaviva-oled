@@ -51,6 +51,13 @@ namespace TelaViva
         AutomaticBrightnessPage();
     }
 
+    // About page. SetHost and RefreshStrings are implementation-only, reached through get_self.
+    [default_interface]
+    runtimeclass AboutPage : Microsoft.UI.Xaml.Controls.UserControl
+    {
+        AboutPage();
+    }
+
     // Calibration dialog (T128). Start and the refresh are implementation-only, reached through get_self.
     [default_interface]
     runtimeclass CalibrationDialog : Microsoft.UI.Xaml.Controls.ContentDialog

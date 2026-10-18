@@ -2,11 +2,13 @@
 // Wraps the Rust core C ABI. Snapshot changes reach sinks on a worker thread,
 // never from inside tv_submit and never while the core mutex is held.
 #include "JsonCodec.h"
+#include "UpdateChecker.h"
 
 #include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace telaviva {
@@ -29,6 +31,11 @@ public:
     CoreBridge& operator=(const CoreBridge&) = delete;
 
     static uint32_t abiVersion();
+    // Stateless. Returns an empty string when the core call fails.
+    static std::string coreVersion();
+    // Stateless. Returns nullopt for any non-TV_OK status or an unreadable outcome.
+    static std::optional<UpdateOutcome> evaluateUpdate(const std::string& installed, int status,
+                                                       const std::string& body);
     bool isOpen() const;
 
     // Returns the raw TV_* status. TV_CLOSED when the core is not open.

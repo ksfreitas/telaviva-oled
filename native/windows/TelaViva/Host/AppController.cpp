@@ -41,8 +41,12 @@
 #include "Platform/SettingsModel.h"
 #include "Platform/SystemClock.h"
 #include "Platform/SystemSleeper.h"
+#include "Platform/UpdateChecker.h"
 #include "Platform/VolumeActionTracker.h"
 #include "Platform/Win32Efficiency.h"
+#include "Platform/WinHttpGet.h"
+
+#include <winrt/Windows.System.Threading.h>
 
 #include <algorithm>
 #include <atomic>
@@ -67,9 +71,6 @@ using namespace std::chrono_literals;
 namespace telaviva::host {
 
 namespace {
-
-// Recorded in inference-failures.json, so a new app version is eligible again.
-constexpr const char* kAppVersion = "0.1.0";
 
 // Posted to the window when the Laptop becomes unavailable from a thread other than the UI thread
 // (the snapshot thread, or the lid callback). The handler ends an active calibration on the UI thread.
@@ -1280,6 +1281,11 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
     if (!std::filesystem::is_regular_file(modelPath, ec)) {
         s.diagnostics.log(LogLevel::Error, "YuNet model is missing; presence inference is unavailable");
     }
+    // The core version is the installed version for the About page and the inference failure record.
+    appVersion_ = telaviva::CoreBridge::coreVersion();
+    if (appVersion_.empty()) {
+        appVersion_ = "unknown";
+    }
     // Acceleration profiles ship next to the executable. A missing or invalid file is logged once and means CPU only.
     AccelerationOptions acceleration;
     const ProfileLoadResult profiles = loadAccelerationProfiles(exeDir / L"acceleration-profiles.toml");
@@ -1305,7 +1311,7 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
     acceleration.adapters = &s.adapters;
     acceleration.failures = &s.failures;
     acceleration.clock = &s.clock;
-    acceleration.appVersion = kAppVersion;
+    acceleration.appVersion = appVersion_;
     acceleration.diagnostics = &s.diagnostics;
     s.analyzer = std::make_unique<InferenceHost>(s.inference, s.scheduler, runtimePath.wstring(),
         modelPath.wstring(), std::move(acceleration));
@@ -1313,6 +1319,19 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
     s.lifecycle = std::make_unique<CoreLifecycleApi>();
     s.driver = std::make_unique<CameraLifecycleDriver>(*s.camera, *s.analyzer, *s.submitter, *s.lifecycle,
         s.clock, s.scheduler);
+
+    // Update check for the About page. Self-contained: it owns its HTTP client, clock and job runner.
+    updateChecker_ = std::make_shared<telaviva::UpdateChecker>(
+        appVersion_,
+        std::make_shared<WinHttpGet>(),
+        [](const std::string& installed, int status, const std::string& body) {
+            return CoreBridge::evaluateUpdate(installed, status, body);
+        },
+        std::make_shared<SystemClock>(),
+        [](std::function<void()> job) {
+            static_cast<void>(winrt::Windows::System::Threading::ThreadPool::RunAsync(
+                [job = std::move(job)](auto const&) { job(); }));
+        });
 
     PowerEventCallbacks powerCallbacks;
     powerCallbacks.onPower = [bridge](std::optional<bool> onBattery) { bridge->submit(buildPower(onBattery)); };
@@ -1691,6 +1710,16 @@ bool AppController::removeCalibrationPoint(const std::string& monitorId, int poi
 void AppController::endCalibration(CalibrationEndReason reason)
 {
     services_->calibration->end(reason);
+}
+
+telaviva::UpdateChecker& AppController::updateChecker()
+{
+    return *updateChecker_;
+}
+
+const std::string& AppController::appVersion() const
+{
+    return appVersion_;
 }
 
 ISettingsHost* AppController::settingsHost()

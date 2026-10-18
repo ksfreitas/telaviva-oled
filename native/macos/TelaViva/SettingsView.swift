@@ -6,6 +6,10 @@ import AppKit
 
 struct SettingsView: View {
     @ObservedObject var core: CoreBridge
+    /// Tab selection shared with the menus; menus set it before showing the window.
+    @ObservedObject var navigation: SettingsNavigation
+    let updateChecker: UpdateChecker
+    let installedVersion: String
     var requestHardwareKeyPermission: () -> Void = {
         (NSApp.delegate as? MenuBarController)?.requestHardwareKeyPermission()
     }
@@ -44,13 +48,19 @@ struct SettingsView: View {
 
     var body: some View {
         // Tabs read and write the drafts owned here; save() and load() stay in this view.
-        TabView {
+        TabView(selection: $navigation.tab) {
             generalTab
                 .tabItem { Text(AppText.string("settings.tab.general", locale: locale)) }
+                .tag(SettingsTab.general)
             keyboardTab
                 .tabItem { Text(AppText.string("settings.tab.keyboard", locale: locale)) }
+                .tag(SettingsTab.keyboard)
             AmbientBrightnessView(core: core, availability: ambientAvailability, calibration: calibration)
                 .tabItem { Text(AppText.string("settings.tab.ambient", locale: locale)) }
+                .tag(SettingsTab.ambient)
+            AboutView(installedVersion: installedVersion, locale: locale, checker: updateChecker)
+                .tabItem { Text(AppText.string("settings.tab.about", locale: locale)) }
+                .tag(SettingsTab.about)
         }
         .onAppear { refreshCameras(); load() }
         .onReceive(NotificationCenter.default.publisher(for: .cameraDeviceConnected)) { _ in refreshCameras() }

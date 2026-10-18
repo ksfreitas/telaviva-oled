@@ -287,6 +287,7 @@ namespace winrt::TelaViva::implementation
             trayMenu_ = winrt::make<winrt::TelaViva::implementation::TrayMenuWindow>();
             winrt::get_self<winrt::TelaViva::implementation::TrayMenuWindow>(trayMenu_)->SetActions(
                 [this] { openSettings(); },
+                [this] { openSettings(SettingsPage::About); },
                 [this] { lifecycle_->requestQuit(); });
             // Same visibility reporting as the flyout: AppWindow sees every show and hide.
             trayMenu_.AppWindow().Changed([this](auto const& window, auto const& args) {
@@ -299,7 +300,7 @@ namespace winrt::TelaViva::implementation
         winrt::get_self<winrt::TelaViva::implementation::TrayMenuWindow>(trayMenu_)->ShowAt(anchor, fromKeyboard);
     }
 
-    void App::openSettings()
+    void App::openSettings(std::optional<SettingsPage> page)
     {
         // The flyout is a light-dismiss surface, so it closes when Settings opens.
         if (popup_)
@@ -326,6 +327,9 @@ namespace winrt::TelaViva::implementation
             }
             winrt::get_self<winrt::TelaViva::implementation::SettingsWindow>(settings_)->CenterOnMonitorOf(anchor);
             settings_.Activate();
+            if (page) {
+                winrt::get_self<winrt::TelaViva::implementation::SettingsWindow>(settings_)->SelectPage(*page);
+            }
             return;
         }
 
@@ -357,6 +361,9 @@ namespace winrt::TelaViva::implementation
             dispatcher_.TryEnqueue([this] { settings_ = nullptr; });
         });
         settings_.Activate();
+        if (page) {
+            settings->SelectPage(*page);
+        }
         reportVisibility(settingsShown_, true);
     }
 

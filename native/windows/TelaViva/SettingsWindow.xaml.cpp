@@ -3,6 +3,7 @@
 
 #include "pch.h"
 #include "SettingsWindow.xaml.h"
+#include "AboutPage.xaml.h"
 #include "AutomaticBrightnessPage.xaml.h"
 #include "GeneralPage.xaml.h"
 #include "KeyboardPage.xaml.h"
@@ -95,6 +96,7 @@ namespace winrt::TelaViva::implementation
         general_ = winrt::make<winrt::TelaViva::implementation::GeneralPage>();
         keyboard_ = winrt::make<winrt::TelaViva::implementation::KeyboardPage>();
         ambient_ = winrt::make<winrt::TelaViva::implementation::AutomaticBrightnessPage>();
+        about_ = winrt::make<winrt::TelaViva::implementation::AboutPage>();
 
         Nav().SelectionChanged([this](auto const&, auto const& args)
             {
@@ -115,6 +117,10 @@ namespace winrt::TelaViva::implementation
                 {
                     Nav().Content(ambient_);
                 }
+                else if (item == AboutItem())
+                {
+                    Nav().Content(about_);
+                }
             });
 
         // Closing the window ends an active calibration, which restores the Laptop and monitor levels.
@@ -132,6 +138,7 @@ namespace winrt::TelaViva::implementation
         winrt::get_self<implementation::GeneralPage>(general_)->SetHost(host);
         winrt::get_self<implementation::KeyboardPage>(keyboard_)->SetHost(host);
         winrt::get_self<implementation::AutomaticBrightnessPage>(ambient_)->SetHost(host);
+        winrt::get_self<implementation::AboutPage>(about_)->SetHost(host);
     }
 
     void SettingsWindow::SetOnLanguageChanged(std::function<void()> callback)
@@ -149,10 +156,31 @@ namespace winrt::TelaViva::implementation
         GeneralItem().Content(winrt::box_value(localized("settings.tab.general")));
         KeyboardItem().Content(winrt::box_value(localized("settings.tab.keyboard")));
         AmbientItem().Content(winrt::box_value(localized("settings.tab.ambient")));
+        AboutItem().Content(winrt::box_value(localized("settings.tab.about")));
 
         winrt::get_self<implementation::GeneralPage>(general_)->RefreshStrings();
         winrt::get_self<implementation::KeyboardPage>(keyboard_)->RefreshStrings();
         winrt::get_self<implementation::AutomaticBrightnessPage>(ambient_)->RefreshStrings();
+        winrt::get_self<implementation::AboutPage>(about_)->RefreshStrings();
+    }
+
+    void SettingsWindow::SelectPage(SettingsPage page)
+    {
+        winrt::Microsoft::UI::Xaml::Controls::NavigationViewItem target{ nullptr };
+        switch (page)
+        {
+        case SettingsPage::General: target = GeneralItem(); break;
+        case SettingsPage::Keyboard: target = KeyboardItem(); break;
+        case SettingsPage::Ambient: target = AmbientItem(); break;
+        case SettingsPage::About: target = AboutItem(); break;
+        }
+
+        const auto selected = Nav().SelectedItem().try_as<winrt::Microsoft::UI::Xaml::Controls::NavigationViewItem>();
+        if (selected == target)
+        {
+            return;
+        }
+        Nav().SelectedItem(target);
     }
 
     void SettingsWindow::ShowOnMonitorOf(RECT anchorRect)

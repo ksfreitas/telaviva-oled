@@ -106,5 +106,9 @@ icons, then turn on TelaViva OLED. Windows hides new tray icons by default.
 
 ## Privacy
 
-TelaViva OLED does not send telemetry, and the app makes no network requests of its own.
-Camera frames are processed locally.
+TelaViva OLED does not send telemetry. Its only network request is an anonymous HTTPS
+GET to the GitHub releases API, which looks for a newer version of the app. It is made
+only when the About page is open or **Check now** is pressed. Apart from the standard
+HTTPS headers, it sends nothing but the app version in the `User-Agent` header, and it
+downloads nothing.
+Camera frames never leave the device; they are processed locally.

@@ -4,6 +4,11 @@
 
 #include <telaviva_core.h>
 
+#include <winrt/base.h>
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Foundation.Collections.h>
+#include <winrt/Windows.Data.Json.h>
+
 #include <condition_variable>
 #include <cstddef>
 #include <mutex>
@@ -49,6 +54,38 @@ struct SnapshotBuffer {
         }
     }
 };
+
+// Same apartment setup as InferenceFailureStore.cpp; returns false when WinRT cannot start here.
+bool ensureApartment()
+{
+    thread_local bool initialized = false;
+    if (initialized) {
+        return true;
+    }
+    try {
+        winrt::init_apartment(winrt::apartment_type::multi_threaded);
+    } catch (const winrt::hresult_error& error) {
+        // The thread already has another apartment; parsing works there too.
+        if (error.code() != static_cast<winrt::hresult>(RPC_E_CHANGED_MODE)) {
+            return false;
+        }
+    }
+    initialized = true;
+    return true;
+}
+
+// Absent or non-string members give nullopt.
+std::optional<std::string> stringField(const winrt::Windows::Data::Json::JsonObject& object, const wchar_t* name)
+{
+    if (!object.HasKey(name)) {
+        return std::nullopt;
+    }
+    const winrt::Windows::Data::Json::IJsonValue value = object.GetNamedValue(name);
+    if (value.ValueType() != winrt::Windows::Data::Json::JsonValueType::String) {
+        return std::nullopt;
+    }
+    return winrt::to_string(value.GetString());
+}
 
 std::optional<std::string> toUtf8(const std::wstring& text)
 {
@@ -137,6 +174,50 @@ CoreBridge::~CoreBridge()
 uint32_t CoreBridge::abiVersion()
 {
     return tv_abi_version();
+}
+
+std::string CoreBridge::coreVersion()
+{
+    SnapshotBuffer owned;
+    if (tv_core_version(&owned.buffer) != TV_OK || owned.buffer.data == nullptr) {
+        return std::string{};
+    }
+    return std::string(reinterpret_cast<const char*>(owned.buffer.data), owned.buffer.len);
+}
+
+std::optional<UpdateOutcome> CoreBridge::evaluateUpdate(const std::string& installed, int status,
+                                                        const std::string& body)
+{
+    SnapshotBuffer owned;
+    const int32_t code = tv_update_evaluate(reinterpret_cast<const uint8_t*>(installed.data()), installed.size(),
+                                            static_cast<uint32_t>(status),
+                                            reinterpret_cast<const uint8_t*>(body.data()), body.size(),
+                                            &owned.buffer);
+    if (code != TV_OK || owned.buffer.data == nullptr) {
+        return std::nullopt;
+    }
+    const std::string text(reinterpret_cast<const char*>(owned.buffer.data), owned.buffer.len);
+
+    try {
+        if (!ensureApartment()) {
+            return std::nullopt;
+        }
+        winrt::Windows::Data::Json::JsonObject root;
+        if (!winrt::Windows::Data::Json::JsonObject::TryParse(winrt::to_hstring(std::string_view(text)), root)) {
+            return std::nullopt;
+        }
+        const std::optional<std::string> outcomeStatus = stringField(root, L"status");
+        if (!outcomeStatus) {
+            return std::nullopt;
+        }
+        UpdateOutcome outcome;
+        outcome.status = *outcomeStatus;
+        outcome.remoteVersion = stringField(root, L"remote_version").value_or(std::string{});
+        outcome.releaseUrl = stringField(root, L"release_url").value_or(std::string{});
+        return outcome;
+    } catch (...) {
+        return std::nullopt;
+    }
 }
 
 bool CoreBridge::isOpen() const

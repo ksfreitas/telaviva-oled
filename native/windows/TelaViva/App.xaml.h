@@ -11,8 +11,10 @@
 #include "Host/FlyoutState.h"
 #include "Host/PlatformWindow.h"
 #include "Host/TrayHost.h"
+#include "SettingsWindow.xaml.h"
 
 #include <memory>
+#include <optional>
 
 namespace winrt::TelaViva::implementation
 {
@@ -28,7 +30,8 @@ namespace winrt::TelaViva::implementation
         // Created on first use and kept hidden between uses; the flyout hides when it shows.
         void showTrayMenu(POINT anchor, bool fromKeyboard);
         // Created on demand and released when closed; a second open re-centers and activates the existing window.
-        void openSettings();
+        // A requested page is selected in both cases.
+        void openSettings(std::optional<SettingsPage> page = std::nullopt);
         // Reports a window's show or hide to the controller, once per transition (Efficiency mode).
         void reportVisibility(bool& shown, bool visible);
 

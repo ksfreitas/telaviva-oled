@@ -1,4 +1,5 @@
 use crate::camera_lifecycle::{CameraLifecycle, StepError, MAX_EVENT_BYTES};
+use crate::update::{self, UpdateError};
 use crate::{Core, CoreOptions};
 use serde::Deserialize;
 use std::{
@@ -352,4 +353,79 @@ pub unsafe extern "C" fn tv_camera_lifecycle_destroy(handle: *mut TvCameraLifecy
             drop(Box::from_raw(handle));
         }
     }));
+}
+
+#[no_mangle]
+/// Writes the core version (UTF-8, no terminator) into a Rust-owned buffer.
+///
+/// # Safety
+/// `out` must point to a writable `TvBuffer`.
+pub unsafe extern "C" fn tv_core_version(out: *mut TvBuffer) -> i32 {
+    guarded(|| {
+        if out.is_null() {
+            return TV_INVALID_ARGUMENT;
+        }
+        let bytes = update::core_version()
+            .as_bytes()
+            .to_vec()
+            .into_boxed_slice();
+        let written = bytes.len();
+        let ptr = Box::into_raw(bytes) as *mut u8;
+        (*out).data = ptr;
+        (*out).len = written;
+        TV_OK
+    })
+}
+
+#[no_mangle]
+/// Compares the installed version with a GitHub releases/latest answer and writes the
+/// UpdateOutcome JSON into a Rust-owned buffer. Pure: no network, no state.
+///
+/// A null `body` is accepted only when `body_len` is zero.
+///
+/// # Safety
+/// `installed` must point to `installed_len` readable bytes; `body` must point to `body_len`
+/// readable bytes when non-null; `out` must point to a writable `TvBuffer`.
+pub unsafe extern "C" fn tv_update_evaluate(
+    installed: *const u8,
+    installed_len: usize,
+    http_status: u32,
+    body: *const u8,
+    body_len: usize,
+    out: *mut TvBuffer,
+) -> i32 {
+    guarded(|| {
+        if out.is_null() || installed.is_null() || installed_len == 0 {
+            return TV_INVALID_ARGUMENT;
+        }
+        if body_len > 0 && body.is_null() {
+            return TV_INVALID_ARGUMENT;
+        }
+        // Lengths are checked before any slice is built.
+        if installed_len > update::MAX_VERSION_BYTES || body_len > update::MAX_BODY_BYTES {
+            return TV_SIZE_LIMIT;
+        }
+        let installed_bytes = slice::from_raw_parts(installed, installed_len);
+        let Ok(installed_text) = std::str::from_utf8(installed_bytes) else {
+            return TV_INVALID_ARGUMENT;
+        };
+        let body_bytes = if body_len == 0 {
+            &[][..]
+        } else {
+            slice::from_raw_parts(body, body_len)
+        };
+        let text = match update::evaluate(installed_text, http_status, body_bytes) {
+            Ok(text) => text,
+            Err(UpdateError::InvalidInstalled) => return TV_INVALID_ARGUMENT,
+            Err(UpdateError::BodyTooLarge | UpdateError::InstalledTooLarge) => {
+                return TV_SIZE_LIMIT
+            }
+        };
+        let bytes = text.into_bytes().into_boxed_slice();
+        let written = bytes.len();
+        let ptr = Box::into_raw(bytes) as *mut u8;
+        (*out).data = ptr;
+        (*out).len = written;
+        TV_OK
+    })
 }

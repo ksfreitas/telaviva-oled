@@ -5,6 +5,7 @@
 #include "Platform/CameraSelection.h"
 #include "Platform/JsonCodec.h"
 #include "Platform/LaunchAtLogin.h"
+#include "Platform/UpdateChecker.h"
 
 #include <optional>
 #include <string>
@@ -72,6 +73,11 @@ struct ISettingsHost {
     virtual bool confirmCalibration() = 0;
     virtual bool removeCalibrationPoint(const std::string& monitorId, int point) = 0;
     virtual void endCalibration(telaviva::CalibrationEndReason reason) = 0;
+
+    // Update check for the About page. Its state is guarded internally; the About page is the only observer.
+    virtual telaviva::UpdateChecker& updateChecker() = 0;
+    // The installed version from the core. Safe from any thread.
+    virtual const std::string& appVersion() const = 0;
 };
 
 }  // namespace telaviva::host

@@ -14,6 +14,7 @@ swiftc -D TELAVIVA_CORE \
   -I "$ROOT/include" \
   "$ROOT/native/macos/TelaViva/HardwareKeyRouter.swift" \
   "$ROOT/native/macos/TelaViva/CoreBridge.swift" \
+  "$ROOT/native/macos/TelaViva/UpdateChecker.swift" \
   "$ROOT/native/macos/TelaViva/ManualMonitorControls.swift" \
   "$ROOT/native/macos/Tests/CoreBridgeTests.swift" \
   "$CORE_LIB" -lc++ -lz \

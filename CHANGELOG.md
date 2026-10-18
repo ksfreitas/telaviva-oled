@@ -34,6 +34,8 @@
 - Ambient calibration points are now added and removed by the user (at least two, kept in ascending order); existing points are kept. Hardware checks are pending acceptance.
 - Camera session timing moves from the macOS shell into the Rust core: session retention, the acquisition and assessment deadlines, the warm-up and dark-settle windows, and the stale-callback check now run in `telaviva-core` behind the additive `TvCameraLifecycle` C ABI (`tv_camera_lifecycle_create`, `tv_camera_lifecycle_step` and `tv_camera_lifecycle_destroy`); ABI version stays 1. Swift keeps the timers, the monotonic clock and AVFoundation. Camera hardware acceptance is pending.
 - The core snapshot no longer carries the `messages` field, and the core's `.ftl` locale catalogs (`locales/en-US.ftl` and `locales/pt-BR.ftl`) are removed: each native shell owns its UI strings, while the core keeps the `locale` setting and returns status codes. `os_locale` is still accepted by `tv_create` but no longer affects snapshot content.
+- The Windows version shown in About is read from the core instead of a hard-coded copy, and the macOS `Info.plist` gains `CFBundleVersion`.
+- The README and the packaging README now describe the update check as the app's only network request.
 
 ### Added
 
@@ -62,6 +64,10 @@
 - Corrected the macOS CI `lipo` invocation to verify the packaged arm64 executable.
 - Configurable presence brightness threshold on macOS: a Settings slider (10 to 90%, default 20%) sets the brightness an eligible monitor must be above for presence checking to run; hardware acceptance is pending.
 - Header contract tests: `crates/telaviva-core/tests/header_contract.rs` and `crates/telaviva-inference/src/header_contract_tests.rs` check `include/telaviva_core.h` and `include/telaviva_inference.h` against the Rust ABI (prototypes, struct fields, constants and opaque types), so header drift fails `cargo test` without a new dependency.
+- About page on macOS and Windows with the application icon, version, GitHub project link, credits, and English (US) and Portuguese (Brazil) text, reachable from Settings and from the tray or menu bar icon.
+- Update check against the GitHub releases API that runs only when the About page is open or Check now is pressed, informs the user only, and never downloads an update.
+- Two additive core C ABI exports, `tv_core_version` and `tv_update_evaluate`, with the core ABI version still at 1.
+- Version consistency test that fails when the Cargo, inference crate, Info.plist or app.manifest version differs from the core version.
 
 - Baseline project documentation and CodeAdvisor conventions for the planned Rust application on macOS and Windows.
 

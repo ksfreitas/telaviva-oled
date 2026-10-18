@@ -6,6 +6,12 @@ import IOKit.ps
 
 final class MenuBarController: NSObject, NSApplicationDelegate {
     let core = CoreBridge()
+    /// One navigation and one update checker for the whole app: the menus and the Settings scene share them.
+    let settingsNavigation = SettingsNavigation()
+    let installedVersion = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "unknown"
+    @MainActor lazy var updateChecker: UpdateChecker = UpdateChecker(installedVersion: installedVersion,
+                                                                     fetcher: URLSessionUpdateFetcher(),
+                                                                     evaluate: MenuBarController.updateEvaluator)
     private lazy var manualControls = ManualMonitorControls(submit: core.submitManualControl)
     private let camera = PresenceCamera()
     private lazy var ddc = MacDDCController(core: core)
@@ -74,6 +80,14 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     /// Last state and locale applied to the status item; the icon is only reset when one of them changes.
     private var appliedIconState: PresenceIconState?
     private var appliedIconLocale: String?
+    /// Evaluates the update response in the Rust core; without the core no result is available.
+    private static let updateEvaluator: (String, Int, Data) -> UpdateOutcome? = { installed, status, body in
+        #if TELAVIVA_CORE
+        return CoreUpdate.evaluate(installed: installed, status: status, body: body)
+        #else
+        return nil
+        #endif
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -84,10 +98,11 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         popover = NSPopover()
         popover.behavior = .transient
-        let openSettingsAction: () -> Void = openSettings
+        let openSettingsAction: () -> Void = { [weak self] in self?.openSettings() }
+        let openAboutAction: () -> Void = { [weak self] in self?.openSettings(tab: .about) }
         let refreshDisplaysAction: () -> Void = ddc.refresh
         let popupView = MonitorPopup(core: core, controls: manualControls, openSettings: openSettingsAction,
-                                     refreshDisplays: refreshDisplaysAction)
+                                     openAbout: openAboutAction, refreshDisplays: refreshDisplaysAction)
         // The popover now follows the SwiftUI content size; a hardware check of the resize is pending.
         let host = NSHostingController(rootView: popupView)
         host.sizingOptions = [.preferredContentSize]
@@ -293,17 +308,19 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         else { core.refresh(); popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY); NSApp.activate(ignoringOtherApps: true) }
     }
 
-    private func openSettings() {
+    @MainActor private func openSettings(tab: SettingsTab? = nil) {
         let invokingScreen = popover.contentViewController?.view.window?.screen
             ?? statusItem.button?.window?.screen
             ?? settingsWindow?.screen
             ?? NSScreen.main
         popover.performClose(nil)
+        if let tab { settingsNavigation.tab = tab }
         let window: NSWindow
         if let settingsWindow {
             window = settingsWindow
         } else {
-            let settingsView = SettingsView(core: core, requestHardwareKeyPermission: { [weak self] in
+            let settingsView = SettingsView(core: core, navigation: settingsNavigation, updateChecker: updateChecker,
+                                            installedVersion: installedVersion, requestHardwareKeyPermission: { [weak self] in
                 self?.requestHardwareKeyPermission()
             }, ambientAvailability: ambientAvailability, calibration: calibration)
                 .frame(minWidth: 560, minHeight: 560)

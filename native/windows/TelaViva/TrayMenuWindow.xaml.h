@@ -13,8 +13,8 @@ namespace winrt::TelaViva::implementation
     {
         TrayMenuWindow();
 
-        // Implementation-only: called on the UI thread. Both actions run after the menu has hidden.
-        void SetActions(std::function<void()> openSettings, std::function<void()> quit);
+        // Implementation-only: called on the UI thread. Every action runs after the menu has hidden.
+        void SetActions(std::function<void()> openSettings, std::function<void()> openAbout, std::function<void()> quit);
         // Implementation-only: anchor is in screen pixels. fromKeyboard moves focus to the first item.
         void ShowAt(POINT anchor, bool fromKeyboard);
 
@@ -24,6 +24,7 @@ namespace winrt::TelaViva::implementation
 
         HWND hwnd_{};
         std::function<void()> openSettings_;
+        std::function<void()> openAbout_;
         std::function<void()> quit_;
     };
 }

@@ -61,6 +61,9 @@
   <data name="tray.menu.settings" xml:space="preserve">
     <value>Configurações</value>
   </data>
+  <data name="tray.menu.about" xml:space="preserve">
+    <value>Sobre o TelaViva OLED</value>
+  </data>
   <data name="tray.menu.quit" xml:space="preserve">
     <value>Sair</value>
   </data>
@@ -261,6 +264,51 @@
   </data>
   <data name="settings.tab.ambient" xml:space="preserve">
     <value>Brilho automático</value>
+  </data>
+  <data name="settings.tab.about" xml:space="preserve">
+    <value>Sobre</value>
+  </data>
+  <data name="about.version" xml:space="preserve">
+    <value>Versão</value>
+  </data>
+  <data name="about.project" xml:space="preserve">
+    <value>Projeto</value>
+  </data>
+  <data name="about.credits.architect" xml:space="preserve">
+    <value>Arquitetado por</value>
+  </data>
+  <data name="about.credits.coder" xml:space="preserve">
+    <value>Codificado por</value>
+  </data>
+  <data name="about.credits.coders" xml:space="preserve">
+    <value>Claude e Codex</value>
+  </data>
+  <data name="about.update.title" xml:space="preserve">
+    <value>Atualizações</value>
+  </data>
+  <data name="about.update.checking" xml:space="preserve">
+    <value>Verificando atualizações…</value>
+  </data>
+  <data name="about.update.upToDate" xml:space="preserve">
+    <value>Você está na versão mais recente</value>
+  </data>
+  <data name="about.update.available" xml:space="preserve">
+    <value>Atualização disponível: versão {version}</value>
+  </data>
+  <data name="about.update.noRelease" xml:space="preserve">
+    <value>Nenhuma versão foi publicada ainda</value>
+  </data>
+  <data name="about.update.rateLimited" xml:space="preserve">
+    <value>O GitHub está limitando as consultas. Tente novamente mais tarde.</value>
+  </data>
+  <data name="about.update.failed" xml:space="preserve">
+    <value>Não foi possível verificar atualizações</value>
+  </data>
+  <data name="about.update.checkNow" xml:space="preserve">
+    <value>Verificar agora</value>
+  </data>
+  <data name="about.update.openRelease" xml:space="preserve">
+    <value>Abrir página da versão</value>
   </data>
   <data name="ambient.toggle" xml:space="preserve">
     <value>Seguir o brilho da tela do notebook</value>
