@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Verified
+
+- Ran the camera lifecycle acceptance checklist in part on a MacBook Pro with a Dell S3225QC: ten of sixteen scenarios passed, one passed in part and five were not run (see the archived checklist).
+
 ### Added
 
 - Core controls handle ABI: `tv_controls_create`, `tv_controls_step` and `tv_controls_destroy` own manual-control drafts, key policy and DDC dispatch for brightness and volume. The change is additive to ABI version 1, which stays `1`.

@@ -5,4 +5,4 @@ This archive preserves the completed implementation plan and its physical macOS 
 - [Implementation plan and results](plan.md)
 - [macOS physical acceptance checklist](validation/macos-acceptance.md)
 
-The checklist is still unverified. Automated tests and local packaging do not establish camera, display-sleep, DDC write/restoration, or power-consumption behavior on physical hardware. Windows remains deferred.
+The checklist was run in part on physical hardware on 2026-10-18: ten of the sixteen scenarios passed with one MacBook Pro and one Dell S3225QC, one passed in part, and five were not run. Automated tests and local packaging alone do not establish camera, display-sleep, DDC or power-consumption behavior, and no claim covers other monitors or connections. Windows remains deferred.
