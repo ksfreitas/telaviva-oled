@@ -8,6 +8,7 @@
 
 ### Changed
 
+- The `specs/oled-monitor-protection/` folder is removed. It held only three short pointers to the archived record of the initial application, which stays in `specs/archived/external-monitor-control-and-oled-presence-protection/`; the project map in `AGENTS.md` now points at `specs/archived/`.
 - The README is now a short entry point (highlights, platform support, status, install, getting started, privacy, build and contributing). The detailed behavior of each feature moved to the new `docs/user-guide.md`, and the README no longer lists the hardware of the maintainer's test machines; those results remain in the validation reports.
 
 ## 0.1.0 - 2026-10-17

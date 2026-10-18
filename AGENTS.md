@@ -12,7 +12,7 @@ Implementation is in progress. The repository contains a Cargo workspace, shared
 - `CHANGELOG.md`: release history, starting with Unreleased.
 - `docs/`: user guide with the detailed behavior of each feature; the README is the short entry point.
 - `adr/`: permanent architecture decision records.
-- `specs/oled-monitor-protection/`: holds only navigation pointers to archived records for the initial application's requirements, technical architecture, and runtime contracts.
+- `specs/archived/`: the archived record of each completed feature (specification, design, plan and validation reports). Use `ARCHITECTURE.md`, `api.md` and `adr/` for the current design; the initial application's records are in `specs/archived/external-monitor-control-and-oled-presence-protection/`.
 - `crates/telaviva-core/`: shared policy, settings and native-shell C ABI.
 - `crates/telaviva-inference/`: image quality assessment and local YuNet/ONNX detection.
 - `native/macos/`: native SwiftUI/AppKit shell and macOS device adapters.
