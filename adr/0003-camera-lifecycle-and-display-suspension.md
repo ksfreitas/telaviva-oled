@@ -85,3 +85,12 @@ This dated amendment adds decisions to the camera lifecycle contract above. The 
 ## Amendment 2026-10-17: Camera session timing in the core
 
 Session timing now lives in the core behind `TvCameraLifecycle` (see [ADR 0014](0014-camera-lifecycle-in-the-core.md)), and the decisions in this record remain in force.
+
+## Amendment 2026-10-18: Partial hardware acceptance
+
+The decisions in this record remain in force. The earlier statements that the checklist is entirely unrun are superseded by this amendment.
+
+- The physical checklist was run in part on a MacBook Pro (Apple M4 Pro, macOS 27.0.1) with one Dell S3225QC, using the installed app, which is byte-identical to the build of this commit. Ten of sixteen scenarios passed: existing settings, always-on enable and disable, return and restore, suspension when all eligible displays sleep, resume on wake, brightness zero, screensaver overlapping display sleep, app exit, and the exact Portuguese status text. One passed in part (low light), and five were not run: one awake and one sleeping monitor, light recovery, interruption during settling, camera errors, and an external brightness change while asleep.
+- The brightness-zero row was corrected: since [ADR 0011](0011-camera-brightness-activation-threshold.md) the camera suspends as low brightness at or below the threshold. Brightness zero still does not mean display sleep.
+- A low-light report with a bright window behind the user was not explained and stays open.
+- Results are owner-observed, not instrumented, and cover one monitor and one connection. Energy use is still unmeasured.

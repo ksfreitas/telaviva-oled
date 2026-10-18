@@ -129,7 +129,7 @@ Low-light recovery uses the existing 10-second retry delay, then a five-second m
 
 ## camera-lifecycle-and-display-suspension — 2026-10-16
 
-This macOS extension adds opt-in continuous camera capture, per-display sleep policy, and exposure-settling behavior for low-light recovery, while retaining existing eligibility and brightness-ownership rules. The accepted decision is in [ADR 0003](adr/0003-camera-lifecycle-and-display-suspension.md); the standalone plan and unrun physical acceptance checklist are preserved in the [feature archive](specs/archived/camera-lifecycle-and-display-suspension/). Hardware behavior remains unverified, and Windows remains deferred.
+This macOS extension adds opt-in continuous camera capture, per-display sleep policy, and exposure-settling behavior for low-light recovery, while retaining existing eligibility and brightness-ownership rules. The accepted decision is in [ADR 0003](adr/0003-camera-lifecycle-and-display-suspension.md); the standalone plan and the physical acceptance checklist are preserved in the [feature archive](specs/archived/camera-lifecycle-and-display-suspension/). On 2026-10-18, ten of the sixteen checklist scenarios passed on one MacBook Pro (Apple M4 Pro) with one Dell S3225QC; one passed in part and five were not run (two external monitors, light recovery, settling interruptions, camera errors, and an external change while asleep). Other monitors and connections remain unverified, and Windows remains deferred.
 
 ## camera-brightness-activation-threshold — 2026-10-17
 

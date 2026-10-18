@@ -166,4 +166,11 @@ Run `tools/tests/test-camera-lifecycle.sh` in macOS CI and locally. Before packa
 - Native: deterministic lifecycle and localization harnesses passed; Xcode project syntax and the Apple Silicon release bundle build passed. The final executable passed `--smoke-test`, and `codesign --verify --deep --strict` succeeded.
 - Bundle: `build/macos/TelaViva OLED.app`. Local signing is ad hoc; distribution signing/notarization was not performed.
 - Privacy/input review found no high-confidence vulnerabilities in the changed paths. Frames remain local, are not persisted or sent through the core ABI, and stale/canceled observations are rejected.
-- [Physical macOS acceptance checklist](validation/macos-acceptance.md): not run. No new hardware compatibility or power-consumption claim is made.
+- [Physical macOS acceptance checklist](validation/macos-acceptance.md): not run when the implementation finished. It was run in part on 2026-10-18, as described in the section below. No power-consumption claim is made.
+
+## Acceptance Run 2026-10-18
+
+- Automated re-run on macOS 27.0.1 (Apple M4 Pro): `cargo fmt --check`, the full `cargo test --workspace --all-targets --locked`, strict clippy, the release build, the three native lifecycle scripts (`test-camera-lifecycle.sh`, `test-camera-lifecycle-bridge.sh`, `test-core-bridge.sh`), packaging, `--smoke-test` and `codesign --verify` all passed.
+- Physical run with a Dell S3225QC: ten of the sixteen scenarios passed, one passed in part and five were not run. The results and the reasons are in the checklist.
+- Corrections found while verifying: the checklist row for brightness zero expected monitoring to continue, which [ADR 0011](../../../adr/0011-camera-brightness-activation-threshold.md) superseded (the camera suspends as low brightness), and this plan names `native/macos/Tests/CameraLifecycleTests.swift`, which no longer exists because the lifecycle moved into the core ([ADR 0014](../../../adr/0014-camera-lifecycle-in-the-core.md)); its cases live in `crates/telaviva-core/tests/camera_lifecycle_contract.rs`.
+- Open observation: a low-light report with a bright window behind the user, not diagnosed.

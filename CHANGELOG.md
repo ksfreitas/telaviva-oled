@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Verified
+
+- Ran the camera lifecycle acceptance checklist in part on a MacBook Pro with a Dell S3225QC: ten of sixteen scenarios passed, one passed in part and five were not run (see the archived checklist).
+
 ### Fixed
 
 - Widen the macOS Settings window to 760 points by default and at minimum so all tabs fit.
