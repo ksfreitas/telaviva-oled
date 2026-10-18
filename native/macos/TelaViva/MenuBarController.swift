@@ -13,7 +13,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                                                                      fetcher: URLSessionUpdateFetcher(),
                                                                      evaluate: MenuBarController.updateEvaluator)
     private lazy var manualControls = ManualMonitorControls(submit: core.submitManualControl)
-    private let camera = PresenceCamera()
+    let camera = PresenceCamera()
     private lazy var ddc = MacDDCController(core: core)
     private lazy var hardwareKeyRouter = HardwareKeyRouter(submit: { [weak self] command, completion in
         guard let self else { completion(false); return }
@@ -70,6 +70,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     private var terminationPoll: DispatchWorkItem?
     private var terminating = false
     private var lastFollowedIDs: Set<String> = []
+    private var lastInferenceDevice: String?
     private var activationObserver: NSObjectProtocol?
     private var accessibilityObserver: NSObjectProtocol?
     private var screenObserver: NSObjectProtocol?
@@ -99,10 +100,9 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         popover = NSPopover()
         popover.behavior = .transient
         let openSettingsAction: () -> Void = { [weak self] in self?.openSettings() }
-        let openAboutAction: () -> Void = { [weak self] in self?.openSettings(tab: .about) }
         let refreshDisplaysAction: () -> Void = ddc.refresh
         let popupView = MonitorPopup(core: core, controls: manualControls, openSettings: openSettingsAction,
-                                     openAbout: openAboutAction, refreshDisplays: refreshDisplaysAction)
+                                     refreshDisplays: refreshDisplaysAction)
         // The popover now follows the SwiftUI content size; a hardware check of the resize is pending.
         let host = NSHostingController(rootView: popupView)
         host.sizingOptions = [.preferredContentSize]
@@ -111,6 +111,11 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             guard let self else { return }
             self.updateStatusItemIcon(presence: snapshot.camera?.presence, locale: snapshot.settings?.locale)
             self.pruneExternalKeyboardDrafts(using: snapshot)
+            let inferenceDevice = snapshot.settings?.inference_device ?? "auto"
+            if inferenceDevice != self.lastInferenceDevice {
+                self.lastInferenceDevice = inferenceDevice
+                self.camera.setInferenceDevice(inferenceDevice)
+            }
             self.camera.apply(snapshot, core: self.core)
             self.manualControls.apply(snapshot)
             self.ddc.process(snapshot)
@@ -319,15 +324,16 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         if let settingsWindow {
             window = settingsWindow
         } else {
+            // Share the camera's live report with the native Settings scene and menu-bar Settings window.
             let settingsView = SettingsView(core: core, navigation: settingsNavigation, updateChecker: updateChecker,
                                             installedVersion: installedVersion, requestHardwareKeyPermission: { [weak self] in
                 self?.requestHardwareKeyPermission()
-            }, ambientAvailability: ambientAvailability, calibration: calibration)
-                .frame(minWidth: 560, minHeight: 560)
-            let created = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 720),
+            }, ambientAvailability: ambientAvailability, inferenceReport: camera.inferenceReport, calibration: calibration)
+                .frame(minWidth: 760, minHeight: 560)
+            let created = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 720),
                                    styleMask: [.titled, .closable, .miniaturizable, .resizable],
                                    backing: .buffered, defer: false)
-            created.contentMinSize = NSSize(width: 560, height: 560)
+            created.contentMinSize = NSSize(width: 760, height: 560)
             created.title = "TelaViva OLED"
             created.contentViewController = NSHostingController(rootView: settingsView)
             created.isReleasedWhenClosed = false

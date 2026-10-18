@@ -57,6 +57,8 @@ jobs:
         run: tools/tests/test-media-key-probe.sh
       - name: Test camera lifecycle policy
         run: tools/tests/test-camera-lifecycle.sh
+      - name: Test inference device selection
+        run: tools/tests/test-inference-device-selection.sh
       - name: Test status item icon
         run: tools/tests/test-status-item-icon.sh
       - name: Test branding assets

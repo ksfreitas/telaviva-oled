@@ -15,7 +15,7 @@ ASSETS = {
         "model",
     ),
     ROOT / "tools/inference/runtime/macos-arm64/libonnxruntime.dylib": (
-        "530cdb5a0de774677d369a83ec8912b0242e9769acd12d34b61412ee6ae368ae",
+        "d3859aecdb70ea099f5b5f4185fe16f0527c6680b18731e6e96fc971ec767cca",
         "runtime",
     ),
 }

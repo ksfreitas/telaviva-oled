@@ -1,6 +1,6 @@
 # ADR 0001: Native shells with a shared Rust policy core
 
-- Status: Accepted; implementation in progress
+- Status: Accepted; inference acceleration policy amended by [ADR 0027](0027-selectable-inference-device-and-igpu-offload.md)
 - Date: 2026-10-16
 
 ## Context
@@ -30,3 +30,7 @@ Rust tests and coverage establish automated policy/inference evidence. They do n
 ## Amendment 2026-10-17: Locale catalogs
 
 The statement in Consequences that static locale catalogs cover current messages is partially superseded by [ADR 0015](0015-native-shells-own-ui-strings.md), and the rest of this record remains in force.
+
+## Amendment 2026-10-18: Selectable inference devices
+
+[ADR 0027](0027-selectable-inference-device-and-igpu-offload.md) replaces the CPU-default energy gate with validated offload and explicit device preferences, CPU fallback and native status reporting. No measured energy saving is claimed. The other responsibility and lifetime boundaries remain in force.

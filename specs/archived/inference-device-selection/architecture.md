@@ -65,12 +65,14 @@ A new `inference_device` setting, stored by the shared Rust core and acted on by
 **Alternatives Considered**: keep it as a denylist (a hypothetical need; markers already cover real failures).
 **Trade-offs**: large deletion (about 45 tests); it is done in its own phase so it can be reviewed separately.
 
-### Decision 8: macOS gets real compute-unit control through ONNX Runtime 1.22 and string options
+### Decision 8: macOS gets real compute-unit control through ONNX Runtime 1.23 and string options
 
-**What**: the macOS runtime is bumped to ONNX Runtime 1.22.x (pinned by SHA-256 in `assets/model/manifest.toml`). CoreML is registered with `SessionOptionsAppendExecutionProvider("CoreML", ...)` and `MLComputeUnits` set to `ALL`, `CPUAndNeuralEngine`, `CPUAndGPU`, per the chosen entry. CPU uses the plain CPU provider, with no CoreML. The call goes through the `ort-sys` API table on the session builder's raw options pointer, because `ort` rc.9's wrapper only exposes flag bits and cannot express `CPUAndNeuralEngine`.
+**What**: the macOS runtime is bumped to ONNX Runtime 1.23.0 (pinned by SHA-256 in `assets/model/manifest.toml`). CoreML is registered with `SessionOptionsAppendExecutionProvider("CoreML", ...)` and `MLComputeUnits` set to `ALL`, `CPUAndNeuralEngine`, `CPUAndGPU`, per the chosen entry. CPU uses the plain CPU provider, with no CoreML. The call goes through the `ort-sys` API table on the session builder's raw options pointer, because `ort` rc.9's wrapper only exposes flag bits and cannot express `CPUAndNeuralEngine`.
 **Why**: ORT 1.20.1 cannot select the Neural Engine (its flags only express CPU only, CPU+GPU, and an ANE-device gate), and the owner chose Automatic, Neural Engine, GPU and CPU. `MLComputeUnits` was first accepted in 1.21.0; the values are exactly `ALL`, `CPUAndNeuralEngine`, `CPUAndGPU`, `CPUOnly`.
 **Alternatives Considered**: stay on 1.20.1 and offer only Automatic, GPU and CPU (needs an owner decision, since it drops the Neural Engine entry); bump the whole stack to a newer `ort` crate (larger, riskier change).
 **Trade-offs**: this is gated by a spike (Plan phase 0): confirm that `ort` rc.9 loads a 1.22 dylib (`GetApi(20)`), that the raw options pointer is reachable, that the release archive includes the CoreML provider, and that `CPUAndNeuralEngine` creates a session. If the spike fails, the Neural Engine entry is not shipped and the owner decides what replaces it. Windows stays on ORT 1.20.1 (not needed there).
+
+**Implementation amendment (2026-10-18):** the 1.22.0 spike reproduced an upstream process-exit mutex abort even with CPU-only sessions. The owner authorized the changes needed to conclude macOS. Official 1.23.0 retains API 20 compatibility with `ort` rc.9 and passes CPU/CoreML session creation and clean shutdown; it replaces the initial 1.22.x target. See [the spike evidence](validation/macos-ort-spike.md). Windows keeps its existing 1.20.1 runtime.
 
 ### Decision 9: Device status lives in a shell-owned report, polled by the page
 

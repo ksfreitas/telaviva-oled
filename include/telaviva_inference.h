@@ -51,14 +51,15 @@ int32_t tv_inference_create_with_provider(const char *runtime_abs_path,
                                           int32_t provider,
                                           TvInferenceHandle **out_handle);
 
-/* Same as tv_inference_create_with_provider, plus the DirectML adapter to use. device_index is an
- * index into the DXGI adapter enumeration order (IDXGIFactory1::EnumAdapters1) as seen by ONNX
- * Runtime; the shell passes the index of the adapter that matched its device profile. Index 0 is
- * the same as tv_inference_create_with_provider. device_index only applies to provider 2 and is
- * ignored for providers 0 and 1. An index that ONNX Runtime cannot register falls back to CPU like
- * any other failing accelerator: the return value is still 0 and tv_inference_selected_provider
- * reports 0. The index-to-adapter mapping is to be confirmed against the DXGI adapter order by
- * the shell (see specs/archived/windows-version/validation/measurements.md), not assumed. */
+/* Same as tv_inference_create_with_provider, plus a provider-specific device index. For provider 1
+ * (CoreML, macOS), device_index selects MLComputeUnits: 0 = ALL, 1 = CPUAndNeuralEngine, 2 =
+ * CPUAndGPU. Any other CoreML index returns -1. For provider 2 (DirectML, Windows), device_index is
+ * an index into the DXGI adapter enumeration order (IDXGIFactory1::EnumAdapters1) as seen by ONNX
+ * Runtime; the shell passes the index of the selected adapter. The index is
+ * ignored for provider 0 (CPU). If ONNX Runtime cannot register the requested accelerator, the
+ * call falls back to CPU and returns 0; tv_inference_selected_provider then reports 0. The DirectML
+ * index-to-adapter mapping is to be confirmed against the DXGI adapter order by the shell (see
+ * specs/archived/windows-version/validation/measurements.md), not assumed. */
 int32_t tv_inference_create_with_provider_device(const char *runtime_abs_path,
                                                  const char *model_abs_path,
                                                  int32_t provider,
@@ -94,8 +95,8 @@ int32_t tv_inference_coreml_available(void);
  * does not need a created detector. */
 int32_t tv_inference_directml_available(void);
 
-/* Returns CPU (0), CoreML candidate (1) or DirectML candidate (2) for the provider actually used;
- * this does not guarantee all model ops run there. */
+/* Returns CPU (0), CoreML (1) or DirectML (2) for the provider successfully attached to the
+ * session; CoreML or DirectML may still delegate unsupported model operators to CPU. */
 int32_t tv_inference_selected_provider(const TvInferenceHandle *handle);
 
 void tv_inference_destroy(TvInferenceHandle *handle);

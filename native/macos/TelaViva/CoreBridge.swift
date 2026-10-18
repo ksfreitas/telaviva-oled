@@ -378,6 +378,8 @@ struct CoreSettings: Decodable {
     var hardware_keys_enabled: Bool?
     var brightness_key_step: Int?
     var volume_key_step: Int?
+    /// Optional so snapshots written before device selection still decode; saves emit the core default when absent.
+    var inference_device: String?
     /// Brightness above which presence checks may run, 10 to 90. Optional so older snapshots still decode.
     var presence_min_brightness_percent: Double?
     /// Brightness follow and protection opt-outs. Optional so older snapshots still decode; sent only when set.
@@ -390,7 +392,7 @@ struct CoreSettings: Decodable {
         case locale, presence_sampling_interval_s, return_sampling_interval_s, suspend_presence_on_battery,
              presence_protection_enabled, always_on_camera, screensaver_protection_enabled, launch_at_login,
              screensaver_targets, selected_camera_id, camera_history, hardware_keys_enabled,
-             brightness_key_step, volume_key_step, presence_min_brightness_percent
+             brightness_key_step, volume_key_step, presence_min_brightness_percent, inference_device
         case ambientFollowEnabled = "ambient_follow_enabled", ambientCurves = "ambient_curves"
         case protectionDisabled = "protection_disabled"
     }
@@ -408,7 +410,8 @@ struct CoreSettings: Decodable {
             "launch_at_login": launch_at_login, "screensaver_targets": screensaver_targets,
             "hardware_keys_enabled": hardware_keys_enabled ?? false,
             "brightness_key_step": brightness_key_step ?? 5, "volume_key_step": volume_key_step ?? 5,
-            "presence_min_brightness_percent": presence_min_brightness_percent ?? 20
+            "presence_min_brightness_percent": presence_min_brightness_percent ?? 20,
+            "inference_device": inference_device ?? "auto"
         ]
         // Ambient keys are added only when set, so an unrelated save leaves the core's stored values untouched.
         if let ambientFollowEnabled { object["ambient_follow_enabled"] = ambientFollowEnabled }

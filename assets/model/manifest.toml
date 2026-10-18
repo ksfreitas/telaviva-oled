@@ -15,15 +15,15 @@ purpose = "Any-face detection without identity recognition"
 
 [runtime]
 name = "ONNX Runtime"
-version = "1.20.1"
+version = "1.23.0"
 platform = "macos-arm64"
-source = "https://github.com/microsoft/onnxruntime/releases/download/v1.20.1/onnxruntime-osx-arm64-1.20.1.tgz"
-archive_sha256 = "b678fc3c2354c771fea4fba420edeccfba205140088334df801e7fc40e83a57a"
-dylib_sha256 = "530cdb5a0de774677d369a83ec8912b0242e9769acd12d34b61412ee6ae368ae"
+source = "https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-osx-arm64-1.23.0.tgz"
+archive_sha256 = "8182db0ebb5caa21036a3c78178f17fabb98a7916bdab454467c8f4cf34bcfdf"
+dylib_sha256 = "d3859aecdb70ea099f5b5f4185fe16f0527c6680b18731e6e96fc971ec767cca"
 license = "MIT"
 notices = "licenses/inference/ONNXRUNTIME-THIRD-PARTY-NOTICES.txt"
 default_provider = "CPU"
-coreml_policy = "Explicit candidate only; CPU fallback; energy benefit not verified"
+coreml_policy = "Explicit compute-unit candidate; CPU fallback; energy benefit not verified"
 
 # Windows x64 runtime (specs/archived/windows-version, Phase 5 T070).
 # Pins computed locally with tools/inference/fetch-windows-runtime.ps1 -ComputeOnly

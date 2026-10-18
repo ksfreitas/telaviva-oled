@@ -1,6 +1,6 @@
 ﻿# Tasks: Inference device selection
 
-**Branch**: `inference-device-selection` **Specs**: [spec.md](spec.md), [contracts.md](contracts.md) **Architecture**: [architecture.md](architecture.md) **Status**: Not Started ⏳
+**Branch**: `inference-device-selection` **Specs**: [spec.md](spec.md), [contracts.md](contracts.md) **Architecture**: [architecture.md](architecture.md) **Status**: macOS implementation completed ✅; existing Windows UI acceptance remains open
 
 Story groups used below (the stories keep their spec IDs):
 
@@ -10,15 +10,17 @@ Story groups used below (the stories keep their spec IDs):
 
 Per AGENTS.md, both platforms ship in the same change. The groups are an ordering inside this branch, not separate releases. Tasks marked **(Mac)** need an Apple Silicon Mac.
 
-## Phase 1: Setup and spikes ⏳ (~5h)
+## Phase 1: Setup and spikes ✅ (~5h)
 
 - [x] T001 Create `specs/inference-device-selection/validation/README.md` with the record template (machine, OS build, driver, command, result, date) used by every hardware record in this plan.
 - [x] T002 [P] Write a throwaway probe in the session scratchpad (not in the repo) that lists every DXGI adapter (index, vendor, device, LUID, software flag) and every DXCore hardware adapter (`IsIntegrated`, `InstanceLuid`), then prints whether the LUIDs match. Run it on the dev desktop (Radeon iGPU + RTX) and record the output in `specs/inference-device-selection/validation/windows-adapter-probe.md`.
 - [x] T003 [P] Using the shipped `telaviva_inference.dll`, `tools/inference/runtime/windows-x64-directml/onnxruntime.dll`, the YuNet model and `selftest-face.bgra`, measure detect latency on the CPU and on each DirectML `device_id`, and read per-LUID GPU engine utilisation (`typeperf "\GPU Engine(*)\Utilization Percentage"`) to confirm which physical GPU each index uses. Record in `validation/windows-device-mapping.md` and write down the iGPU latency next to the 500 ms budget.
-- [ ] T004 [P] **(Mac)** Spike for Decision 8 on a branch of `crates/telaviva-inference`: fetch `onnxruntime-osx-arm64` 1.22.x, run `nm -gU libonnxruntime.dylib | grep CoreML`, check that `ort =2.0.0-rc.9` loads it (`GetApi(20)`), reach the raw `OrtSessionOptions*` of the session builder, call `SessionOptionsAppendExecutionProvider("CoreML", ...)` with `MLComputeUnits` = `CPUAndNeuralEngine`, and create a YuNet session. Record in `validation/macos-ort-spike.md`.
-- [ ] T005 Decision gate on T004. If any step fails, stop the macOS phase and take the failure to the owner (options in architecture.md Risks). If T003 shows the iGPU above 500 ms, revise the budget constant in architecture.md and contracts.md before Phase 3.
+- [x] T004 [P] **(Mac)** Spike for Decision 8 on a branch of `crates/telaviva-inference`: fetch `onnxruntime-osx-arm64` 1.22.x, run `nm -gU libonnxruntime.dylib | grep CoreML`, check that `ort =2.0.0-rc.9` loads it (`GetApi(20)`), reach the raw `OrtSessionOptions*` of the session builder, call `SessionOptionsAppendExecutionProvider("CoreML", ...)` with `MLComputeUnits` = `CPUAndNeuralEngine`, and create a YuNet session. Record in `validation/macos-ort-spike.md`.
+- [x] T005 Decision gate on T004. If any step fails, stop the macOS phase and take the failure to the owner (options in architecture.md Risks). If T003 shows the iGPU above 500 ms, revise the budget constant in architecture.md and contracts.md before Phase 3.
 
-**Checkpoint**: ✋ LUID mapping, DXGI-to-DirectML index mapping, the latency budget and the macOS ORT route are known.
+**2026-10-18 macOS execution note:** T004 initially reproduced a process-exit mutex abort on ONNX Runtime 1.22.0, including CPU-only sessions. After the owner authorized diagnosis and the changes needed to finish macOS, the failure was isolated to runtime static teardown; official ONNX Runtime 1.23.0 passes API 20, CPU and CoreML session creation and normal process exit with unchanged `ort` rc.9 bindings. T005 passed using 1.23.0 instead of the planned 1.22.x pin. See [the spike record](validation/macos-ort-spike.md). This execution is scoped to macOS; existing Windows implementation and validation are preserved.
+
+**Checkpoint**: Windows mapping is recorded; the macOS runtime route passed with ONNX Runtime 1.23.0.
 
 ## Phase 2: Foundational ⏳ (~3h)
 
@@ -78,29 +80,31 @@ Per AGENTS.md, both platforms ship in the same change. The groups are an orderin
 
 **Checkpoint**: ✋ Windows feature complete (stories US-001, US-002, US-003, US-005, US-006 on Windows).
 
-## Phase 5: Group C, macOS (US-004 and macOS parity) ⏳ (~12h) **(Mac, gated by T005)**
+## Phase 5: Group C, macOS (US-004 and macOS parity) ✅ (~12h) **(Mac, gated by T005)**
 
 **Goal**: the same setting and page on macOS, with Automatic, Neural Engine, GPU and CPU.
 **Independent Test**: on an Apple Silicon Mac, pick each entry; the in-use line and the CoreML log show the requested compute units, and a forced failure ends on the CPU.
 
 ### Tests first
 
-- [ ] T031 [P] [US-004] In `crates/telaviva-inference/src/lib.rs` tests, add a pure mapping test `coreml_compute_units(device_index)`: 0 `ALL`, 1 `CPUAndNeuralEngine`, 2 `CPUAndGPU`, anything else invalid; and that provider 1 with an invalid index returns `-1`. Confirm they fail.
-- [ ] T032 [P] [US-004] Add `native/macos/Tests/InferenceDeviceSelectionTests.swift` and `tools/tests/test-inference-device-selection.sh` with the same resolution vectors as T010 for the macOS rows (Automatic unvalidated resolves to CPU, validated resolves to `ALL`, `ane`, `gpu`, `cpu`, an id that does not apply, a failed candidate, the report states).
-- [ ] T033 [P] [US-004] In `native/macos/Tests/CoreBridgeTests.swift`, add tests that `inference_device` decodes with the default `auto` when missing and is emitted by `CoreSettings.json`.
+- [x] T031 [P] [US-004] In `crates/telaviva-inference/src/lib.rs` tests, add a pure mapping test `coreml_compute_units(device_index)`: 0 `ALL`, 1 `CPUAndNeuralEngine`, 2 `CPUAndGPU`, anything else invalid; and that provider 1 with an invalid index returns `-1`. Confirm they fail.
+- [x] T032 [P] [US-004] Add `native/macos/Tests/InferenceDeviceSelectionTests.swift` and `tools/tests/test-inference-device-selection.sh` with the same resolution vectors as T010 for the macOS rows (Automatic unvalidated resolves to CPU, validated resolves to `ALL`, `ane`, `gpu`, `cpu`, an id that does not apply, a failed candidate, the report states).
+- [x] T033 [P] [US-004] In `native/macos/Tests/CoreBridgeTests.swift`, add tests that `inference_device` decodes with the default `auto` when missing and is emitted by `CoreSettings.json`.
 
 ### Implementation
 
-- [ ] T034 [US-004] Pin the ONNX Runtime 1.22.x macOS archive by SHA-256 in `assets/model/manifest.toml` and update `tools/inference/fetch-macos-runtime.sh` and `packaging/macos/build-app.sh` (signing of `Contents/Frameworks/*.dylib`) accordingly.
-- [ ] T035 [US-004] In `crates/telaviva-inference/src/lib.rs`, replace the macOS branch of `attach_accelerator` with registration through `SessionOptionsAppendExecutionProvider("CoreML", ...)` and `MLComputeUnits` from the `device_index` mapping, with error-on-failure semantics so `selected_provider` is 0 when registration fails. Document the `device_index` meaning in `crates/telaviva-inference/include/telaviva_inference.h` and keep `header_contract_tests.rs` green.
-- [ ] T036 [US-004] Add `native/macos/TelaViva/InferenceDeviceSelection.swift`: option list, resolution rules from contracts.md, the report, and the constant that keeps macOS Automatic on the CPU until a Mac validation record exists.
-- [ ] T037 [US-004] Bundle the self-test frame in the macOS app resources (`packaging/macos/build-app.sh` and the Xcode project) from the same source file Windows uses.
-- [ ] T038 [US-003] [US-004] [US-006] In `native/macos/TelaViva/PresenceCamera.swift`, add `setInferenceDevice(_:)` that releases the detector and records the preference; `ensureDetector()` calls `tv_inference_create_with_provider_device` with the resolved provider and compute units, validates against a CPU reference session with the self-test frame and the latency budget, and falls back to the CPU on any failure while keeping the frame retry on the CPU.
-- [ ] T039 [P] [US-003] Add `inference_device` to `CoreSettings` and its `json` in `native/macos/TelaViva/CoreBridge.swift` (optional so older snapshots decode).
-- [ ] T040 [P] [US-002] [US-005] Add the strings to `native/macos/TelaViva/Localization.swift` for both locales with the same keys as the Windows set (the existing parity test keeps them aligned).
-- [ ] T041 [US-002] [US-005] Add `case advanced` in `native/macos/TelaViva/SettingsNavigation.swift`, an `advancedTab` with a Picker, the in-use line and the notice in `SettingsView.swift` (state, `load()`, `save()`, `.onChange` as the locale picker does), and wire the setting change and the status object to `PresenceCamera` from where the app owns it.
-- [ ] T042 Run `cargo test -p telaviva-inference`, the swiftc test scripts under `tools/tests/`, and `scripts/build-macos.sh`; fix until green.
-- [ ] T043 **(Mac)** Hardware record in `validation/macos-coreml.md`: each entry creates a session with the right compute units, correctness matches the CPU, failure fallback, the CoreML placement log. Only after it passes, flip the Automatic constant from T036 and record that in the file.
+- [x] T034 [US-004] Pin the ONNX Runtime 1.22.x macOS archive by SHA-256 in `assets/model/manifest.toml` and update `tools/inference/fetch-macos-runtime.sh` and `packaging/macos/build-app.sh` (signing of `Contents/Frameworks/*.dylib`) accordingly.
+- [x] T035 [US-004] In `crates/telaviva-inference/src/lib.rs`, replace the macOS branch of `attach_accelerator` with registration through `SessionOptionsAppendExecutionProvider("CoreML", ...)` and `MLComputeUnits` from the `device_index` mapping, with error-on-failure semantics so `selected_provider` is 0 when registration fails. Document the `device_index` meaning in `crates/telaviva-inference/include/telaviva_inference.h` and keep `header_contract_tests.rs` green.
+- [x] T036 [US-004] Add `native/macos/TelaViva/InferenceDeviceSelection.swift`: option list, resolution rules from contracts.md, the report, and the constant that keeps macOS Automatic on the CPU until a Mac validation record exists.
+- [x] T037 [US-004] Bundle the self-test frame in the macOS app resources (`packaging/macos/build-app.sh` and the Xcode project) from the same source file Windows uses.
+- [x] T038 [US-003] [US-004] [US-006] In `native/macos/TelaViva/PresenceCamera.swift`, add `setInferenceDevice(_:)` that releases the detector and records the preference; `ensureDetector()` calls `tv_inference_create_with_provider_device` with the resolved provider and compute units, validates against a CPU reference session with the self-test frame and the latency budget, and falls back to the CPU on any failure while keeping the frame retry on the CPU.
+- [x] T039 [P] [US-003] Add `inference_device` to `CoreSettings` and its `json` in `native/macos/TelaViva/CoreBridge.swift` (optional so older snapshots decode).
+- [x] T040 [P] [US-002] [US-005] Add the strings to `native/macos/TelaViva/Localization.swift` for both locales with the same keys as the Windows set (the existing parity test keeps them aligned).
+- [x] T041 [US-002] [US-005] Add `case advanced` in `native/macos/TelaViva/SettingsNavigation.swift`, an `advancedTab` with a Picker, the in-use line and the notice in `SettingsView.swift` (state, `load()`, `save()`, `.onChange` as the locale picker does), and wire the setting change and the status object to `PresenceCamera` from where the app owns it.
+- [x] T042 Run `cargo test -p telaviva-inference`, the swiftc test scripts under `tools/tests/`, and `scripts/build-macos.sh`; fix until green.
+- [x] T043 **(Mac)** Hardware record in `validation/macos-coreml.md`: each entry creates a session with the right compute units, correctness matches the CPU, failure fallback, the CoreML placement log. Only after it passes, flip the Automatic constant from T036 and record that in the file.
+
+**2026-10-18 completion note:** implemented and tested the macOS setting, Advanced page in both locales, shell-owned status report, provider-specific CoreML options and a production detector host with injected failure tests. The host retains validated decisions and CPU fallback across idle recreation, retries failed accelerated frames on CPU, and resets on preference change. Official ORT 1.23.0 replaces the failed 1.22.0 spike route without changing Rust bindings or the Windows runtime. Both packaging and Xcode generate the shared-source TVSF fixture; packaging retains its attribution and signs the runtime. T043 passed on an Apple M4 Pro; `automaticValidated` was enabled only after reviewing the passing record. CoreML still makes physical placement decisions; no energy or live-camera/idle-resource measurement is claimed. See [host validation](validation/macos-coreml.md), [ABI probe](validation/macos-coreml-device-probe.md) and [integrated checks](validation/macos-validation.md).
 
 **Checkpoint**: ✋ macOS parity complete.
 
@@ -112,14 +116,16 @@ Own phase so the large deletion reviews separately (Decision 7). Windows only.
 - [x] T045 Remove the leftover profile-loading and profile-related fields in `native/windows/TelaViva/Host/AppController.cpp` and `InferenceHost.h`, and any references in `tools/` scripts or `.github/workflows/windows.yml`.
 - [x] T046 Build and run `scripts\build-windows.ps1` plus `tests.exe`; confirm the package no longer contains the profiles file and still starts.
 
-## Final Phase: Polish ⏳ (~4h)
+## Final Phase: Polish ✅ (macOS completion scope) (~4h)
 
 - [x] T047 [P] Update `api.md`: the inference C ABI additions (the `device_index` meaning per provider, the error-on-failure rule) and the `inference_device` setting.
 - [x] T048 [P] Update `docs/user-guide.md`: the Advanced page in the Settings section, the replaced "Acceleration" bullet under Windows specifics, the macOS choices, and the preference caveat for CoreML.
 - [x] T049 [P] Update `ARCHITECTURE.md` line 31 and the inference sections that still describe the CPU-by-default allowlist, and add the Unreleased entries to `CHANGELOG.md`.
-- [ ] T050 Run the full checks: `cargo test --workspace`, `cargo clippy --workspace`, the Windows build and `tests.exe`, the macOS scripts, and `cargo test -p telaviva-core --test version_consistency`.
-- [ ] T051 Run `/codeadvisor-dev:finalize` to write ADR-0027 (amending ADR-0001 and ADR-0019), update their status lines, and archive this spec folder. The ADR must exist before merge.
+- [x] T050 Run the full checks: `cargo test --workspace`, `cargo clippy --workspace`, the Windows build and `tests.exe`, the macOS scripts, and `cargo test -p telaviva-core --test version_consistency`.
+- [x] T051 Run `/codeadvisor-dev:finalize` to write ADR-0027 (amending ADR-0001 and ADR-0019), update their status lines, and archive this spec folder. The ADR must exist before merge.
 - [x] T052 Bump the application version per AGENTS.md "Release version". The owner chose `0.1.1` (not the proposed 0.2.0), done on 2026-10-18. Change `crates/telaviva-core/Cargo.toml` (source of truth), `crates/telaviva-inference/Cargo.toml`, `native/macos/TelaViva/Info.plist` (`CFBundleShortVersionString` and `CFBundleVersion`) and `native/windows/TelaViva/app.manifest` (`0.1.1.0`); let cargo update `Cargo.lock`; in `CHANGELOG.md` rename `Unreleased` to `0.1.1 - <date>` and open a new empty `Unreleased`; run `cargo test -p telaviva-core --test version_consistency`. Creating the tag `v0.1.1` and publishing the GitHub Release are outward-facing and wait for the owner's explicit go-ahead.
+
+**2026-10-18 polish note:** all applicable macOS/Rust checks passed, including 239 workspace tests, strict Clippy, formatting, all 15 Swift test scripts, packaged-app smoke/signature/arm64 checks and Xcode Debug build. Advanced view rendered in both locales for normal, failed and unavailable states. API, guide, changelog, provenance and architecture updated; ADR 0027 amends ADR 0001/0019 and the spec is archived. T050 is complete for the owner's explicit macOS scope: Windows build/UI Automation was not rerun, and T030 plus earlier Windows hardware acceptance gaps remain open as recorded. The version remains the already-selected 0.1.1; no tag or release was created.
 
 ## Dependencies & Execution Order
 
@@ -140,7 +146,7 @@ Phase 1 (spikes) ──► Phase 2 (core setting) ──► Phase 3 (Windows eng
 - **MVP**: Phases 1 to 3 (about 20h). It gives Windows the Automatic iGPU offload and the manual choice (through the settings file), with hardware evidence. It is not shippable alone: AGENTS.md requires macOS in the same change and the page for users to see the setting.
 - **Shippable change**: Phases 1 to 6 and Polish (about 45h, assuming the macOS spike passes).
 - **Parallel work**: Windows (Phases 3, 4) and macOS (Phase 5) in parallel once Phase 2 is done and T005 passes. The writing tasks inside a phase can go to separate workers when they touch different files; tasks in the same file go to one worker.
-- **Delegation**: per the owner's standing rules, Haiku workers apply the edits with mechanical briefings (exact files, before and after, project conventions: English comments, strings in both locales); the coordinator runs every build, test and lint, reviews each diff and checks worker reports.
+- **Delegation**: per the owner's standing rules, Luna (`gpt-6-luna`) workers apply the edits with scoped briefings (exact files, before and after, project conventions: English comments, strings in both locales); the coordinator runs every build, test and lint, reviews each diff and checks worker reports.
 - **Hardware limits**: the validation records are the evidence. Do not claim energy savings (FR-013), and do not enable macOS Automatic on CoreML before T043.
 
 ## Progress Tracking
@@ -149,10 +155,10 @@ Phase 1 (spikes) ──► Phase 2 (core setting) ──► Phase 3 (Windows eng
 
 | Phase | Status | Notes |
 |---|---|---|
-| 1 Setup and spikes | ⏰ | T001-T003 done on the Windows dev desktop (records in validation/); T004/T005 need a Mac |
+| 1 Setup and spikes | ✅ | Windows records retained; macOS spike passed with ORT 1.23.0 after diagnosis of the 1.22.0 exit abort |
 | 2 Foundational | ✅ | Core setting, tests and clippy green |
 | 3 Group A, Windows engine (MVP) | ✅ | 651 Windows tests pass; hardware record validation/windows-auto-igpu.md. Latency budget set to 125 ms (0.25 s minimum return interval, not 1 s) |
 | 4 Group B, Windows page | ⏰ | Page, strings and navigation built and tested; T030 (UI Automation check) open because an installed 0.1.0 instance was already running |
-| 5 Group C, macOS | ⏳ | Needs an Apple Silicon Mac; not started (T004 spike first) |
+| 5 Group C, macOS | ✅ | Runtime, detector, UI, CPU fallback and real M4 Pro validation passed; Automatic enabled |
 | 6 Retire allowlist | ✅ | Files removed with git rm; Windows build and 651 tests pass; package has no profiles file |
-| Polish | ⏰ | api.md, user-guide, ARCHITECTURE, CHANGELOG, README, provenance docs done for Windows; macOS text, T050 (macOS scripts), T051 finalize and T052 version bump open |
+| Polish | ✅ | macOS/Rust checks and docs completed; ADR 0027 written and spec archived; 0.1.1 version retained. Prior Windows UI/hardware acceptance remains open |

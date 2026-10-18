@@ -25,11 +25,11 @@ Click the menu bar icon (macOS) or the tray icon (Windows) to open it.
   - a filled dot when a face is detected;
   - no dot when no face is detected, or when presence is off, suspended or unavailable;
   - a dot outline when light is insufficient.
-- **About TelaViva OLED** is in the menu bar popup (macOS) or the tray right-click menu (Windows), and in Settings. It shows the installed version, the project's GitHub page and whether a newer release is available. **Check now** asks GitHub again. The app only informs you; it never downloads or installs an update.
+- **About TelaViva OLED** is in Settings on macOS. On Windows, it is in Settings and the tray right-click menu. It shows the installed version, the project's GitHub page and whether a newer release is available. **Check now** asks GitHub again. The app only informs you; it never downloads or installs an update.
 
 ## Settings
 
-Settings has General, Keyboard, Automatic brightness and About pages, and on Windows an Advanced page.
+Settings has General, Keyboard, Automatic brightness, Advanced and About pages on both platforms.
 
 - **Language:** English (US) or Portuguese (Brazil).
 - **Camera:** the app remembers the cameras you select, up to eight, most recent first, and uses the first one that is connected, so reconnecting a camera or plugging in a preferred one is picked up without changing settings. When none is connected, it falls back to the system default camera. On Windows, infrared cameras are hidden from selection.
@@ -39,7 +39,7 @@ Settings has General, Keyboard, Automatic brightness and About pages, and on Win
 - **Presence brightness threshold:** a slider from 10 to 90% (20% by default).
 - **Launch at login:** off by default.
 - **Hardware-key steps:** see [Keyboard and hardware keys](#keyboard-and-hardware-keys).
-- **Inference device** (Windows, Advanced page): where face detection runs. See [Inference device](#inference-device).
+- **Inference device** (Advanced page): where face detection runs. See [Inference device](#inference-device).
 
 ## Presence protection
 
@@ -130,21 +130,20 @@ The Windows volume and mute keys are opt-in. They adjust an external monitor onl
 
 ## Inference device
 
-Face detection runs on one device at a time. The **Inference device** setting, on the Advanced page of Settings, chooses it. This is available on Windows. On macOS detection always runs on the CPU for now; the macOS choices (Automatic, Neural Engine, GPU and CPU) are not implemented yet.
+Face detection runs on one device at a time. The **Inference device** setting, on the Advanced page of Settings, chooses it. The available choices and Automatic behavior depend on the platform.
 
-- **Automatic** (the default): uses the integrated GPU when the computer has one and it passes a check, and the CPU otherwise. The reason is to free your main CPU and graphics card for other work; it is not a promise of lower energy use, and energy has not been measured.
-- **CPU:** always runs on the CPU.
-- **A specific graphics card:** each detected card is listed by name and marked integrated or discrete. A discrete GPU is never chosen by Automatic, because it can use more power than the CPU; choose it by hand if you want it.
+- **Windows:** Automatic (the default) uses an integrated GPU when one passes the per-session check, and uses the CPU otherwise. A discrete GPU is available as a manual choice and is never selected automatically. The intent is to leave the main CPU and graphics card available for other work; energy use has not been measured, so no energy benefit is claimed. You can also select CPU or a specific GPU, listed by name and marked integrated or discrete.
+- **macOS on Apple Silicon:** Automatic (the default) requests all CoreML compute units and falls back to CPU if validation or a later runtime call fails. Neural Engine preference and GPU preference ask CoreML to use the corresponding compute units; CoreML may still run unsupported operations on the CPU, and the app cannot report the physical unit used by each operation. CPU uses ONNX Runtime without CoreML. Energy use has not been measured, so no energy benefit is claimed.
 
-Before it relies on a graphics card, the app checks that the card starts, finds the face in a test image as the CPU does, and answers within 125 ms. Speed compared with the CPU does not matter. If the check fails, or the card fails later, detection continues on the CPU without losing a frame.
+Before relying on an accelerator, the app checks that it starts, returns the same presence classification as the CPU for the bundled self-test frame, and answers within 125 ms. This is a check of that frame, not a guarantee of equal results on every camera image. Speed compared with the CPU does not matter. If validation fails, or an accelerator fails later, detection continues on the CPU without losing the current frame.
 
-- With **Automatic**, a failing card is skipped quietly until the graphics driver or the app version changes.
-- With a card you chose, the page shows a notice that the CPU took over. Choosing the card again tries it again.
+- With **Automatic** on Windows, a failing card is skipped quietly until the graphics driver or the app version changes. On macOS, a failure keeps the current preference session on CPU; changing the preference or relaunching allows a new validation.
+- With an accelerator you chose, the page shows a notice that the CPU took over. Selecting a different option and then returning to it tries it again.
 - If the card you chose is no longer present (for example after a driver change or a removed card), the app behaves as Automatic for that run, keeps your choice stored, and shows a notice.
 
 The page shows the device actually in use. The device is chosen when detection starts, so before the first detection the page says so. A change takes effect without restarting the app.
 
-The detection result is the same on every device that passes the check. Windows uses the DirectML component that comes with Windows; the app does not ship it. If it is missing or too old for a card, that card fails the check and the CPU is used.
+On Windows, DirectML is supplied by Windows and is not bundled with the app. If it is missing or too old for a card, that card fails the check and the CPU is used.
 
 ## Windows specifics
 

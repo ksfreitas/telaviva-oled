@@ -3,7 +3,7 @@
 | Artifact | Source/version | License | SHA-256 |
 |---|---|---|---|
 | `assets/model/face_detection_yunet_2023mar.onnx` | OpenCV Zoo YuNet 2023mar, fetched 2026-10-16 | MIT; see `YUNET-LICENSE` | `8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4` |
-| `tools/inference/runtime/macos-arm64/libonnxruntime.dylib` | Microsoft ONNX Runtime 1.20.1 macOS arm64 official release | MIT; see `ONNXRUNTIME-LICENSE` and `ONNXRUNTIME-THIRD-PARTY-NOTICES.txt` | `530cdb5a0de774677d369a83ec8912b0242e9769acd12d34b61412ee6ae368ae` |
+| `tools/inference/runtime/macos-arm64/libonnxruntime.dylib` | Microsoft ONNX Runtime 1.23.0 macOS arm64 official release | MIT; see `ONNXRUNTIME-LICENSE` and `ONNXRUNTIME-THIRD-PARTY-NOTICES.txt` | `d3859aecdb70ea099f5b5f4185fe16f0527c6680b18731e6e96fc971ec767cca` |
 | `ort` Rust crate | `2.0.0-rc.9` | MIT or Apache-2.0 | Pinned in `Cargo.lock` |
 | `ort-sys` Rust crate | `2.0.0-rc.9` | MIT or Apache-2.0 | Pinned in `Cargo.lock` |
 
@@ -12,7 +12,7 @@ The ONNX graph has fixed input dimensions `[1, 3, 640, 640]`; the detector lette
 Upstream sources:
 
 - https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet
-- https://github.com/microsoft/onnxruntime/releases/tag/v1.20.1
+- https://github.com/microsoft/onnxruntime/releases/tag/v1.23.0
 - https://crates.io/crates/ort/2.0.0-rc.9
 - https://crates.io/crates/ort-sys/2.0.0-rc.9
 
@@ -28,7 +28,7 @@ Upstream sources:
 | `onnxruntime.dll` SHA-256 | `4cb41e89b8bf30578e1dd95e9c40292d61974a4bfcd666409302c4f0c5aa8ce0` |
 | Computed | 2026-10-17 |
 
-The pins were computed locally with `tools/inference/fetch-windows-runtime.ps1 -ComputeOnly` from a fresh download into a new empty folder. The script only read the archive and extracted DLL for hashing; nothing was executed or imported. The GitHub release assets publish no digests, so these values are the only reference. The macOS entries above are unchanged.
+The pins were computed locally with `tools/inference/fetch-windows-runtime.ps1 -ComputeOnly` from a fresh download into a new empty folder. The script only read the archive and extracted DLL for hashing; nothing was executed or imported. The GitHub release assets publish no digests, so these values are the only reference. The Windows runtime entries remain unchanged.
 
 ### Windows x64 DirectML runtime variant
 

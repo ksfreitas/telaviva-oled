@@ -22,6 +22,7 @@ private let cameraQueueQoS: DispatchQoS = .background
 /// Uses one-frame sessions by default and can retain a healthy session in opt-in always-on mode.
 /// Return frames are discarded between deadlines; frame bytes never enter the ABI.
 final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
+    let inferenceReport = InferenceDeviceSelection.Report()
     private let queue = DispatchQueue(label: "com.telaviva.camera", qos: cameraQueueQoS)
     /// Times the watchdog and settle deadlines on the utility queue, so a deferred background queue cannot delay them.
     private let deadlineQueue = DispatchQueue(label: "com.telaviva.camera.deadlines", qos: .utility)
@@ -41,6 +42,28 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var settleTimer: DispatchWorkItem?
     private var detectorReleaseTimer: DispatchWorkItem?
     private var detector: OpaquePointer?
+    private lazy var inferenceHost = InferenceDeviceSelection.DetectorHost<OpaquePointer>(
+        session: InferenceDeviceSelection.Session(preference: "auto"),
+        create: { [weak self] candidate in
+            self?.createDetector(provider: candidate.provider, deviceIndex: candidate.deviceIndex)
+        },
+        destroy: { tv_inference_destroy($0) },
+        selectedProvider: { tv_inference_selected_provider($0) },
+        validate: { [weak self] in self?.validate($0) ?? .sessionFailed },
+        publish: { [weak self] value, decided in
+            guard let self else { return }
+            self.inferenceReport.update(value, decided: decided)
+            guard decided else { return }
+            let computeUnits: String
+            switch value.activeId {
+            case "ane": computeUnits = "CPUAndNeuralEngine"
+            case "gpu": computeUnits = "CPUAndGPU"
+            case "auto": computeUnits = "ALL"
+            default: computeUnits = "CPU"
+            }
+            let reason = value.reason?.rawValue ?? "none"
+            wakeLog.info("inference_selection requested=\(value.requestedId, privacy: .public) active=\(value.activeId, privacy: .public) compute_units=\(computeUnits, privacy: .public) state=\(value.state.rawValue, privacy: .public) reason=\(reason, privacy: .public)")
+        })
     private var lifecycle = CameraLifecycle()
     private var sampleGeneration: UInt64 = 0
     private var timeoutEpoch: UInt64 = 0
@@ -79,6 +102,16 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
     deinit {
         for token in deviceObservers { NotificationCenter.default.removeObserver(token) }
+    }
+
+    /// Updates the detector preference on the camera queue. Re-selecting the same id is a no-op;
+    /// a changed choice releases the session and makes its next creation validate the new route.
+    func setInferenceDevice(_ id: String) {
+        queue.async { [weak self] in
+            guard let self, !self.stopped, self.inferenceHost.session.preference != id else { return }
+            self.releaseDetector()
+            self.inferenceHost.setPreference(id)
+        }
     }
 
     func apply(_ snapshot: CoreSnapshot, core: CoreBridge) {
@@ -420,8 +453,14 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
         guard ensureDetector() else { report(status: "unavailable", cameraStatus: "unavailable"); return }
         var result = TvInferenceResult(status: Int32(TV_INFERENCE_ERROR_RUNTIME), confidence: 0)
-        let code = tv_inference_detect_bgra(detector!, base.assumingMemoryBound(to: UInt8.self), length, UInt32(width), UInt32(height), stride, &result)
-        guard code >= 0 else { report(status: "unavailable", cameraStatus: "error"); return }
+        let code = inferenceHost.detect(&result) { handle, output in
+            self.detect(handle, bytes: base.assumingMemoryBound(to: UInt8.self), length: length,
+                        width: UInt32(width), height: UInt32(height), stride: stride, result: &output)
+        }
+        detector = inferenceHost.handle
+        guard let code, code >= 0 else {
+            report(status: "unavailable", cameraStatus: "error"); return
+        }
         let status: String
         switch result.status {
         case 1: status = "present"
@@ -439,17 +478,71 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     }
 
     private func ensureDetector() -> Bool {
-        if detector != nil { return true }
-        let framework = Bundle.main.bundleURL.appendingPathComponent("Contents/Frameworks/libonnxruntime.dylib").path
-        let model = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/models/face_detection_yunet_2023mar.onnx").path
-        var created: OpaquePointer?
-        let result = framework.withCString { runtimePath in
-            model.withCString { modelPath in tv_inference_create(runtimePath, modelPath, &created) }
-        }
-        guard result == 0, let created else { return false }
-        detector = created
+        guard inferenceHost.ensure() else { return false }
+        detector = inferenceHost.handle
         wakeLog.debug("detector_ready at_ms=\(wakeMilliseconds(), privacy: .public)")
         return true
+    }
+
+    private func createDetector(provider: Int32, deviceIndex: UInt32, framework: String? = nil,
+                                model: String? = nil) -> OpaquePointer? {
+        let runtimePath = framework ?? Bundle.main.bundleURL.appendingPathComponent("Contents/Frameworks/libonnxruntime.dylib").path
+        let modelPath = model ?? Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/models/face_detection_yunet_2023mar.onnx").path
+        var created: OpaquePointer?
+        let result = runtimePath.withCString { runtime in
+            modelPath.withCString { model in
+                tv_inference_create_with_provider_device(runtime, model, provider, deviceIndex, &created)
+            }
+        }
+        return result == 0 ? created : nil
+    }
+
+    private func validate(_ candidate: OpaquePointer) -> InferenceDeviceSelection.FailureReason? {
+        guard let frame = loadSelfTestFrame() else {
+            return .selfTestMismatch
+        }
+        guard let reference = createDetector(provider: 0, deviceIndex: 0) else {
+            return .selfTestMismatch
+        }
+        defer { tv_inference_destroy(reference) }
+        var candidateResult = TvInferenceResult(status: Int32(TV_INFERENCE_ERROR_RUNTIME), confidence: 0)
+        let started = DispatchTime.now().uptimeNanoseconds
+        let candidateCode = frame.withUnsafeBytes { raw in
+            detect(candidate, bytes: raw.baseAddress!.assumingMemoryBound(to: UInt8.self), length: raw.count,
+                   width: 320, height: 240, stride: 1280, result: &candidateResult)
+        }
+        let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000
+        var referenceResult = TvInferenceResult(status: Int32(TV_INFERENCE_ERROR_RUNTIME), confidence: 0)
+        let referenceCode = frame.withUnsafeBytes { raw in
+            detect(reference, bytes: raw.baseAddress!.assumingMemoryBound(to: UInt8.self), length: raw.count,
+                   width: 320, height: 240, stride: 1280, result: &referenceResult)
+        }
+        guard candidateCode >= 0, referenceCode >= 0,
+              candidateResult.status == 1, referenceResult.status == 1 else {
+            return .selfTestMismatch
+        }
+        guard elapsedMs <= InferenceDeviceSelection.latencyBudgetMilliseconds else {
+            return .selfTestSlow
+        }
+        return nil
+    }
+
+    private func loadSelfTestFrame() -> Data? {
+        guard let url = Bundle.main.url(forResource: "selftest-face", withExtension: "bgra"),
+              let data = try? Data(contentsOf: url), data.count >= 16,
+              data.prefix(4) == Data([0x54, 0x56, 0x53, 0x46]) else { return nil }
+        func uint32(_ offset: Int) -> UInt32 {
+            UInt32(data[offset]) | UInt32(data[offset + 1]) << 8 |
+                UInt32(data[offset + 2]) << 16 | UInt32(data[offset + 3]) << 24
+        }
+        let width = uint32(4), height = uint32(8), stride = uint32(12)
+        guard width == 320, height == 240, stride == 1280, data.count == 16 + Int(stride * height) else { return nil }
+        return data.subdata(in: 16..<data.count)
+    }
+
+    private func detect(_ handle: OpaquePointer, bytes: UnsafePointer<UInt8>, length: Int, width: UInt32,
+                        height: UInt32, stride: Int, result: inout TvInferenceResult) -> Int32 {
+        tv_inference_detect_bgra(handle, bytes, length, width, height, stride, &result)
     }
 
     private func scheduleDetectorRelease() {
@@ -470,8 +563,8 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     }
 
     private func releaseDetector() {
-        guard let detector else { return }
-        tv_inference_destroy(detector)
+        guard detector != nil else { return }
+        inferenceHost.release()
         self.detector = nil
     }
 
