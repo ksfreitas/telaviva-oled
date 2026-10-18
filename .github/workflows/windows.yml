@@ -218,7 +218,7 @@ jobs:
       - name: Build release package and zip
         shell: pwsh
         run: |
-          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File packaging\windows\build-app.ps1 -Configuration Release -Zip:$true
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File packaging\windows\build-app.ps1 -Configuration Release
           if ($LASTEXITCODE -ne 0) { throw "build-app.ps1 failed with exit code $LASTEXITCODE" }
 
       - name: Smoke-test packaged app

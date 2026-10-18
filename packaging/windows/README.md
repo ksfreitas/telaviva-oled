@@ -39,7 +39,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File packaging\windows\build-app.
 ```
 
 The script builds the Rust DLLs and the solution, assembles `dist\TelaVivaOLED`,
-writes the zip next to it and prints the zip's SHA-256. Use `-Zip:$false` to stop
+writes the zip next to it and prints the zip's SHA-256. Use `-NoZip` to stop
 after the folder. The zip holds the same folder at its root, plus the installer,
 the uninstaller, this README and `licenses\`.
 

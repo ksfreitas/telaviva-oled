@@ -21,7 +21,7 @@ Output layout under OutDir (default dist\TelaVivaOLED at the repository root):
 Import libraries, PDBs, object files and tests.exe are left out. The marker is
 written before any copy, so an interrupted run can still be cleared by the next one.
 
-With -Zip (default), dist\TelaVivaOLED-<version>-win-x64.zip is also written. Its
+Unless -NoZip is given, dist\TelaVivaOLED-<version>-win-x64.zip is also written. Its
 entries sit at the root: the folder content above, then Install-TelaVivaOLED.ps1,
 Uninstall-TelaVivaOLED.ps1 and README.md from packaging\windows.
 
@@ -32,8 +32,8 @@ Release (default) or Debug.
 Destination folder. Empty means dist\TelaVivaOLED under the repository root.
 Relative paths resolve from the repository root.
 
-.PARAMETER Zip
-$true (default) writes the release zip next to OutDir. Use -Zip:$false for the folder only.
+.PARAMETER NoZip
+Write the folder only. By default the release zip is also written next to OutDir.
 
 .PARAMETER KeepAllComponents
 Keep the Windows App SDK files that the unused-component step would otherwise remove.
@@ -45,7 +45,8 @@ param(
 
     [string]$OutDir = '',
 
-    [bool]$Zip = $true,
+    # A switch, not [bool]: powershell.exe -File passes -Name:$false as the string '$false', which a [bool] rejects.
+    [switch]$NoZip,
 
     [switch]$KeepAllComponents
 )
@@ -255,7 +256,7 @@ Write-Host ('Size:  {0:N1} MB ({1:N0} bytes)' -f ($totalBytes / 1MB), $totalByte
 
 # Step 10: Release zip. Entries sit at the zip root, sorted ordinally with forward slashes and a fixed
 # timestamp, so the same inputs give the same archive. The marker file is not shipped.
-if ($Zip) {
+if (-not $NoZip) {
     $zipInputs = @(
         (Join-Path $PSScriptRoot 'Install-TelaVivaOLED.ps1'),
         (Join-Path $PSScriptRoot 'Uninstall-TelaVivaOLED.ps1'),

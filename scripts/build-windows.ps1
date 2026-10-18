@@ -175,8 +175,8 @@ if (-not (Test-Path -LiteralPath $buildScript -PathType Leaf)) { Fail "Build scr
 $buildArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScript, '-Configuration', $Configuration)
 $buildNote = ''
 if ($NoZip) {
-    $buildArgs += '-Zip:$false'
-    $buildNote = ' -Zip:$false'
+    $buildArgs += '-NoZip'
+    $buildNote = ' -NoZip'
 }
 Write-Host "> build-app.ps1 -Configuration ${Configuration}${buildNote}"
 & powershell.exe @buildArgs
