@@ -34,7 +34,7 @@
 | --- | --- | --- |
 | Requirements | Apple Silicon, macOS 14 or later | Windows 11 x64 |
 | Interface | SwiftUI and AppKit, menu bar | WinUI 3, system tray with a flyout |
-| Distribution | Built locally, ad-hoc signed | Per-user zip with an installer script, unsigned |
+| Distribution | Zip from GitHub Releases, ad-hoc signed and not notarized, or built locally | Per-user zip with an installer script, unsigned |
 | Not supported yet | Intel Macs | Windows 10, ARM64 |
 | Laptop follow | MacBook | Laptop (called Notebook in Portuguese) |
 
@@ -46,7 +46,7 @@ This checkout reports application version 0.1.1 and remains under active develop
 
 - DDC support depends on the monitor, the port, the cable, any adapter or dock, and the graphics hardware. It is not uniform, and a passing check on one setup says nothing about another.
 - Only a small number of monitors and computers have been used for physical checks. Many checks are still pending, among them camera sharing with video calls, multi-monitor and dock setups, monitor sleep and wake, Laptop follow on real laptops, and keyboard routing on other keyboards.
-- Windows builds are not code-signed yet.
+- The Windows build is not code-signed, and the macOS app is ad-hoc signed and not notarized, so each system may warn the first time you open a downloaded copy.
 - Setting brightness to zero does not guarantee that an OLED panel turns completely off, and it does not prevent all burn-in.
 
 Recorded results, including what has not been checked, are in the validation reports: the [macOS release-readiness report](specs/archived/external-monitor-control-and-oled-presence-protection/validation/release-readiness.md), the [MacBook follow checklist](specs/archived/macbook-brightness-follow/validation/hardware-checklist.md) and the [Windows hardware checklist](specs/archived/windows-version/validation/hardware-checklist.md). Code that exists in the repository is not proof of hardware support.
@@ -70,13 +70,19 @@ The app installs to `%LOCALAPPDATA%\Programs\TelaVivaOLED`. Because the build is
 
 ### macOS
 
-There is no signed or notarized download yet; build the app locally on an Apple Silicon Mac (see [Build from source](#build-from-source)), then open it:
+The macOS release is a zip of an ad-hoc signed app for Apple Silicon, macOS 14 or later.
+
+1. Get `TelaVivaOLED-<version>-macos-arm64.zip` from the [GitHub Releases](https://github.com/ksfreitas/telaviva-oled/releases) page, or build the app yourself (see [Build from source](#build-from-source)). Check the zip against its SHA-256.
+2. Extract the zip and move `TelaViva OLED.app` to your Applications folder.
+3. Open it. The app is not notarized, so macOS blocks the first launch of a downloaded copy: open System Settings > Privacy & Security and choose **Open Anyway** for TelaViva OLED. Do this only for a zip you downloaded from this project and checked.
+
+To run a local build instead:
 
 ```sh
 open 'build/macos/TelaViva OLED.app'
 ```
 
-The local build is ad-hoc signed. Distribution signing and notarization are separate release steps. See the [macOS packaging guide](packaging/macos/README.md).
+Both the release and the local build are ad-hoc signed. Developer ID signing and notarization are not done yet. See the [macOS packaging guide](packaging/macos/README.md).
 
 ## Getting started
 

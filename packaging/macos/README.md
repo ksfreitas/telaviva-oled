@@ -1,8 +1,10 @@
 # macOS local build
 
-The local macOS build targets Apple Silicon and macOS 14 or later. It produces
-an ad-hoc signed `TelaViva OLED.app`; this signature supports local execution
-and does not provide Developer ID distribution or notarization.
+The macOS build targets Apple Silicon and macOS 14 or later. It produces
+an ad-hoc signed `TelaViva OLED.app`. The GitHub release distributes this same
+app as a zip. The signature supports local execution and does not provide
+Developer ID signing or notarization, so macOS blocks the first launch of a
+downloaded copy until the user chooses Open Anyway.
 
 ## Prerequisites
 
@@ -33,6 +35,21 @@ license texts, including ONNX Runtime notices and the DDC transport attribution,
 are included in `Contents/Resources/ThirdPartyLicenses/`. The app's MIT license
 is included separately at `Contents/Resources/LICENSE`.
 
+## Release zip
+
+After `./scripts/build-macos.sh`, archive the app and compute its checksum from
+the repository root:
+
+```sh
+mkdir -p dist
+ditto -c -k --keepParent 'build/macos/TelaViva OLED.app' "dist/TelaVivaOLED-<version>-macos-arm64.zip"
+shasum -a 256 "dist/TelaVivaOLED-<version>-macos-arm64.zip"
+```
+
+`ditto` without `--sequesterRsrc` writes no `__MACOSX` folder, unlike Finder's
+Compress. `<version>` is the core version (see the release rules in
+`AGENTS.md`). Publish the zip and its SHA-256 in the GitHub Release.
+
 ## Xcode project
 
 The Xcode project at `native/macos/TelaViva.xcodeproj` links the Rust libraries
@@ -58,8 +75,8 @@ Later rebuilds keep the grants because the designated requirement is
 identifier-based (`identifier "com.telaviva.oled"`).
 
 An identifier-only requirement means any ad-hoc app claiming the same
-identifier would satisfy it. That is acceptable only for local development
-builds; release builds should use a real Developer ID signature.
+identifier would satisfy it. That is accepted for the ad-hoc signed release and
+for local builds until a Developer ID signature replaces it.
 
 ## Diagnostics
 
