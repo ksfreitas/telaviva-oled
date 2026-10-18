@@ -5,6 +5,7 @@ namespace telaviva::host {
 
 // Windows 11 setting card: header and optional description on the left, the control
 // on the right. Colors and text styles come from system theme resources only.
+// A ToggleSwitch control is shrunk to its track so it sits on the right edge.
 winrt::Microsoft::UI::Xaml::FrameworkElement MakeSettingRow(
     winrt::hstring const& header, winrt::hstring const& description,
     winrt::Microsoft::UI::Xaml::UIElement const& control);

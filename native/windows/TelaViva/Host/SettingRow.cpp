@@ -67,6 +67,11 @@ xaml::FrameworkElement MakeSettingRow(winrt::hstring const& header, winrt::hstri
     auto element = control.try_as<xaml::FrameworkElement>();
     if (element)
     {
+        // The default ToggleSwitch template reserves 154 px, which would leave the track away from the right edge.
+        if (control.try_as<xc::ToggleSwitch>())
+        {
+            element.MinWidth(0);
+        }
         element.VerticalAlignment(xaml::VerticalAlignment::Center);
         element.HorizontalAlignment(xaml::HorizontalAlignment::Right);
         xc::Grid::SetColumn(element, 1);

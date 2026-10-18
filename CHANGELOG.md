@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- The Windows Settings toggles now sit flush with the right edge of their cards instead of floating about 100 px to the left, in line with the sliders, number boxes and combo boxes.
+
 ## 0.1.0 - 2026-10-17
 
 First release.
