@@ -53,8 +53,3 @@ Release procedure:
 1. Bump the versions above and run the tests.
 2. Commit the change, then create the tag `vX.Y.Z` on that commit.
 3. Publish a GitHub Release for the tag that is neither a draft nor a pre-release. The in-app update check reads `releases/latest` of `ksfreitas/telaviva-oled`, and it ignores drafts and pre-releases, so a release published any other way is not offered as an update.
-
-## Delegation
-
-- For long tasks, delegate code analysis and implementation to the most recent available Luna agents (`gpt-6-luna`).
-- Coordinate delegated work from the primary agent.
