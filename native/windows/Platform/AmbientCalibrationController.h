@@ -33,7 +33,7 @@ struct IFollowPause {
     virtual bool paused() = 0;
 };
 
-// Monitor brightness readouts and writes. The app maps these to the snapshot and ManualControls.
+// Monitor brightness readouts and writes. The app maps these to the snapshot and the controls driver.
 struct ICalibrationMonitors {
     virtual ~ICalibrationMonitors() = default;
     // nullopt when the monitor's brightness is unknown.

@@ -1,5 +1,5 @@
 #pragma once
-// Wires the core bridge, display catalog, DDC, manual controls and session events,
+// Wires the core bridge, display catalog, DDC, the controls driver and session events,
 // and feeds the flyout. Owned by App on the UI thread.
 #include "Host/FlyoutState.h"
 #include "Host/SettingsHost.h"

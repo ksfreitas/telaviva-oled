@@ -16,6 +16,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace {
 
@@ -419,4 +420,278 @@ TEST(json_codec_ambient_curves_skips_malformed_entries)
             CHECK(nearly(good->second[1].builtin, 90.0));
         }
     }
+}
+
+// Parses the normalized channel field and keeps observed as the raw value.
+TEST(json_codec_controls_parses_normalized_channel)
+{
+    const telaviva::Snapshot s = telaviva::parseSnapshot(
+        R"({"monitors":[{"id":"mon-1","brightness":{"supported":true,"observed":104,"normalized":41,"min":0,"max":255}},{"id":"mon-2","brightness":{"supported":true,"observed":7,"min":0,"max":100}}]})");
+    CHECK_EQ(s.monitors.size(), std::size_t{2});
+    if (s.monitors.size() == 2) {
+        CHECK(nearlyOpt(s.monitors[0].brightness.observed, 104.0));
+        CHECK(nearlyOpt(s.monitors[0].brightness.normalized, 41.0));
+        CHECK(!s.monitors[1].brightness.normalized.has_value());
+    }
+}
+
+namespace {
+
+bool parseControlsThrows(const std::string& json)
+{
+    try {
+        telaviva::parseControlsResult(json);
+    } catch (const std::invalid_argument&) {
+        return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+TEST(json_codec_controls_configure_volume_owner_states)
+{
+    CHECK_EQ(compact(telaviva::buildControlsConfigure(1.5, 5, 5, true, std::nullopt)),
+             std::string(R"({"type":"configure","now":1.5,"brightness_step":5,"volume_step":5,"keys_enabled":true})"));
+
+    const std::optional<std::optional<std::string>> cleared(std::in_place, std::nullopt);
+    CHECK_EQ(compact(telaviva::buildControlsConfigure(1.5, 5, 5, false, cleared)),
+             std::string(R"({"type":"configure","now":1.5,"brightness_step":5,"volume_step":5,"keys_enabled":false,"volume_owner":null})"));
+
+    const std::optional<std::optional<std::string>> named(std::in_place, "mon-1");
+    CHECK_EQ(compact(telaviva::buildControlsConfigure(1.5, 5, 5, true, named)),
+             std::string(R"({"type":"configure","now":1.5,"brightness_step":5,"volume_step":5,"keys_enabled":true,"volume_owner":"mon-1"})"));
+}
+
+TEST(json_codec_controls_observe_two_monitors_and_pending_action)
+{
+    telaviva::Snapshot snapshot;
+    snapshot.revision = 42;
+
+    telaviva::MonitorSnapshot first;
+    first.id = "mon-1";
+    first.generation = 3;
+    first.displayState = "awake";
+    first.identityStatus = "stable";
+    // The raw observed value (104 of 0 to 255) must not reach the event; the normalized 41 must.
+    first.brightness.supported = true;
+    first.brightness.observed = 104.0;
+    first.brightness.normalized = 41.0;
+    first.brightness.min = 0.0;
+    first.brightness.max = 255.0;
+    first.volume.supported = true;
+    first.volume.normalized = 20.0;
+    first.volume.min = 0.0;
+    first.volume.max = 100.0;
+    snapshot.monitors.push_back(first);
+
+    telaviva::MonitorSnapshot second;
+    second.id = "mon-2";
+    second.generation = 5;
+    second.displayState = "asleep";
+    second.identityStatus = "ambiguous";
+    second.brightness.supported = false;
+    second.volume.supported = true;
+    second.volume.min = 0.0;
+    second.volume.max = 100.0;
+    snapshot.monitors.push_back(second);
+
+    telaviva::PendingAction write;
+    write.id = 17;
+    write.generation = 8;
+    write.monitorId = "mon-1";
+    write.kind = "set_brightness";
+    write.value = 37.0;
+    telaviva::PendingAction read;
+    read.id = 18;
+    read.generation = 5;
+    read.monitorId = "mon-2";
+    read.kind = "read_brightness";
+    snapshot.pendingActions = {write, read};
+
+    CHECK_EQ(compact(telaviva::buildControlsObserve(120.5, snapshot)),
+             std::string(R"({"type":"observe","now":120.5,"revision":42,)"
+                         R"("monitors":[{"id":"mon-1","generation":3,"display_state":"awake","identity_status":"stable",)"
+                         R"("brightness":{"supported":true,"observed":41,"min":0,"max":255},)"
+                         R"("volume":{"supported":true,"observed":20,"min":0,"max":100}},)"
+                         R"({"id":"mon-2","generation":5,"display_state":"asleep","identity_status":"ambiguous",)"
+                         R"("brightness":{"supported":false,"observed":null,"min":0,"max":0},)"
+                         R"("volume":{"supported":true,"observed":null,"min":0,"max":100}}],)"
+                         R"("pending_actions":[{"id":17,"generation":8,"monitor_id":"mon-1","kind":"set_brightness","value":37},)"
+                         R"({"id":18,"generation":5,"monitor_id":"mon-2","kind":"read_brightness","value":null}]})"));
+}
+
+TEST(json_codec_controls_slider_fields)
+{
+    CHECK_EQ(compact(telaviva::buildControlsSlider(3.0, "mon-1", "brightness", 37.5)),
+             std::string(R"({"type":"slider","now":3,"monitor_id":"mon-1","feature":"brightness","value":37.5})"));
+}
+
+TEST(json_codec_controls_key_owner_null_and_set)
+{
+    CHECK_EQ(compact(telaviva::buildControlsKey(120.6, "volume_up", true, false, false, std::nullopt)),
+             std::string(R"({"type":"key","now":120.6,"key":"volume_up","phase":"down","repeat":false,"fine":false,"owner":null})"));
+
+    CHECK_EQ(compact(telaviva::buildControlsKey(120.7, "brightness_down", false, true, true,
+                                                telaviva::KeyOwnerRef{"mon-1", 3})),
+             std::string(R"({"type":"key","now":120.7,"key":"brightness_down","phase":"up","repeat":true,"fine":true,"owner":{"monitor_id":"mon-1","generation":3}})"));
+}
+
+TEST(json_codec_controls_query_draft_and_monitor_events)
+{
+    CHECK_EQ(compact(telaviva::buildControlsQueryDraft(1.0, "mon-1", "volume")),
+             std::string(R"({"type":"query_draft","now":1,"monitor_id":"mon-1","feature":"volume"})"));
+    CHECK_EQ(compact(telaviva::buildControlsMonitorProfile(2.0, "mon-1", "GSM")),
+             std::string(R"({"type":"monitor_profile","now":2,"monitor_id":"mon-1","manufacturer":"GSM"})"));
+    CHECK_EQ(compact(telaviva::buildControlsMonitorRemoved(2.0, "mon-1")),
+             std::string(R"({"type":"monitor_removed","now":2,"monitor_id":"mon-1"})"));
+}
+
+TEST(json_codec_controls_display_power_fields)
+{
+    CHECK_EQ(compact(telaviva::buildControlsDisplayPower(4.0, true)),
+             std::string(R"({"type":"display_power","now":4,"on":true})"));
+    CHECK_EQ(compact(telaviva::buildControlsDisplayPower(4.0, false)),
+             std::string(R"({"type":"display_power","now":4,"on":false})"));
+}
+
+TEST(json_codec_controls_submitted_fields)
+{
+    CHECK_EQ(compact(telaviva::buildControlsSubmitted(5.0, 9, false)),
+             std::string(R"({"type":"submitted","now":5,"token":9,"accepted":false})"));
+    CHECK_EQ(compact(telaviva::buildControlsSubmitted(5.0, 9, true)),
+             std::string(R"({"type":"submitted","now":5,"token":9,"accepted":true})"));
+}
+
+TEST(json_codec_controls_attempt_done_success_and_failure)
+{
+    CHECK_EQ(compact(telaviva::buildControlsAttemptDone(5.0, 9, true, "", 30.0)),
+             std::string(R"({"type":"attempt_done","now":5,"token":9,"ok":true,"value":30})"));
+    CHECK_EQ(compact(telaviva::buildControlsAttemptDone(5.0, 9, true, "", std::nullopt)),
+             std::string(R"({"type":"attempt_done","now":5,"token":9,"ok":true,"value":null})"));
+    // The error name is present only on failure.
+    CHECK_EQ(compact(telaviva::buildControlsAttemptDone(5.0, 9, false, "io", std::nullopt)),
+             std::string(R"({"type":"attempt_done","now":5,"token":9,"ok":false,"error":"io","value":null})"));
+}
+
+TEST(json_codec_controls_tick_and_shutdown)
+{
+    CHECK_EQ(compact(telaviva::buildControlsTick(6.0)), std::string(R"({"type":"tick","now":6})"));
+    CHECK_EQ(compact(telaviva::buildControlsShutdown(7.0)), std::string(R"({"type":"shutdown","now":7})"));
+}
+
+TEST(json_codec_controls_result_parses_all_effect_types)
+{
+    const telaviva::ControlsResult r = telaviva::parseControlsResult(
+        R"json({"value":{"draft":37.5,"status":"pending"},"effects":[)json"
+        R"json({"type":"submit_command","token":1,"command_json":"{\"type\":\"set_brightness\",\"monitor_id\":\"mon-1\",\"value\":37.5,\"connection_generation\":3}"},)json"
+        R"json({"type":"run_attempt","token":2,"monitor_id":"mon-1","op":"write","code":16,"value":37.5},)json"
+        R"json({"type":"submit_result","token":3,"result_json":"{\"type\":\"hardware_result\",\"action_id\":1,\"generation\":3,\"ok\":true,\"value\":37}"},)json"
+        R"json({"type":"draft_changed","monitor_id":"mon-1","feature":"brightness"}],"next_deadline":120.52})json");
+
+    CHECK_EQ(r.effects.size(), std::size_t{4});
+    if (r.effects.size() == 4) {
+        const telaviva::ControlsEffect& command = r.effects[0];
+        CHECK(command.type == telaviva::ControlsEffect::Type::SubmitCommand);
+        CHECK_EQ(command.token, uint64_t{1});
+        CHECK_EQ(command.json, std::string(R"({"type":"set_brightness","monitor_id":"mon-1","value":37.5,"connection_generation":3})"));
+
+        const telaviva::ControlsEffect& attempt = r.effects[1];
+        CHECK(attempt.type == telaviva::ControlsEffect::Type::RunAttempt);
+        CHECK_EQ(attempt.token, uint64_t{2});
+        CHECK_EQ(attempt.monitorId, std::string("mon-1"));
+        CHECK(attempt.write);
+        CHECK(attempt.code == 16);
+        CHECK(nearlyOpt(attempt.value, 37.5));
+
+        const telaviva::ControlsEffect& result = r.effects[2];
+        CHECK(result.type == telaviva::ControlsEffect::Type::SubmitResult);
+        CHECK_EQ(result.token, uint64_t{3});
+        CHECK_EQ(result.json, std::string(R"({"type":"hardware_result","action_id":1,"generation":3,"ok":true,"value":37})"));
+
+        const telaviva::ControlsEffect& changed = r.effects[3];
+        CHECK(changed.type == telaviva::ControlsEffect::Type::DraftChanged);
+        CHECK_EQ(changed.monitorId, std::string("mon-1"));
+        CHECK_EQ(changed.feature, std::string("brightness"));
+    }
+
+    CHECK(r.draft.has_value());
+    if (r.draft) {
+        CHECK(r.draft->hasDraft);
+        CHECK(nearly(r.draft->draft, 37.5));
+        CHECK_EQ(r.draft->status, std::string("pending"));
+    }
+    CHECK(!r.consume.has_value());
+    CHECK(nearlyOpt(r.nextDeadline, 120.52));
+}
+
+TEST(json_codec_controls_result_read_attempt_has_no_value)
+{
+    const telaviva::ControlsResult r = telaviva::parseControlsResult(
+        R"({"value":null,"effects":[{"type":"run_attempt","token":4,"monitor_id":"mon-2","op":"read","code":98}],"next_deadline":null})");
+    CHECK_EQ(r.effects.size(), std::size_t{1});
+    if (r.effects.size() == 1) {
+        CHECK(!r.effects[0].write);
+        CHECK(r.effects[0].code == 98);
+        CHECK(!r.effects[0].value.has_value());
+    }
+    CHECK(!r.draft.has_value());
+    CHECK(!r.consume.has_value());
+    CHECK(!r.nextDeadline.has_value());
+}
+
+TEST(json_codec_controls_result_null_value_and_empty_effects)
+{
+    const telaviva::ControlsResult r =
+        telaviva::parseControlsResult(R"({"value":null,"effects":[],"next_deadline":null})");
+    CHECK(r.effects.empty());
+    CHECK(!r.draft.has_value());
+    CHECK(!r.consume.has_value());
+    CHECK(!r.nextDeadline.has_value());
+}
+
+TEST(json_codec_controls_result_key_consume)
+{
+    const telaviva::ControlsResult consumed =
+        telaviva::parseControlsResult(R"({"value":{"consume":true},"effects":[],"next_deadline":20.5})");
+    CHECK(consumed.consume.has_value() && *consumed.consume);
+    CHECK(!consumed.draft.has_value());
+    CHECK(nearlyOpt(consumed.nextDeadline, 20.5));
+
+    const telaviva::ControlsResult passed =
+        telaviva::parseControlsResult(R"({"value":{"consume":false},"effects":[],"next_deadline":null})");
+    CHECK(passed.consume.has_value() && !*passed.consume);
+}
+
+TEST(json_codec_controls_result_query_draft_carries_has_draft)
+{
+    const telaviva::ControlsResult r = telaviva::parseControlsResult(
+        R"({"value":{"has_draft":false,"draft":40,"status":"ready"},"effects":[],"next_deadline":null})");
+    CHECK(r.draft.has_value());
+    if (r.draft) {
+        CHECK(!r.draft->hasDraft);
+        CHECK(nearly(r.draft->draft, 40.0));
+        CHECK_EQ(r.draft->status, std::string("ready"));
+    }
+}
+
+TEST(json_codec_controls_result_rejects_malformed_input)
+{
+    // Truncated JSON, a non-object root and a missing top-level field.
+    CHECK(parseControlsThrows(R"({"value":null,"effects":[],"next_deadline":null)"));
+    CHECK(parseControlsThrows(R"([])"));
+    CHECK(parseControlsThrows(R"({"effects":[],"next_deadline":null})"));
+    CHECK(parseControlsThrows(R"({"value":null,"next_deadline":null})"));
+    CHECK(parseControlsThrows(R"({"value":null,"effects":"none","next_deadline":null})"));
+    CHECK(parseControlsThrows(R"({"value":null,"effects":[],"next_deadline":"soon"})"));
+    CHECK(parseControlsThrows(R"({"value":"yes","effects":[],"next_deadline":null})"));
+    CHECK(parseControlsThrows(R"({"value":{"consume":"yes"},"effects":[],"next_deadline":null})"));
+    // Unknown effect type, unknown op, out-of-range VCP code and an unknown feature.
+    CHECK(parseControlsThrows(R"({"value":null,"effects":[{"type":"bogus","token":1}],"next_deadline":null})"));
+    CHECK(parseControlsThrows(
+        R"({"value":null,"effects":[{"type":"run_attempt","token":1,"monitor_id":"m","op":"verify","code":16}],"next_deadline":null})"));
+    CHECK(parseControlsThrows(
+        R"({"value":null,"effects":[{"type":"run_attempt","token":1,"monitor_id":"m","op":"read","code":300}],"next_deadline":null})"));
+    CHECK(parseControlsThrows(
+        R"({"value":null,"effects":[{"type":"draft_changed","monitor_id":"m","feature":"contrast"}],"next_deadline":null})"));
 }

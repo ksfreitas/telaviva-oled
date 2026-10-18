@@ -14,6 +14,9 @@
 #include "Platform/CalibrationSession.h"
 #include "Platform/CameraLifecycleDriver.h"
 #include "Platform/CameraSelection.h"
+#include "Platform/ControlsApi.h"
+#include "Platform/ControlsDriver.h"
+#include "Platform/ControlsTypes.h"
 #include "Platform/CoreBridge.h"
 #include "Platform/CoreLifecycleApi.h"
 #include "Platform/DdcController.h"
@@ -25,13 +28,11 @@
 #include "Platform/InferenceHost.h"
 #include "Platform/JsonCodec.h"
 #include "Platform/KeyHook.h"
-#include "Platform/KeyIntentRouter.h"
 #include "Platform/KeyRoute.h"
 #include "Platform/LaptopDetection.h"
 #include "Platform/LaptopPanel.h"
 #include "Platform/LaunchAtLogin.h"
 #include "Platform/MediaCaptureBackend.h"
-#include "Platform/ManualControls.h"
 #include "Platform/PowerEvents.h"
 #include "Platform/ProtectionRules.h"
 #include "Platform/Scheduler.h"
@@ -42,7 +43,6 @@
 #include "Platform/SystemClock.h"
 #include "Platform/SystemSleeper.h"
 #include "Platform/UpdateChecker.h"
-#include "Platform/VolumeActionTracker.h"
 #include "Platform/Win32Efficiency.h"
 #include "Platform/WinHttpGet.h"
 
@@ -145,13 +145,6 @@ std::string traceMonitor(const std::string& monitorId)
     return monitorId.size() > 8 ? monitorId.substr(monitorId.size() - 8) : monitorId;
 }
 
-std::string formatPercent(double value)
-{
-    char buffer[32];
-    std::snprintf(buffer, sizeof buffer, "%.2f", value);
-    return buffer;
-}
-
 // Full path of this executable, which the launch-at-login command starts.
 std::wstring executablePath()
 {
@@ -182,93 +175,6 @@ private:
     CoreBridge& bridge_;
 };
 
-// Turns slider drafts into set_brightness or set_volume commands.
-class CoreManualSink final : public IManualSink {
-public:
-    explicit CoreManualSink(CoreBridge& bridge) : bridge_(bridge) {}
-
-    int submit(std::string_view monitorId, ManualFeature feature, double value,
-        uint64_t connectionGeneration) override
-    {
-        const std::string id(monitorId);
-        const std::string json = feature == ManualFeature::Brightness
-            ? buildSetBrightness(id, value, connectionGeneration)
-            : buildSetVolume(id, value, connectionGeneration);
-        return bridge_.submit(json);
-    }
-
-private:
-    CoreBridge& bridge_;
-};
-
-// Forwards DDC completions to the manual controls. The DDC worker may call it until DDC shuts
-// down, so shutdown() closes the gate first; close() waits for a call in progress, so none
-// reaches a controller that is being destroyed.
-class ManualCompletionGate final : public IHardwareObserver {
-public:
-    void open(ManualControls* manual)
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        manual_ = manual;
-    }
-
-    void close() { open(nullptr); }
-
-    void onHardwareCompleted(const HardwareCompletion& completion) override
-    {
-        std::optional<ManualFeature> feature;
-        if (completion.feature == "brightness") {
-            feature = ManualFeature::Brightness;
-        } else if (completion.feature == "volume") {
-            feature = ManualFeature::Volume;
-        }
-        if (!feature) {
-            return;
-        }
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (manual_ != nullptr) {
-                manual_->onHardwareCompleted(completion.monitorId, *feature, completion.ok, completion.observedPercent);
-            }
-        }
-        // Outside the gate's lock: the volume hook takes the key lock.
-        if (*feature == ManualFeature::Volume && volumeHook_) {
-            volumeHook_(completion);
-        }
-    }
-
-    // Set once in the constructor, before the DDC controller can complete anything.
-    void setVolumeHook(std::function<void(const HardwareCompletion&)> hook) { volumeHook_ = std::move(hook); }
-
-private:
-    std::mutex mutex_;
-    ManualControls* manual_ = nullptr;
-    std::function<void(const HardwareCompletion&)> volumeHook_;
-};
-
-// Forwards the slider targets of the manual controls to the key router. Other features are not routed.
-class ManualKeyBridge final : public IManualObserver {
-public:
-    std::function<void(const std::string&, uint64_t, double, uint64_t)> changed;
-    std::function<void(const std::string&, uint64_t, double, uint64_t)> submitted;
-
-    void onTargetChanged(const std::string& monitorId, uint64_t connectionGeneration, ManualFeature feature,
-        double value, uint64_t revision) override
-    {
-        if (feature == ManualFeature::Volume && changed) {
-            changed(monitorId, connectionGeneration, value, revision);
-        }
-    }
-
-    void onTargetSubmitted(const std::string& monitorId, uint64_t connectionGeneration, ManualFeature feature,
-        double value, uint64_t revision) override
-    {
-        if (feature == ManualFeature::Volume && submitted) {
-            submitted(monitorId, connectionGeneration, value, revision);
-        }
-    }
-};
-
 // A channel with a hardware error reports a status outside this list. Only supported
 // channels are checked, since an unsupported channel has no hardware to fail.
 bool channelFailed(const ChannelSnapshot& channel)
@@ -281,9 +187,16 @@ bool channelFailed(const ChannelSnapshot& channel)
         status == "read_required");
 }
 
-// The snapshot value as a 0..100 percent, computed from raw when the core sent no observed value.
+// The snapshot value as a 0..100 percent. The core's normalized value is used when present; otherwise it is
+// computed from observed, or from raw when the core sent no observed value.
 double observedPercent(const ChannelSnapshot& channel)
 {
+    if (channel.normalized) {
+        if (!std::isfinite(*channel.normalized)) {
+            return 0.0;
+        }
+        return std::clamp(*channel.normalized, 0.0, 100.0);
+    }
     double value = 0.0;
     if (channel.observed) {
         value = *channel.observed;
@@ -360,8 +273,8 @@ private:
 
 class MonitorsAdapter final : public ICalibrationMonitors {
 public:
-    MonitorsAdapter(std::mutex& mutex, const Snapshot& latest, ManualControls& manual)
-        : mutex_(mutex), latest_(latest), manual_(manual) {}
+    MonitorsAdapter(std::mutex& mutex, const Snapshot& latest, telaviva::ControlsDriver& controls)
+        : mutex_(mutex), latest_(latest), controls_(controls) {}
 
     std::optional<double> observedPercent(const std::string& monitorId) override
     {
@@ -380,13 +293,13 @@ public:
 
     void setPercent(const std::string& monitorId, double percent) override
     {
-        manual_.setTarget(monitorId, ManualFeature::Brightness, percent);
+        controls_.slider(monitorId, "brightness", percent);
     }
 
 private:
     std::mutex& mutex_;
     const Snapshot& latest_;
-    ManualControls& manual_;
+    telaviva::ControlsDriver& controls_;
 };
 
 class SettingsAdapter final : public ICalibrationSettings {
@@ -419,15 +332,16 @@ struct LaptopMessageTarget {
     std::function<void()> onUnavailable;
 };
 
-SliderState buildSlider(const MonitorSnapshot& monitor, ManualFeature feature, const ChannelSnapshot& channel,
-    bool controllable, const ManualControls& manual, std::string_view reasonKey)
+SliderState buildSlider(const MonitorSnapshot& monitor, const std::string& feature, const ChannelSnapshot& channel,
+    bool controllable, const telaviva::ControlsDriver& controls, std::string_view reasonKey)
 {
     SliderState slider;
     slider.available = channel.supported && controllable;
     // The user's draft wins while it exists; otherwise show what the hardware reported.
-    slider.value = manual.draft(monitor.id, feature).value_or(observedPercent(channel));
+    const telaviva::DraftView view = controls.queryDraft(monitor.id, feature);
+    slider.value = view.hasDraft ? view.draft : observedPercent(channel);
     // A rejected draft has already fallen back to the observed value in value.
-    slider.failed = manual.status(monitor.id, feature) == ManualStatus::Failed;
+    slider.failed = view.status == "failed";
     if (!slider.available) {
         slider.reason = Str(reasonKey);
     }
@@ -464,24 +378,14 @@ PresenceIcon presenceFor(const Snapshot& snapshot)
     return PresenceIcon::Absent;
 }
 
-std::string_view presenceKey(PresenceIcon presence)
-{
-    switch (presence) {
-    case PresenceIcon::Detected: return "flyout.presence.detected";
-    case PresenceIcon::Absent: return "flyout.presence.absent";
-    case PresenceIcon::LowLight: return "flyout.presence.lowlight";
-    case PresenceIcon::Off: break;
-    }
-    return "flyout.presence.off";
-}
-
 // "Camera: <status>", the same line the Settings page shows.
 std::wstring cameraLine(const std::string& key)
 {
     return Str("camera") + L": " + Str("cameraStatus." + key);
 }
 
-MonitorCardState buildCard(const Snapshot& snapshot, const MonitorSnapshot& monitor, const ManualControls& manual)
+MonitorCardState buildCard(const Snapshot& snapshot, const MonitorSnapshot& monitor,
+    const telaviva::ControlsDriver& controls)
 {
     // The core marks monitors with a shared EDID as anything but "stable".
     const bool stable = monitor.identityStatus == "stable";
@@ -505,8 +409,9 @@ MonitorCardState buildCard(const Snapshot& snapshot, const MonitorSnapshot& moni
     const std::optional<double> confirmed = monitor.brightness.supported
         ? std::optional<double>{ observedPercent(monitor.brightness) }
         : std::nullopt;
+    const telaviva::DraftView brightnessView = controls.queryDraft(monitor.id, "brightness");
     const std::optional<double> draft = followed ? std::nullopt
-                                                 : manual.draft(monitor.id, ManualFeature::Brightness);
+        : (brightnessView.hasDraft ? std::optional<double>(brightnessView.draft) : std::nullopt);
     card.protectionCap = protectionBrightnessCap(confirmed, draft);
     card.protectionCapKnown = confirmed.has_value();
     const auto target = settings.screensaver_targets.find(monitor.id);
@@ -525,23 +430,22 @@ MonitorCardState buildCard(const Snapshot& snapshot, const MonitorSnapshot& moni
         card.status = Str("flyout.status.ready");
     }
 
-    card.brightness = buildSlider(monitor, ManualFeature::Brightness, monitor.brightness, card.controllable,
-        manual, "flyout.reason.brightness_unavailable");
-    card.volume = buildSlider(monitor, ManualFeature::Volume, monitor.volume, card.controllable, manual,
+    card.brightness = buildSlider(monitor, "brightness", monitor.brightness, card.controllable, controls,
+        "flyout.reason.brightness_unavailable");
+    card.volume = buildSlider(monitor, "volume", monitor.volume, card.controllable, controls,
         "flyout.reason.volume_unavailable");
     return card;
 }
 
-FlyoutState buildFlyoutState(const Snapshot& snapshot, const ManualControls& manual)
+FlyoutState buildFlyoutState(const Snapshot& snapshot, const telaviva::ControlsDriver& controls)
 {
     FlyoutState state;
     state.monitors.reserve(snapshot.monitors.size());
     for (const auto& monitor : snapshot.monitors) {
-        state.monitors.push_back(buildCard(snapshot, monitor, manual));
+        state.monitors.push_back(buildCard(snapshot, monitor, controls));
     }
 
     state.presence = presenceFor(snapshot);
-    state.presenceText = Str(presenceKey(state.presence));
 
     const std::string key = cameraStatusKey(snapshot);
     state.cameraText = cameraLine(key);
@@ -580,17 +484,14 @@ struct AppController::Services {
     SystemClock clock;
     std::unique_ptr<CoreBridge> bridge;
     std::unique_ptr<BridgeSubmitter> submitter;
-    std::unique_ptr<CoreManualSink> manualSink;
     std::unique_ptr<ThreadExecutor> executor;
-    // Declared before ddc, so it outlives the controller that calls it. Closed by shutdown().
-    ManualCompletionGate manualGate;
     std::unique_ptr<DdcController> ddc;
-    // Feeds slider targets and set_volume acceptances to the key router. The tracker and the connection
-    // generation map are used under keyMutex, on the snapshot thread.
-    ManualKeyBridge manualKeyBridge;
-    VolumeActionTracker volumeActions;
+    // The core controls handle and the driver that owns the slider, key and draft state. The driver
+    // listens to ddc for discovery, so it is built after it. Used by publish() and the UI thread.
+    std::unique_ptr<telaviva::CoreControlsApi> controlsApi;
+    std::unique_ptr<telaviva::ControlsDriver> controls;
+    // Monitor id to connection generation, from the latest snapshot. Written and read under keyMutex.
     std::map<std::string, uint64_t> keyConnectionGenerations;
-    std::unique_ptr<ManualControls> manual;
 
     // ---- Protection brightness slider. Ticks only store the newest value per monitor; one trailing
     // timer submits them with the latest settings. submitMutex is held across a submission, so shutdown
@@ -603,7 +504,7 @@ struct AppController::Services {
     uint64_t protectionToken = 0;  // bumped on every arm and flush, so a stale callback does nothing
     bool protectionAccepting = true;
 
-    // ---- Laptop follow and ambient calibration (T117-T132, T164-T168). Built after manual and before
+    // ---- Laptop follow and ambient calibration (T117-T132, T164-T168). Built after the controls and before
     // the session and power callbacks, which refer to them. Used by publish() and by the UI thread. ----
     Win32LaptopEnvironment laptopEnvironment;
     std::unique_ptr<WmiPanel> wmiPanel;
@@ -676,14 +577,13 @@ struct AppController::Services {
     // ---- Volume and mute keys (T112). Shutdown stops them before the bridge drains. ----
     // The hook callback runs on the hook thread: it reads keyRoute and pushes keyQueue through
     // keyPolicy, and signals keyWake only for a swallowed key. keyConsumer wakes on keyWake,
-    // drives keyRouter, submits the intents it takes and updates audioOwner. Nothing else
-    // touches the router from another thread.
+    // hands each key to the controls driver and updates audioOwner. Nothing else calls the
+    // controls for keys.
     KeyRoutePublisher keyRoute;
     KeyEventQueue keyQueue;
     KeyHookPolicy keyPolicy{ keyRoute, keyQueue };
     std::unique_ptr<Win32KeyHook> keyHook;
     std::unique_ptr<KeyHookController> keyHookController;
-    std::unique_ptr<KeyIntentRouter> keyRouter;
     std::unique_ptr<Win32AudioEndpoints> audioEndpoints;
     std::unique_ptr<PnpMonitorContainers> monitorContainers;
     std::unique_ptr<AudioOwner> audioOwner;
@@ -691,14 +591,14 @@ struct AppController::Services {
     std::thread keyConsumer;
     std::atomic<bool> keyStop{ false };
     std::atomic<bool> keyPathLogged{ false };
-    // Guards keyAccepting and the key fields below, and the router and hook controller calls.
+    // Guards keyAccepting and the key fields below, and the hook controller calls.
     // Never held across a core call, so the core may call publish() while a command runs.
     std::mutex keyMutex;
     bool keyAccepting = true;
     bool keyHookWanted = false;
     std::optional<std::string> keyOwner;
-    // Owner monitor the router was last configured with; empty when none. Read by the consumer for traces.
-    std::string keyRouterOwner;
+    // Owner monitor the controls were last configured with; empty when none. Read by the consumer for traces.
+    std::string keyControlsOwner;
     std::vector<std::string> keyMonitorIds;
     bool keyMonitorsDirty = false;
     // Hook thread id last exempted from Efficiency mode; 0 when none.
@@ -731,7 +631,7 @@ struct AppController::Services {
         }
         applyInferenceDevice(inferenceDevice);
         ddc->onSnapshot(snapshot);
-        manual->apply(snapshot);
+        controls->observe(snapshot);
         driver->onSnapshot(snapshot);
         {
             std::lock_guard<std::mutex> lock(screensaverMutex);
@@ -794,19 +694,10 @@ struct AppController::Services {
                     keyMonitorIds = monitorIds;
                     keyMonitorsDirty = true;
                 }
-                // Connection generations for the completion path. Our set_volume acceptances hold back
-                // the router's rebase on readbacks until the matching completion arrives.
+                // Connection generations for the key path: the owner's generation is passed with each key.
                 keyConnectionGenerations.clear();
                 for (const auto& monitor : snapshot.monitors) {
                     keyConnectionGenerations[monitor.id] = monitor.generation;
-                }
-                for (const AcceptedAction& accepted : volumeActions.onSnapshot(snapshot)) {
-                    keyRouter->actionAccepted(accepted.monitorId, accepted.connectionGeneration,
-                        accepted.actionGeneration);
-                    if (trace) {
-                        trace("keys: action accepted monitor=" + traceMonitor(accepted.monitorId) +
-                            " actionGeneration=" + std::to_string(accepted.actionGeneration));
-                    }
                 }
                 owner = keyOwner;
             }
@@ -815,65 +706,58 @@ struct AppController::Services {
 
         setLanguage(snapshot.settings.locale);
         if (onFlyoutState) {
-            onFlyoutState(buildFlyoutState(snapshot, *manual));
+            onFlyoutState(buildFlyoutState(snapshot, *controls));
         }
     }
 
     // ---- Volume keys: helpers. Called from publish(), the audio owner callback and keyConsumer. ----
 
-    // Pushes the owner's volume to the router and the route to the hook. Takes keyMutex only and
-    // makes no core call, so it is safe from the snapshot thread and from audio callbacks.
+    // Publishes the route to the hook, then configures the controls with the owner and the settings.
+    // The route is published under keyMutex. The controls call is a core call, so it is made after
+    // keyMutex is released; it is safe from the snapshot thread and from audio callbacks.
     void routeKeys(const Snapshot& snapshot, const std::optional<std::string>& owner)
     {
-        std::lock_guard<std::mutex> lock(keyMutex);
-        if (!keyAccepting) {
-            return;
-        }
-        const MonitorSnapshot* monitor = nullptr;
-        if (owner) {
-            for (const auto& candidate : snapshot.monitors) {
-                if (candidate.id == *owner) {
-                    monitor = &candidate;
-                    break;
+        // Windows has no brightness keys, so the volume step serves both.
+        const double step = static_cast<double>(snapshot.settings.volume_key_step);
+        bool enabled = false;
+        std::string ownerMonitorId;
+        {
+            std::lock_guard<std::mutex> lock(keyMutex);
+            if (!keyAccepting) {
+                return;
+            }
+            const MonitorSnapshot* monitor = nullptr;
+            if (owner) {
+                for (const auto& candidate : snapshot.monitors) {
+                    if (candidate.id == *owner) {
+                        monitor = &candidate;
+                        break;
+                    }
                 }
             }
-        }
-        const bool hasOwner = monitor != nullptr;
-        const bool volumeSupported = hasOwner && monitor->volume.supported;
-        const bool displayAwake = hasOwner && monitor->displayState != "asleep";
+            const bool hasOwner = monitor != nullptr;
+            const bool volumeSupported = hasOwner && monitor->volume.supported;
+            const bool displayAwake = hasOwner && monitor->displayState != "asleep";
 
-        KeyRouteConfig config;
-        config.enabled = snapshot.settings.hardware_keys_enabled;
-        config.ownerMonitorId = hasOwner ? monitor->id : std::string{};
-        config.step = static_cast<double>(snapshot.settings.volume_key_step);
-        keyRouter->configure(config);
-        keyRouterOwner = config.ownerMonitorId;
+            enabled = snapshot.settings.hardware_keys_enabled;
+            ownerMonitorId = hasOwner ? monitor->id : std::string{};
+            keyControlsOwner = ownerMonitorId;
 
-        if (hasOwner) {
-            const ChannelSnapshot& volume = monitor->volume;
-            VolumeObservation observation;
-            observation.monitorId = monitor->id;
-            observation.connectionGeneration = monitor->generation;
-            observation.supported = volume.supported;
-            observation.awake = displayAwake;
-            // NaN tells the router the value is unknown, so it does not rebase to a guess.
-            const bool known = volume.observed.has_value() || (volume.raw.has_value() && volume.max > volume.min);
-            observation.percent = known ? observedPercent(volume) : std::numeric_limits<double>::quiet_NaN();
-            observation.pending = std::any_of(snapshot.pendingActions.begin(), snapshot.pendingActions.end(),
-                [&](const PendingAction& action) { return action.monitorId == monitor->id; });
-            observation.failed = channelFailed(volume);
-            keyRouter->observe(observation);
+            KeyRoute route;
+            route.hasOwner = hasOwner;
+            route.volumeSupported = volumeSupported;
+            route.displayAwake = displayAwake;
+            route.version = snapshot.revision;
+            keyRoute.publish(route);
+            if (keyWake != nullptr) {
+                SetEvent(keyWake);
+            }
         }
-
-        KeyRoute route;
-        route.hasOwner = hasOwner;
-        route.volumeSupported = volumeSupported;
-        route.displayAwake = displayAwake;
-        route.version = snapshot.revision;
-        keyRoute.publish(route);
-        if (keyWake != nullptr) {
-            SetEvent(keyWake);
-        }
+        // An empty owner id clears the owner in the controls.
+        controls->configure(step, step, enabled,
+            std::optional<std::optional<std::string>>(ownerMonitorId.empty()
+                    ? std::optional<std::string>{}
+                    : std::optional<std::string>(ownerMonitorId)));
     }
 
     // Audio owner callback. Runs on an audio system thread, or on the thread that calls refresh().
@@ -892,47 +776,6 @@ struct AppController::Services {
             keyOwner = owner;
         }
         routeKeys(snapshot, owner);
-    }
-
-    // ---- Key router and manual controls. Each takes keyMutex and does nothing once keys are stopped.
-    // Called from the manual controls without their lock held.
-
-    void onManualTargetChanged(const std::string& monitorId, uint64_t generation, double value, uint64_t revision)
-    {
-        std::lock_guard<std::mutex> lock(keyMutex);
-        if (!keyAccepting) {
-            return;
-        }
-        keyRouter->manualControlChanged(monitorId, generation, value, revision);
-    }
-
-    void onManualTargetSubmitted(const std::string& monitorId, uint64_t generation, double value, uint64_t revision)
-    {
-        std::lock_guard<std::mutex> lock(keyMutex);
-        if (!keyAccepting) {
-            return;
-        }
-        keyRouter->manualControlAccepted(monitorId, generation, value, revision);
-    }
-
-    // DDC completion of a set_volume action, on the executor thread. Its generation is the action's,
-    // so the connection generation comes from the latest snapshot.
-    void onVolumeCompleted(const HardwareCompletion& completion)
-    {
-        std::lock_guard<std::mutex> lock(keyMutex);
-        if (!keyAccepting) {
-            return;
-        }
-        const auto found = keyConnectionGenerations.find(completion.monitorId);
-        if (found == keyConnectionGenerations.end()) {
-            return;
-        }
-        keyRouter->actionCompleted(completion.monitorId, found->second, completion.generation);
-        if (trace) {
-            trace("keys: action completed monitor=" + traceMonitor(completion.monitorId) +
-                " actionGeneration=" + std::to_string(completion.generation) +
-                " ok=" + (completion.ok ? "1" : "0"));
-        }
     }
 
     // Device interface path for the audio owner. The snapshot carries the DisplayConfig
@@ -984,57 +827,47 @@ struct AppController::Services {
 
             KeyQueueEntry entry{};
             while (keyQueue.pop(entry)) {
-                telaviva::KeyEvent keyEvent;
+                // The key names the controls core uses for the volume and mute keys.
+                std::string name;
                 if (entry.vk == telaviva::kVkVolumeUp) {
-                    keyEvent.key = telaviva::VolumeKey::Up;
+                    name = "volume_up";
                 } else if (entry.vk == telaviva::kVkVolumeDown) {
-                    keyEvent.key = telaviva::VolumeKey::Down;
+                    name = "volume_down";
                 } else {
-                    keyEvent.key = telaviva::VolumeKey::Mute;
+                    name = "mute";
                 }
-                keyEvent.phase = entry.isKeyDown ? telaviva::KeyPhase::Down : telaviva::KeyPhase::Up;
-                keyEvent.isFineStep = entry.shiftDown;
-                keyEvent.isRepeat = entry.isRepeat;
+                const bool down = entry.isKeyDown;
+                const bool repeat = entry.isRepeat;
+                const bool fine = entry.shiftDown;
                 if (trace) {
-                    trace("keys: event vk=" + std::to_string(entry.vk) + " down=" + (entry.isKeyDown ? "1" : "0") +
-                        " repeat=" + (entry.isRepeat ? "1" : "0") + " shift=" + (entry.shiftDown ? "1" : "0"));
+                    trace("keys: event vk=" + std::to_string(entry.vk) + " down=" + (down ? "1" : "0") +
+                        " repeat=" + (repeat ? "1" : "0") + " shift=" + (fine ? "1" : "0"));
                 }
-                std::lock_guard<std::mutex> lock(keyMutex);
-                if (keyAccepting) {
-                    const bool swallow = keyRouter->handleKey(keyEvent);
-                    if (trace) {
-                        trace("keys: router swallow=" + std::string(swallow ? "yes" : "no") + " owner=" +
-                            (keyRouterOwner.empty() ? std::string("none") : traceMonitor(keyRouterOwner)));
-                    }
-                }
-            }
-
-            for (;;) {
-                std::vector<telaviva::KeyIntent> intents;
+                // The owner and its connection generation are read under keyMutex. The key itself goes to
+                // the controls without it, since the core call may submit commands.
+                bool accepting = false;
+                std::optional<telaviva::KeyOwnerRef> owner;
+                std::string traceOwner;
                 {
                     std::lock_guard<std::mutex> lock(keyMutex);
-                    if (!keyAccepting) {
-                        return;
+                    accepting = keyAccepting;
+                    if (accepting && keyOwner) {
+                        const auto found = keyConnectionGenerations.find(*keyOwner);
+                        if (found != keyConnectionGenerations.end()) {
+                            owner = telaviva::KeyOwnerRef{ *keyOwner, found->second };
+                        }
                     }
-                    intents = keyRouter->takeIntents();
+                    traceOwner = keyControlsOwner;
                 }
-                if (intents.empty()) {
-                    break;
+                if (!accepting) {
+                    continue;
                 }
-                for (const telaviva::KeyIntent& intent : intents) {
-                    // Same per-monitor queue as the slider, so a key write and a slider drain never overlap.
-                    // The router keeps its outstanding and expiry logic, so the intent is finished as taken.
-                    if (trace) {
-                        trace("keys: intent monitor=" + traceMonitor(intent.monitorId) + " target=" +
-                            formatPercent(intent.targetVolume) + " generation=" + std::to_string(intent.generation));
-                    }
-                    // A key write is not reported to the router as a slider change, which would replace its own intent.
-                    manual->setKeyTarget(intent.monitorId, ManualFeature::Volume, intent.targetVolume);
-                    if (trace) {
-                        trace("keys: setTarget returned, intent finished accepted");
-                    }
-                    std::lock_guard<std::mutex> lock(keyMutex);
-                    keyRouter->intentFinished(intent, true);
+                // The hook thread has already decided to swallow the key from the route, so the
+                // consume result is traced only.
+                const bool consume = controls->key(name, down, repeat, fine, owner);
+                if (trace) {
+                    trace("keys: controls consume=" + std::string(consume ? "yes" : "no") + " owner=" +
+                        (traceOwner.empty() ? std::string("none") : traceMonitor(traceOwner)));
                 }
             }
         }
@@ -1048,7 +881,6 @@ struct AppController::Services {
             std::lock_guard<std::mutex> lock(keyMutex);
             keyAccepting = false;
             keyHookWanted = false;
-            keyRouter->shutdown();
             // Routes no more keys: the hook is uninstalled before its thread is joined below.
             keyHookController->setEnabled(false);
         }
@@ -1065,7 +897,6 @@ struct AppController::Services {
         audioOwner.reset();
         monitorContainers.reset();
         audioEndpoints.reset();
-        keyRouter.reset();
         if (keyWake != nullptr) {
             CloseHandle(keyWake);
             keyWake = nullptr;
@@ -1191,27 +1022,33 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
     }
 
     s.submitter = std::make_unique<BridgeSubmitter>(*s.bridge);
-    s.manualSink = std::make_unique<CoreManualSink>(*s.bridge);
     s.executor = std::make_unique<ThreadExecutor>();
-    s.ddc = std::make_unique<DdcController>(s.catalog, s.ports, *s.submitter, *s.executor, s.sleeper, s.scheduler,
-        &s.manualGate);
-    s.manual = std::make_unique<ManualControls>(*s.manualSink, s.scheduler, s.clock);
-    // Completions can arrive only after start(), which is after this line.
-    s.manualGate.open(s.manual.get());
-    // Slider targets reach the key router, and volume completions reach the router's acceptance tracking.
-    // Both are wired before the key consumer thread starts.
-    s.manual->setObserver(&s.manualKeyBridge);
-    s.manualKeyBridge.changed = [&s](const std::string& monitorId, uint64_t generation, double value,
-                                    uint64_t revision) { s.onManualTargetChanged(monitorId, generation, value, revision); };
-    s.manualKeyBridge.submitted = [&s](const std::string& monitorId, uint64_t generation, double value,
-                                      uint64_t revision) { s.onManualTargetSubmitted(monitorId, generation, value, revision); };
-    s.manualGate.setVolumeHook([&s](const HardwareCompletion& completion) { s.onVolumeCompleted(completion); });
+    // Discovery reports go to the controls driver, which is set as the listener below.
+    s.ddc = std::make_unique<DdcController>(s.catalog, s.ports, *s.submitter, *s.executor, s.sleeper);
+    // The controls driver owns the slider, key and draft state. It is built after ddc, and ddc
+    // reports discovery to it only once start() runs, which is after this constructor.
+    s.controlsApi = std::make_unique<telaviva::CoreControlsApi>();
+    s.controls = std::make_unique<telaviva::ControlsDriver>(*s.controlsApi, *s.submitter, *s.ddc, *s.executor,
+        s.scheduler, s.clock);
+    s.ddc->setListener(s.controls.get());
+    // A draft change refreshes the flyout from the latest published snapshot, as refresh() does.
+    // The snapshot is copied under settingsMutex, the lock the snapshot thread writes it under.
+    s.controls->setDraftObserver([&s](const std::string&, const std::string&) {
+        if (!s.onFlyoutState || !s.bridge->isOpen()) {
+            return;
+        }
+        Snapshot snapshot;
+        {
+            std::lock_guard<std::mutex> lock(s.settingsMutex);
+            snapshot = s.latestSnapshot;
+        }
+        s.onFlyoutState(buildFlyoutState(snapshot, *s.controls));
+    });
     // Trace lines reach the log only at Debug level. Otherwise the sinks stay empty and nothing is formatted.
     // Set before any traffic: nothing calls into these controllers until start() or the bridge sink below.
     if (traceDebug) {
         s.trace = [diagnostics = &s.diagnostics](const std::string& line) { diagnostics->log(LogLevel::Debug, line); };
         s.ddc->setTrace(s.trace);
-        s.manual->setTrace(s.trace);
     }
     s.launchAtLogin = std::make_unique<LaunchAtLogin>(s.runKey, executablePath());
 
@@ -1228,7 +1065,7 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
     s.calibrationSession = std::make_unique<CalibrationSession>(s.paths.root());
     s.calibrationPanel = std::make_unique<PanelAdapter>(*s.wmiPanel);
     s.calibrationFollow = std::make_unique<FollowPauseAdapter>(*s.laptopFollower);
-    s.calibrationMonitors = std::make_unique<MonitorsAdapter>(s.settingsMutex, s.latestSnapshot, *s.manual);
+    s.calibrationMonitors = std::make_unique<MonitorsAdapter>(s.settingsMutex, s.latestSnapshot, *s.controls);
     s.calibrationSettings = std::make_unique<SettingsAdapter>(s.settingsMutex, s.latestSettings, *s.bridge);
     s.calibration = std::make_unique<AmbientCalibrationController>(*s.calibrationPanel, *s.calibrationSettings,
         *s.calibrationFollow, *s.calibrationMonitors, *s.adaptive, *s.calibrationSession);
@@ -1260,6 +1097,7 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
     // The display going off ends a calibration: the panel and the monitor would be read while nothing is shown.
     events.onDisplayState = [ddc, &s](bool displayOn) {
         ddc->onDisplayState(displayOn);
+        s.controls->displayPower(displayOn);
         s.laptopEnvironment.recordDisplayStatus(displayOn);
         s.laptopFollower->onDisplayStatusChanged(displayOn);
         if (!displayOn && s.calibration->isActive()) {
@@ -1391,7 +1229,6 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
     if (s.keyWake == nullptr) {
         s.diagnostics.log(LogLevel::Error, "volume keys: wake event could not be created; keys stay with Windows");
     }
-    s.keyRouter = std::make_unique<KeyIntentRouter>(s.clock);
     s.keyHook = std::make_unique<Win32KeyHook>([&s](std::string line) { s.diagnostics.log(LogLevel::Error, line); });
     s.keyHookController = std::make_unique<KeyHookController>(*s.keyHook, [&s](const KeyHookEvent& event) {
         // Hook thread: route read, latch and queue push, plus one signal for a swallowed key.
@@ -1444,8 +1281,8 @@ AppController::~AppController()
     s.wmiPanel.reset();
     s.calibrationSession.reset();
     s.adaptive.reset();
-    // Joins the snapshot thread, which still calls ddc, manual and driver. The driver must
-    // outlive this join, because publish() calls it on that thread.
+    // Joins the snapshot thread, which still calls ddc, controls and driver. The driver and the
+    // controls must outlive this join, because publish() calls them on that thread.
     s.bridge.reset();
     // The driver is shut down, so later snapshots do nothing. It goes before the camera and
     // analyzer it refers to, and the lifecycle last.
@@ -1453,9 +1290,11 @@ AppController::~AppController()
     s.camera.reset();
     s.analyzer.reset();
     s.lifecycle.reset();
-    s.manual.reset();
+    // The controls driver goes before the DDC controller it listens to, and the handle it calls
+    // goes after both. All three follow the bridge, since the snapshot thread still calls them until the join.
+    s.controls.reset();
     s.ddc.reset();
-    s.manualSink.reset();
+    s.controlsApi.reset();
     s.submitter.reset();
 }
 
@@ -1515,9 +1354,9 @@ void AppController::shutdown()
     }
     // Closes the camera and cancels its timers while the core still drains.
     s.driver->shutdown();
-    // DDC completions stop reaching the manual controls before those controls shut down.
-    s.manualGate.close();
-    s.manual->shutdown();
+    // The controls stop before the protection flush and the core drain: no later draft, key or DDC
+    // completion reaches them. DDC stops last, below.
+    s.controls->shutdown();
     // A pending protection value is written while the bridge still accepts commands.
     s.flushProtection(true);
     s.bridge->shutdown(8s);
@@ -1540,12 +1379,12 @@ void AppController::onWindowVisibilityChanged(bool visible)
 
 void AppController::setBrightness(const std::string& monitorId, double value)
 {
-    services_->manual->setTarget(monitorId, ManualFeature::Brightness, value);
+    services_->controls->slider(monitorId, "brightness", value);
 }
 
 void AppController::setVolume(const std::string& monitorId, double value)
 {
-    services_->manual->setTarget(monitorId, ManualFeature::Volume, value);
+    services_->controls->slider(monitorId, "volume", value);
 }
 
 void AppController::setMonitorProtected(const std::string& monitorId, bool protectedOn)
@@ -1581,7 +1420,7 @@ void AppController::refresh()
         s.onFlyoutState(unavailableState());
         return;
     }
-    s.onFlyoutState(buildFlyoutState(s.bridge->snapshot(), *s.manual));
+    s.onFlyoutState(buildFlyoutState(s.bridge->snapshot(), *s.controls));
 }
 
 void AppController::openSettings()

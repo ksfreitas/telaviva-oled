@@ -1,15 +1,13 @@
 #include "TestHarness.h"
 
-#include "Fakes.h"
 #include "Platform/DdcController.h"
 #include "Platform/DisplayCatalog.h"
+#include "Platform/IAttemptRunner.h"
 #include "Platform/IDdcPort.h"
 #include "Platform/ISleeper.h"
 #include "Platform/JsonCodec.h"
-#include "Platform/Scheduler.h"
 
 #include <chrono>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -18,25 +16,24 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
-using namespace std::chrono_literals;
+using telaviva::AttemptOutcome;
+using telaviva::AttemptRequest;
 using telaviva::CatalogEntry;
 using telaviva::DdcController;
 using telaviva::DdcError;
 using telaviva::DdcReading;
-using telaviva::FakeScheduler;
-using telaviva::HardwareCompletion;
 using telaviva::ICoreSubmitter;
-using telaviva::IHardwareObserver;
 using telaviva::IDdcExecutor;
+using telaviva::IDdcListener;
 using telaviva::IDdcPort;
 using telaviva::IDdcPortProvider;
 using telaviva::IDisplayCatalog;
 using telaviva::ISleeper;
 using telaviva::MonitorInfo;
 using telaviva::MonitorSnapshot;
-using telaviva::PendingAction;
 using telaviva::Snapshot;
 
 namespace {
@@ -60,7 +57,8 @@ public:
 // Per-VCP-code device model shared between the test and the port handed to the controller.
 struct Channel {
     bool readable = true;     // false: reads fail with Unsupported (no retry)
-    bool acceptWrites = true; // false: writes are dropped, so the readback mismatches
+    bool acceptWrites = true; // false: writes are dropped, so a readback would mismatch
+    std::optional<DdcError> writeError;  // set: every write fails with this error
     uint32_t value = 0;
     uint32_t maximum = 100;
 };
@@ -92,6 +90,10 @@ public:
     {
         state_->calls.push_back("write " + std::to_string(code) + "=" + std::to_string(value));
         Channel& channel = state_->channels[code];
+        if (channel.writeError) {
+            error = *channel.writeError;
+            return false;
+        }
         if (channel.acceptWrites) {
             channel.value = value;
         }
@@ -133,20 +135,25 @@ public:
 class FakeSubmitter final : public ICoreSubmitter {
 public:
     std::vector<std::string> sent;
-    int status = 0;  // non-zero rejects every submission
 
     int submit(const std::string& json) override
     {
         sent.push_back(json);
-        return status;
+        return 0;
     }
 };
 
-class RecordingObserver final : public IHardwareObserver {
+class RecordingListener final : public IDdcListener {
 public:
-    std::vector<HardwareCompletion> completions;
+    std::vector<std::pair<std::string, std::string>> profiles;  // (monitorId, manufacturer)
+    std::vector<std::string> removed;
 
-    void onHardwareCompleted(const HardwareCompletion& completion) override { completions.push_back(completion); }
+    void onMonitorProfile(const std::string& monitorId, const std::string& manufacturer) override
+    {
+        profiles.emplace_back(monitorId, manufacturer);
+    }
+
+    void onMonitorRemoved(const std::string& monitorId) override { removed.push_back(monitorId); }
 };
 
 // Runs each job inline, so the whole flow is deterministic on the test thread.
@@ -157,7 +164,9 @@ public:
 
 class FakeSleeper final : public ISleeper {
 public:
-    void sleepFor(std::chrono::milliseconds) override {}
+    int calls = 0;
+
+    void sleepFor(std::chrono::milliseconds) override { ++calls; }
 };
 
 // Declaration order matters: the controller keeps references to every member above it.
@@ -167,9 +176,8 @@ struct Rig {
     FakeSubmitter submitter;
     InlineExecutor executor;
     FakeSleeper sleeper;
-    FakeScheduler scheduler;
-    RecordingObserver observer;
-    DdcController controller{catalog, ports, submitter, executor, sleeper, scheduler, &observer};
+    RecordingListener listener;
+    DdcController controller{catalog, ports, submitter, executor, sleeper, &listener};
 };
 
 CatalogEntry makeEntry(const std::string& id, bool stable, const std::string& name, bool internal = false)
@@ -195,25 +203,31 @@ MonitorSnapshot monitorSnapshot(const std::string& id, uint64_t generation, cons
     return monitor;
 }
 
-PendingAction action(uint64_t id, const std::string& monitorId, uint64_t generation, const std::string& kind,
-                     std::optional<double> value)
-{
-    PendingAction pending;
-    pending.id = id;
-    pending.monitorId = monitorId;
-    pending.generation = generation;
-    pending.kind = kind;
-    pending.value = value;
-    return pending;
-}
-
-Snapshot snapshotWith(std::vector<MonitorSnapshot> monitors, std::vector<PendingAction> actions)
+Snapshot snapshotWith(std::vector<MonitorSnapshot> monitors)
 {
     Snapshot snapshot;
     snapshot.revision = 1;
     snapshot.monitors = std::move(monitors);
-    snapshot.pendingActions = std::move(actions);
     return snapshot;
+}
+
+AttemptRequest writeRequest(const std::string& monitorId, uint8_t code, uint32_t value)
+{
+    AttemptRequest request;
+    request.monitorId = monitorId;
+    request.write = true;
+    request.code = code;
+    request.value = value;
+    return request;
+}
+
+AttemptRequest readRequest(const std::string& monitorId, uint8_t code)
+{
+    AttemptRequest request;
+    request.monitorId = monitorId;
+    request.write = false;
+    request.code = code;
+    return request;
 }
 
 MonitorInfo::Channel supportedChannel(double raw, double max)
@@ -324,202 +338,161 @@ TEST(ddc_controller_internal_panel_is_never_discovered)
     CHECK(rig.submitter.sent.empty());
 }
 
-TEST(ddc_controller_set_brightness_writes_reads_back_and_reports_ok)
-{
-    Rig rig;
-    rig.catalog.entries = {makeEntry(kIdA, true, kName)};
-    rig.ports.state(kIdA)->channels[kBrightness].value = 41;
-    rig.controller.refresh();
-    rig.controller.onSnapshot(
-        snapshotWith({monitorSnapshot(kIdA, 4, "awake")}, {action(7, kIdA, 4, "set_brightness", 58.0)}));
-    CHECK_EQ(countOf(rig.ports.callsFor(kIdA), "write 16=58"), std::size_t(1));
-    CHECK_EQ(countOf(rig.ports.callsFor(kIdA), "read 16"), std::size_t(2));
-    CHECK_EQ(rig.submitter.sent.back(), telaviva::buildHardwareResult(7, 4, true, 58.0, std::nullopt));
-}
-
-TEST(ddc_controller_failing_readback_reports_io_error)
-{
-    Rig rig;
-    rig.catalog.entries = {makeEntry(kIdA, true, kName)};
-    rig.ports.state(kIdA)->channels[kBrightness].value = 41;
-    rig.controller.refresh();
-    rig.ports.state(kIdA)->channels[kBrightness].acceptWrites = false;
-    rig.controller.onSnapshot(
-        snapshotWith({monitorSnapshot(kIdA, 4, "awake")}, {action(7, kIdA, 4, "set_brightness", 58.0)}));
-    CHECK_EQ(countOf(rig.ports.callsFor(kIdA), "write 16=58"), std::size_t(1));
-    CHECK_EQ(rig.submitter.sent.back(),
-             telaviva::buildHardwareResult(7, 4, false, std::nullopt, std::string("io")));
-}
-
-TEST(ddc_controller_read_brightness_reports_raw_value)
-{
-    Rig rig;
-    rig.catalog.entries = {makeEntry(kIdA, true, kName)};
-    rig.ports.state(kIdA)->channels[kBrightness].value = 47;
-    rig.controller.refresh();
-    rig.controller.onSnapshot(
-        snapshotWith({monitorSnapshot(kIdA, 4, "awake")}, {action(8, kIdA, 4, "read_brightness", std::nullopt)}));
-    CHECK_EQ(countOf(rig.ports.callsFor(kIdA), "write 16=47"), std::size_t(0));
-    CHECK_EQ(rig.submitter.sent.back(), telaviva::buildHardwareResult(8, 4, true, 47.0, std::nullopt));
-}
-
-TEST(ddc_controller_same_action_id_in_two_snapshots_runs_once)
-{
-    Rig rig;
-    rig.catalog.entries = {makeEntry(kIdA, true, kName)};
-    rig.ports.state(kIdA)->channels[kBrightness].value = 41;
-    rig.controller.refresh();
-    const Snapshot snapshot =
-        snapshotWith({monitorSnapshot(kIdA, 4, "awake")}, {action(7, kIdA, 4, "set_brightness", 58.0)});
-    rig.controller.onSnapshot(snapshot);
-    rig.controller.onSnapshot(snapshot);
-    CHECK_EQ(countOf(rig.ports.callsFor(kIdA), "write 16=58"), std::size_t(1));
-    CHECK_EQ(countOf(rig.submitter.sent, telaviva::buildHardwareResult(7, 4, true, 58.0, std::nullopt)),
-             std::size_t(1));
-}
-
-TEST(ddc_controller_asleep_monitor_gets_no_hardware_call_and_no_result)
-{
-    Rig rig;
-    rig.catalog.entries = {makeEntry(kIdA, true, kName)};
-    rig.ports.state(kIdA)->channels[kBrightness].value = 41;
-    rig.controller.refresh();
-    const std::size_t sentBefore = rig.submitter.sent.size();
-    const std::size_t callsBefore = rig.ports.callsFor(kIdA).size();
-    rig.controller.onSnapshot(
-        snapshotWith({monitorSnapshot(kIdA, 4, "asleep")}, {action(7, kIdA, 4, "set_brightness", 58.0)}));
-    CHECK_EQ(rig.ports.callsFor(kIdA).size(), callsBefore);
-    CHECK_EQ(rig.submitter.sent.size(), sentBefore);
-}
-
 TEST(ddc_controller_display_off_reports_asleep_for_every_monitor)
 {
     Rig rig;
     rig.catalog.entries = {makeEntry(kIdA, true, kName), makeEntry(kIdB, true, kName)};
     rig.controller.refresh();
-    rig.controller.onSnapshot(
-        snapshotWith({monitorSnapshot(kIdA, 4, "awake"), monitorSnapshot(kIdB, 9, "awake")}, {}));
+    rig.controller.onSnapshot(snapshotWith({monitorSnapshot(kIdA, 4, "awake"), monitorSnapshot(kIdB, 9, "awake")}));
     rig.controller.onDisplayState(false);
     CHECK_EQ(countOf(rig.submitter.sent, telaviva::buildMonitorDisplayState(kIdA, 4, "asleep")), std::size_t(1));
     CHECK_EQ(countOf(rig.submitter.sent, telaviva::buildMonitorDisplayState(kIdB, 9, "asleep")), std::size_t(1));
 }
 
-TEST(ddc_controller_display_on_reports_awake_and_holds_actions_for_grace)
+TEST(ddc_controller_display_on_reports_awake)
 {
     Rig rig;
     rig.catalog.entries = {makeEntry(kIdA, true, kName)};
     rig.ports.state(kIdA)->channels[kBrightness].value = 41;
     rig.controller.refresh();
-    rig.controller.onSnapshot(snapshotWith({monitorSnapshot(kIdA, 4, "awake")}, {}));
+    rig.controller.onSnapshot(snapshotWith({monitorSnapshot(kIdA, 4, "asleep")}));
     rig.controller.onDisplayState(true);
     CHECK_EQ(countOf(rig.submitter.sent, telaviva::buildMonitorDisplayState(kIdA, 4, "awake")), std::size_t(1));
+}
 
-    rig.controller.onSnapshot(
-        snapshotWith({monitorSnapshot(kIdA, 4, "awake")}, {action(7, kIdA, 4, "set_brightness", 58.0)}));
-    CHECK_EQ(countOf(rig.ports.callsFor(kIdA), "write 16=58"), std::size_t(0));
-
-    rig.scheduler.advance(1999ms);
-    CHECK_EQ(countOf(rig.ports.callsFor(kIdA), "write 16=58"), std::size_t(0));
-
-    rig.scheduler.advance(1ms);
+TEST(ddc_controller_run_write_succeeds_and_records_port_write)
+{
+    Rig rig;
+    rig.catalog.entries = {makeEntry(kIdA, true, kName)};
+    rig.controller.refresh();
+    const AttemptOutcome outcome = rig.controller.run(writeRequest(kIdA, kBrightness, 58));
+    CHECK(outcome.ok);
+    CHECK(outcome.error.empty());
+    CHECK(!outcome.value.has_value());
     CHECK_EQ(countOf(rig.ports.callsFor(kIdA), "write 16=58"), std::size_t(1));
-    CHECK_EQ(rig.submitter.sent.back(), telaviva::buildHardwareResult(7, 4, true, 58.0, std::nullopt));
 }
 
-TEST(ddc_controller_reports_successful_brightness_set_to_observer)
-{
-    Rig rig;
-    rig.catalog.entries = {makeEntry(kIdA, true, kName)};
-    rig.ports.state(kIdA)->channels[kBrightness].value = 41;
-    rig.controller.refresh();
-    rig.controller.onSnapshot(
-        snapshotWith({monitorSnapshot(kIdA, 4, "awake")}, {action(7, kIdA, 4, "set_brightness", 58.0)}));
-    CHECK_EQ(rig.observer.completions.size(), std::size_t(1));
-    const telaviva::HardwareCompletion& done = rig.observer.completions.front();
-    CHECK(done.monitorId == kIdA);
-    CHECK(done.feature == "brightness");
-    CHECK_EQ(done.generation, uint64_t(4));
-    CHECK(done.ok);
-    CHECK(done.observedPercent.has_value() && std::fabs(*done.observedPercent - 58.0) < 1e-9);
-}
-
-TEST(ddc_controller_reports_successful_volume_set_with_volume_feature)
-{
-    Rig rig;
-    rig.catalog.entries = {makeEntry(kIdA, true, kName)};
-    rig.ports.state(kIdA)->channels[kVolume].value = 30;
-    rig.controller.refresh();
-    rig.controller.onSnapshot(snapshotWith({monitorSnapshot(kIdA, 4, "awake")}, {action(9, kIdA, 4, "set_volume", 60.0)}));
-    CHECK_EQ(rig.observer.completions.size(), std::size_t(1));
-    const telaviva::HardwareCompletion& done = rig.observer.completions.front();
-    CHECK(done.feature == "volume");
-    CHECK(done.ok);
-    CHECK(done.observedPercent.has_value() && std::fabs(*done.observedPercent - 60.0) < 1e-9);
-}
-
-TEST(ddc_controller_reports_failed_set_without_percent)
-{
-    Rig rig;
-    rig.catalog.entries = {makeEntry(kIdA, true, kName)};
-    rig.ports.state(kIdA)->channels[kBrightness].value = 41;
-    rig.controller.refresh();
-    rig.ports.state(kIdA)->channels[kBrightness].acceptWrites = false;
-    rig.controller.onSnapshot(
-        snapshotWith({monitorSnapshot(kIdA, 4, "awake")}, {action(7, kIdA, 4, "set_brightness", 58.0)}));
-    CHECK_EQ(rig.observer.completions.size(), std::size_t(1));
-    CHECK(!rig.observer.completions.front().ok);
-    CHECK(!rig.observer.completions.front().observedPercent.has_value());
-}
-
-TEST(ddc_controller_skipped_set_is_reported_as_failed)
-{
-    // An ambiguous monitor is answered "ambiguous", so its draft must still settle.
-    Rig rig;
-    rig.catalog.entries = {makeEntry(kIdA, false, kName)};
-    rig.controller.refresh();
-    rig.controller.onSnapshot(
-        snapshotWith({monitorSnapshot(kIdA, 4, "awake")}, {action(7, kIdA, 4, "set_brightness", 58.0)}));
-    CHECK_EQ(rig.observer.completions.size(), std::size_t(1));
-    CHECK(!rig.observer.completions.front().ok);
-    CHECK(rig.observer.completions.front().feature == "brightness");
-}
-
-TEST(ddc_controller_read_and_held_actions_are_not_reported_to_observer)
+TEST(ddc_controller_run_read_returns_raw_current_value)
 {
     Rig rig;
     rig.catalog.entries = {makeEntry(kIdA, true, kName)};
     rig.ports.state(kIdA)->channels[kBrightness].value = 47;
     rig.controller.refresh();
-    rig.controller.onSnapshot(snapshotWith({monitorSnapshot(kIdA, 4, "awake")}, {action(8, kIdA, 4, "read_brightness", std::nullopt)}));
-    rig.controller.onSnapshot(snapshotWith({monitorSnapshot(kIdA, 4, "asleep")}, {action(9, kIdA, 4, "set_brightness", 58.0)}));
-    CHECK(rig.observer.completions.empty());
+    const AttemptOutcome outcome = rig.controller.run(readRequest(kIdA, kBrightness));
+    CHECK(outcome.ok);
+    CHECK(outcome.error.empty());
+    CHECK(outcome.value.has_value() && *outcome.value == 47.0);
+    CHECK_EQ(countOf(rig.ports.callsFor(kIdA), "write 16=47"), std::size_t(0));
 }
 
-TEST(ddc_controller_rejected_result_is_not_reported_to_observer)
+TEST(ddc_controller_run_read_error_maps_to_unsupported)
 {
-    // The core did not take the result, so the action is offered again and no slot may be released.
+    Rig rig;
+    rig.catalog.entries = {makeEntry(kIdA, true, kName)};
+    rig.controller.refresh();
+    rig.ports.state(kIdA)->channels[kBrightness].readable = false;
+    const AttemptOutcome outcome = rig.controller.run(readRequest(kIdA, kBrightness));
+    CHECK(!outcome.ok);
+    CHECK_EQ(outcome.error, std::string("unsupported"));
+    CHECK(!outcome.value.has_value());
+}
+
+TEST(ddc_controller_run_write_error_maps_to_error_names)
+{
+    Rig rig;
+    rig.catalog.entries = {makeEntry(kIdA, true, kName)};
+    rig.controller.refresh();
+    Channel& channel = rig.ports.state(kIdA)->channels[kBrightness];
+
+    channel.writeError = DdcError::Unsupported;
+    AttemptOutcome outcome = rig.controller.run(writeRequest(kIdA, kBrightness, 58));
+    CHECK(!outcome.ok);
+    CHECK_EQ(outcome.error, std::string("unsupported"));
+
+    channel.writeError = DdcError::Disconnected;
+    outcome = rig.controller.run(writeRequest(kIdA, kBrightness, 58));
+    CHECK(!outcome.ok);
+    CHECK_EQ(outcome.error, std::string("disconnected"));
+
+    channel.writeError = DdcError::Io;
+    outcome = rig.controller.run(writeRequest(kIdA, kBrightness, 58));
+    CHECK(!outcome.ok);
+    CHECK_EQ(outcome.error, std::string("io"));
+}
+
+TEST(ddc_controller_run_unknown_monitor_is_disconnected)
+{
+    Rig rig;
+    rig.catalog.entries = {makeEntry(kIdA, true, kName)};
+    rig.controller.refresh();
+    const AttemptOutcome outcome = rig.controller.run(writeRequest(kIdB, kBrightness, 58));
+    CHECK(!outcome.ok);
+    CHECK_EQ(outcome.error, std::string("disconnected"));
+    CHECK(rig.ports.callsFor(kIdB).empty());
+}
+
+TEST(ddc_controller_run_ambiguous_monitor_is_unsupported)
+{
+    Rig rig;
+    rig.catalog.entries = {makeEntry(kIdA, false, kName)};
+    rig.controller.refresh();
+    const AttemptOutcome outcome = rig.controller.run(writeRequest(kIdA, kBrightness, 58));
+    CHECK(!outcome.ok);
+    CHECK_EQ(outcome.error, std::string("unsupported"));
+    CHECK(rig.ports.callsFor(kIdA).empty());
+}
+
+TEST(ddc_controller_run_monitor_without_port_is_unsupported)
+{
+    Rig rig;
+    rig.catalog.entries = {makeEntry(kIdA, true, kName)};
+    rig.ports.withoutHandle.insert(kIdA);
+    rig.controller.refresh();
+    const AttemptOutcome outcome = rig.controller.run(readRequest(kIdA, kBrightness));
+    CHECK(!outcome.ok);
+    CHECK_EQ(outcome.error, std::string("unsupported"));
+}
+
+TEST(ddc_controller_run_failing_write_is_attempted_once_without_sleep)
+{
+    Rig rig;
+    rig.catalog.entries = {makeEntry(kIdA, true, kName)};
+    rig.controller.refresh();
+    rig.ports.state(kIdA)->channels[kBrightness].writeError = DdcError::Io;
+    const int sleepsBefore = rig.sleeper.calls;
+    const AttemptOutcome outcome = rig.controller.run(writeRequest(kIdA, kBrightness, 58));
+    CHECK(!outcome.ok);
+    CHECK_EQ(outcome.error, std::string("io"));
+    CHECK_EQ(countOf(rig.ports.callsFor(kIdA), "write 16=58"), std::size_t(1));
+    CHECK_EQ(rig.sleeper.calls, sleepsBefore);
+}
+
+TEST(ddc_controller_run_after_shutdown_is_disconnected)
+{
     Rig rig;
     rig.catalog.entries = {makeEntry(kIdA, true, kName)};
     rig.ports.state(kIdA)->channels[kBrightness].value = 41;
     rig.controller.refresh();
-    rig.submitter.status = -1;
-    rig.controller.onSnapshot(
-        snapshotWith({monitorSnapshot(kIdA, 4, "awake")}, {action(7, kIdA, 4, "set_brightness", 58.0)}));
-    CHECK(rig.observer.completions.empty());
-}
-
-TEST(ddc_controller_shutdown_stops_further_actions)
-{
-    Rig rig;
-    rig.catalog.entries = {makeEntry(kIdA, true, kName)};
-    rig.ports.state(kIdA)->channels[kBrightness].value = 41;
-    rig.controller.refresh();
-    rig.controller.onSnapshot(snapshotWith({monitorSnapshot(kIdA, 4, "awake")}, {}));
     rig.controller.shutdown();
-    const std::size_t sentBefore = rig.submitter.sent.size();
     const std::size_t callsBefore = rig.ports.callsFor(kIdA).size();
-    rig.controller.onSnapshot(
-        snapshotWith({monitorSnapshot(kIdA, 4, "awake")}, {action(7, kIdA, 4, "set_brightness", 58.0)}));
+    const AttemptOutcome outcome = rig.controller.run(writeRequest(kIdA, kBrightness, 58));
+    CHECK(!outcome.ok);
+    CHECK_EQ(outcome.error, std::string("disconnected"));
     CHECK_EQ(rig.ports.callsFor(kIdA).size(), callsBefore);
-    CHECK_EQ(rig.submitter.sent.size(), sentBefore);
+}
+
+TEST(ddc_controller_listener_receives_profile_on_discovery_and_removal)
+{
+    Rig rig;
+    rig.catalog.entries = {makeEntry(kIdA, true, kName)};
+    rig.controller.refresh();
+    CHECK_EQ(rig.listener.profiles.size(), std::size_t(1));
+    CHECK(rig.listener.profiles.front().first == kIdA);
+    CHECK(rig.listener.profiles.front().second == "DEL");
+    CHECK(rig.listener.removed.empty());
+
+    rig.catalog.entries.clear();
+    rig.controller.refresh();
+    CHECK_EQ(rig.listener.removed.size(), std::size_t(1));
+    CHECK(rig.listener.removed.front() == kIdA);
 }

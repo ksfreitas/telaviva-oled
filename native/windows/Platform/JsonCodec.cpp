@@ -380,6 +380,7 @@ ChannelSnapshot parseChannel(const Object& object)
     ChannelSnapshot channel;
     channel.supported = boolOr(object, "supported", false);
     channel.observed = numberField(object, "observed");
+    channel.normalized = numberField(object, "normalized");
     channel.raw = numberField(object, "raw");
     channel.desired = numberField(object, "desired");
     channel.min = numberOr(object, "min", 0.0);
@@ -418,6 +419,169 @@ PendingAction parsePendingAction(const Object& object)
     action.value = numberField(object, "value");
     action.target = numberField(object, "target");
     return action;
+}
+
+// Starts an event object with its type and shell clock, which every controls event carries.
+ObjectWriter eventWriter(std::string_view type, double now)
+{
+    ObjectWriter message;
+    message.addString("type", type).addNumber("now", now);
+    return message;
+}
+
+// Joins already-built JSON values into an array.
+std::string arrayJson(const std::vector<std::string>& items)
+{
+    std::string out = "[";
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        if (i > 0) {
+            out.push_back(',');
+        }
+        out += items[i];
+    }
+    out.push_back(']');
+    return out;
+}
+
+// Controls observe carries the normalized percentage, never the raw observed value.
+std::string controlsChannelJson(const ChannelSnapshot& channel)
+{
+    ObjectWriter writer;
+    writer.addBool("supported", channel.supported)
+        .addOptionalNumber("observed", channel.normalized)
+        .addNumber("min", channel.min)
+        .addNumber("max", channel.max);
+    return writer.finish();
+}
+
+std::string keyOwnerJson(const KeyOwnerRef& owner)
+{
+    ObjectWriter writer;
+    writer.addString("monitor_id", owner.monitorId).addUnsigned("generation", owner.generation);
+    return writer.finish();
+}
+
+[[noreturn]] void throwControls(std::string_view detail)
+{
+    throw std::invalid_argument("controls result " + std::string(detail));
+}
+
+bool hasField(const Object& object, std::string_view key)
+{
+    return static_cast<bool>(fieldValue(object, key));
+}
+
+double requireNumber(const Object& object, std::string_view key)
+{
+    const std::optional<double> value = numberField(object, key);
+    if (!value) {
+        throwControls(std::string("has a missing or non-numeric '") + std::string(key) + "'");
+    }
+    return *value;
+}
+
+// Tokens, generations and codes are whole, non-negative numbers below 2^64.
+uint64_t requireWhole(const Object& object, std::string_view key)
+{
+    const double value = requireNumber(object, key);
+    if (!std::isfinite(value) || value < 0.0 || std::floor(value) != value ||
+        value >= 18446744073709551616.0) {
+        throwControls(std::string("has a non-integer '") + std::string(key) + "'");
+    }
+    return static_cast<uint64_t>(value);
+}
+
+std::string requireString(const Object& object, std::string_view key)
+{
+    const std::optional<std::string> value = stringField(object, key);
+    if (!value) {
+        throwControls(std::string("has a missing or non-string '") + std::string(key) + "'");
+    }
+    return *value;
+}
+
+ControlsEffect parseControlsEffect(const Object& object)
+{
+    const std::string type = requireString(object, "type");
+    ControlsEffect effect;
+    if (type == "submit_command") {
+        effect.type = ControlsEffect::Type::SubmitCommand;
+        effect.token = requireWhole(object, "token");
+        effect.json = requireString(object, "command_json");
+    } else if (type == "submit_result") {
+        effect.type = ControlsEffect::Type::SubmitResult;
+        effect.token = requireWhole(object, "token");
+        effect.json = requireString(object, "result_json");
+    } else if (type == "run_attempt") {
+        effect.type = ControlsEffect::Type::RunAttempt;
+        effect.token = requireWhole(object, "token");
+        effect.monitorId = requireString(object, "monitor_id");
+        const std::string op = requireString(object, "op");
+        if (op != "read" && op != "write") {
+            throwControls("has an unknown 'op'");
+        }
+        effect.write = op == "write";
+        const uint64_t code = requireWhole(object, "code");
+        if (code > 255) {
+            throwControls("has a VCP code out of range");
+        }
+        effect.code = static_cast<uint8_t>(code);
+        effect.value = numberField(object, "value");
+    } else if (type == "draft_changed") {
+        effect.type = ControlsEffect::Type::DraftChanged;
+        effect.monitorId = requireString(object, "monitor_id");
+        effect.feature = requireString(object, "feature");
+        if (effect.feature != "brightness" && effect.feature != "volume") {
+            throwControls("has an unknown 'feature'");
+        }
+    } else {
+        throwControls("has an unknown effect type");
+    }
+    return effect;
+}
+
+// Slider results carry no has_draft and always report a draft; query_draft results carry it.
+DraftView parseDraftValue(const Object& object)
+{
+    DraftView view;
+    if (hasField(object, "has_draft")) {
+        const std::optional<bool> hasDraft = boolField(object, "has_draft");
+        if (!hasDraft) {
+            throwControls("has a non-boolean 'has_draft'");
+        }
+        view.hasDraft = *hasDraft;
+    } else {
+        view.hasDraft = true;
+    }
+    view.draft = requireNumber(object, "draft");
+    view.status = requireString(object, "status");
+    if (view.status != "ready" && view.status != "pending" && view.status != "failed") {
+        throwControls("has an unknown draft 'status'");
+    }
+    return view;
+}
+
+void applyControlsValue(const json::IJsonValue& value, ControlsResult& result)
+{
+    if (!value) {
+        throwControls("is missing 'value'");
+    }
+    if (value.ValueType() == json::JsonValueType::Null) {
+        return;
+    }
+    const std::optional<Object> object = asObject(value);
+    if (!object) {
+        throwControls("has a 'value' that is neither null nor an object");
+    }
+    if (hasField(*object, "consume")) {
+        const std::optional<bool> consume = boolField(*object, "consume");
+        if (!consume) {
+            throwControls("has a non-boolean 'consume'");
+        }
+        result.consume = *consume;
+    } else {
+        result.draft = parseDraftValue(*object);
+    }
 }
 
 }  // namespace
@@ -559,6 +723,137 @@ std::string buildUpdateSettings(const std::string& settingsJson)
     return message.finish();
 }
 
+std::string buildControlsConfigure(double now, double brightnessStep, double volumeStep, bool keysEnabled,
+                                   const std::optional<std::optional<std::string>>& volumeOwner)
+{
+    ObjectWriter message = eventWriter("configure", now);
+    message.addNumber("brightness_step", brightnessStep)
+        .addNumber("volume_step", volumeStep)
+        .addBool("keys_enabled", keysEnabled);
+    // Absent leaves the owner unchanged; null clears it; a string names the owning monitor.
+    if (volumeOwner) {
+        if (*volumeOwner) {
+            message.addString("volume_owner", **volumeOwner);
+        } else {
+            message.addRaw("volume_owner", "null");
+        }
+    }
+    return message.finish();
+}
+
+std::string buildControlsObserve(double now, const Snapshot& snapshot)
+{
+    std::vector<std::string> monitors;
+    for (const MonitorSnapshot& monitor : snapshot.monitors) {
+        ObjectWriter entry;
+        entry.addString("id", monitor.id)
+            .addUnsigned("generation", monitor.generation)
+            .addString("display_state", monitor.displayState)
+            .addString("identity_status", monitor.identityStatus)
+            .addRaw("brightness", controlsChannelJson(monitor.brightness))
+            .addRaw("volume", controlsChannelJson(monitor.volume));
+        monitors.push_back(entry.finish());
+    }
+
+    std::vector<std::string> actions;
+    for (const PendingAction& action : snapshot.pendingActions) {
+        ObjectWriter entry;
+        entry.addUnsigned("id", action.id)
+            .addUnsigned("generation", action.generation)
+            .addString("monitor_id", action.monitorId)
+            .addString("kind", action.kind)
+            .addOptionalNumber("value", action.value);
+        actions.push_back(entry.finish());
+    }
+
+    ObjectWriter message = eventWriter("observe", now);
+    message.addUnsigned("revision", snapshot.revision)
+        .addRaw("monitors", arrayJson(monitors))
+        .addRaw("pending_actions", arrayJson(actions));
+    return message.finish();
+}
+
+std::string buildControlsSlider(double now, const std::string& monitorId, const std::string& feature, double value)
+{
+    ObjectWriter message = eventWriter("slider", now);
+    message.addString("monitor_id", monitorId).addString("feature", feature).addNumber("value", value);
+    return message.finish();
+}
+
+std::string buildControlsKey(double now, const std::string& key, bool down, bool repeat, bool fine,
+                             const std::optional<KeyOwnerRef>& owner)
+{
+    ObjectWriter message = eventWriter("key", now);
+    message.addString("key", key)
+        .addString("phase", down ? "down" : "up")
+        .addBool("repeat", repeat)
+        .addBool("fine", fine);
+    if (owner) {
+        message.addRaw("owner", keyOwnerJson(*owner));
+    } else {
+        message.addRaw("owner", "null");
+    }
+    return message.finish();
+}
+
+std::string buildControlsQueryDraft(double now, const std::string& monitorId, const std::string& feature)
+{
+    ObjectWriter message = eventWriter("query_draft", now);
+    message.addString("monitor_id", monitorId).addString("feature", feature);
+    return message.finish();
+}
+
+std::string buildControlsMonitorProfile(double now, const std::string& monitorId, const std::string& manufacturer)
+{
+    ObjectWriter message = eventWriter("monitor_profile", now);
+    message.addString("monitor_id", monitorId).addString("manufacturer", manufacturer);
+    return message.finish();
+}
+
+std::string buildControlsMonitorRemoved(double now, const std::string& monitorId)
+{
+    ObjectWriter message = eventWriter("monitor_removed", now);
+    message.addString("monitor_id", monitorId);
+    return message.finish();
+}
+
+std::string buildControlsDisplayPower(double now, bool on)
+{
+    ObjectWriter message = eventWriter("display_power", now);
+    message.addBool("on", on);
+    return message.finish();
+}
+
+std::string buildControlsSubmitted(double now, uint64_t token, bool accepted)
+{
+    ObjectWriter message = eventWriter("submitted", now);
+    message.addUnsigned("token", token).addBool("accepted", accepted);
+    return message.finish();
+}
+
+std::string buildControlsAttemptDone(double now, uint64_t token, bool ok, const std::string& error,
+                                     std::optional<double> value)
+{
+    ObjectWriter message = eventWriter("attempt_done", now);
+    message.addUnsigned("token", token).addBool("ok", ok);
+    // The error name is sent only on failure, as the contract requires.
+    if (!ok) {
+        message.addString("error", error);
+    }
+    message.addOptionalNumber("value", value);
+    return message.finish();
+}
+
+std::string buildControlsTick(double now)
+{
+    return eventWriter("tick", now).finish();
+}
+
+std::string buildControlsShutdown(double now)
+{
+    return eventWriter("shutdown", now).finish();
+}
+
 Snapshot parseSnapshot(const std::string& text)
 {
     const Object root = parseRoot(text);
@@ -631,6 +926,37 @@ Snapshot parseSnapshot(const std::string& text)
     }
 
     return snapshot;
+}
+
+ControlsResult parseControlsResult(const std::string& text)
+{
+    const Object root = parseRoot(text);
+
+    ControlsResult result;
+    const std::optional<json::JsonArray> effects = arrayField(root, "effects");
+    if (!effects) {
+        throwControls("is missing 'effects'");
+    }
+    for (uint32_t i = 0; i < effects->Size(); ++i) {
+        const std::optional<Object> object = asObject(effects->GetAt(i));
+        if (!object) {
+            throwControls("has an effect that is not an object");
+        }
+        result.effects.push_back(parseControlsEffect(*object));
+    }
+
+    applyControlsValue(fieldValue(root, "value"), result);
+
+    const json::IJsonValue deadline = fieldValue(root, "next_deadline");
+    if (!deadline) {
+        throwControls("is missing 'next_deadline'");
+    }
+    if (deadline.ValueType() == json::JsonValueType::Number) {
+        result.nextDeadline = deadline.GetNumber();
+    } else if (deadline.ValueType() != json::JsonValueType::Null) {
+        throwControls("has a 'next_deadline' that is neither a number nor null");
+    }
+    return result;
 }
 
 }  // namespace telaviva

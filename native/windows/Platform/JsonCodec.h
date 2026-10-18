@@ -9,6 +9,8 @@
 #include <string_view>
 #include <vector>
 
+#include "ControlsTypes.h"
+
 namespace telaviva {
 
 struct MonitorInfo {
@@ -66,6 +68,8 @@ struct ChannelSnapshot {
     double min = 0.0;
     double max = 0.0;
     std::string status;
+    // Normalized percentage 0 to 100, null when unknown. Controls events use it; observed stays raw.
+    std::optional<double> normalized;
 };
 
 struct MonitorSnapshot {
@@ -148,7 +152,26 @@ std::string buildHardwareResult(uint64_t actionId, uint64_t generation, bool ok,
 // settingsJson must already be a JSON object; it is embedded unchanged.
 std::string buildUpdateSettings(const std::string& settingsJson);
 
-// Throws std::invalid_argument on malformed JSON or a non-object root.
+// Controls events for TvControls. Each returns one event object whose first number member is "now".
+std::string buildControlsConfigure(double now, double brightnessStep, double volumeStep, bool keysEnabled,
+                                   const std::optional<std::optional<std::string>>& volumeOwner);
+std::string buildControlsObserve(double now, const Snapshot& snapshot);
+std::string buildControlsSlider(double now, const std::string& monitorId, const std::string& feature, double value);
+std::string buildControlsKey(double now, const std::string& key, bool down, bool repeat, bool fine,
+                             const std::optional<KeyOwnerRef>& owner);
+std::string buildControlsQueryDraft(double now, const std::string& monitorId, const std::string& feature);
+std::string buildControlsMonitorProfile(double now, const std::string& monitorId, const std::string& manufacturer);
+std::string buildControlsMonitorRemoved(double now, const std::string& monitorId);
+std::string buildControlsDisplayPower(double now, bool on);
+std::string buildControlsSubmitted(double now, uint64_t token, bool accepted);
+std::string buildControlsAttemptDone(double now, uint64_t token, bool ok, const std::string& error,
+                                     std::optional<double> value);
+std::string buildControlsTick(double now);
+std::string buildControlsShutdown(double now);
+
+// Throws std::invalid_argument on malformed JSON, a non-object root, unknown effect types,
+// or missing or mistyped fields.
 Snapshot parseSnapshot(const std::string& json);
+ControlsResult parseControlsResult(const std::string& json);
 
 }  // namespace telaviva
