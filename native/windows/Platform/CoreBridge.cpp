@@ -1,5 +1,7 @@
 #include "CoreBridge.h"
 
+#include "RevisionGate.h"
+
 #include <windows.h>
 
 #include <telaviva_core.h>
@@ -290,7 +292,10 @@ void CoreBridge::shutdown(std::chrono::milliseconds drainDeadline)
 
 void CoreBridge::runWorker()
 {
+    // Owned by this thread only, so it needs no lock.
+    RevisionGate gate;
     for (;;) {
+        uint64_t woken = 0;
         {
             std::unique_lock<std::mutex> lock(impl_->wake.mutex);
             impl_->wake.changed.wait(lock, [this] {
@@ -300,6 +305,11 @@ void CoreBridge::runWorker()
                 return;
             }
             impl_->wake.revisionPending = false;
+            woken = impl_->wake.latestRevision;
+        }
+        // Submits that land before the worker reads can leave a second wake for a revision already published.
+        if (!gate.shouldFetch(woken)) {
+            continue;
         }
 
         Snapshot next;
@@ -307,6 +317,10 @@ void CoreBridge::runWorker()
             next = snapshot();
         } catch (const std::exception&) {
             // The next revision signal retries; a single failed read must not stop the worker.
+            continue;
+        }
+        // The fetch may be newer than the wake, or equal to a revision already published; only a newer one is sent.
+        if (!gate.shouldPublish(next.revision)) {
             continue;
         }
 
@@ -322,6 +336,7 @@ void CoreBridge::runWorker()
                 // A throwing sink must not terminate the worker thread.
             }
         }
+        gate.markPublished(next.revision);
     }
 }
 

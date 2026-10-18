@@ -1316,6 +1316,11 @@ impl Core {
         }
     }
 
+    /// Revision of the next snapshot; one increment per accepted command.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
     pub fn snapshot_value(&self) -> Result<Value, String> {
         let monitors:Vec<Value>=self.monitors.values().map(|m|json!({"id":m.id,"name":m.name,"identity_status":m.identity,"connection_path":m.path,"generation":m.generation,"display_state":m.display_state,
             "presence_dimmed":m.presence_dimmed,"brightness":feature_json(&m.brightness),"volume":feature_json(&m.volume),

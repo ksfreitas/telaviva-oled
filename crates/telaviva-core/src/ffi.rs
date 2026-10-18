@@ -176,16 +176,7 @@ pub unsafe extern "C" fn tv_submit(handle: *mut TvCore, bytes: *const u8, len: u
             if !h.stopped.load(Ordering::Acquire) {
                 h.active_callbacks.fetch_add(1, Ordering::AcqRel);
                 if !h.stopped.load(Ordering::Acquire) {
-                    let revision = h
-                        .core
-                        .lock()
-                        .map(|c| {
-                            c.snapshot_value()
-                                .ok()
-                                .and_then(|v| v["revision"].as_u64())
-                                .unwrap_or(0)
-                        })
-                        .unwrap_or(0);
+                    let revision = h.core.lock().map(|c| c.revision()).unwrap_or(0);
                     cb(revision, h.userdata);
                 }
                 h.active_callbacks.fetch_sub(1, Ordering::AcqRel);

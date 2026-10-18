@@ -152,6 +152,33 @@ fn command_rejects_duplicate_and_unknown_fields_without_changing_revision() {
 }
 
 #[test]
+fn revision_matches_snapshot_revision() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    let snapshot_revision = |core: &Core| core.snapshot_value().unwrap()["revision"].as_u64();
+    assert_eq!(Some(core.revision()), snapshot_revision(&core));
+    let fresh = core.revision();
+    core.submit_json(br#"{"type":"power","on_battery":false}"#)
+        .unwrap();
+    assert!(core.revision() > fresh);
+    assert_eq!(Some(core.revision()), snapshot_revision(&core));
+    let accepted = core.revision();
+    assert!(core
+        .submit_json(br#"{"type":"power","on_battery":false,"extra":true}"#)
+        .is_err());
+    assert_eq!(core.revision(), accepted);
+    assert_eq!(Some(core.revision()), snapshot_revision(&core));
+}
+
+#[test]
+fn consecutive_snapshots_without_a_change_are_identical() {
+    let core = Core::new(CoreOptions::default()).unwrap();
+    let first = core.snapshot_value().unwrap();
+    let second = core.snapshot_value().unwrap();
+    assert_eq!(first, second);
+    assert_eq!(first["revision"], second["revision"]);
+}
+
+#[test]
 fn settings_updates_enforce_new_interval_bounds() {
     let mut core = Core::new(CoreOptions::default()).unwrap();
     for settings in [
