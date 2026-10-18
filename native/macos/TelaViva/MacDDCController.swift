@@ -29,6 +29,10 @@ final class MacDDCController {
     private var stopped = false
     private var probeReport: [String: Any] = [:]
     private var lastAVSearchStage = "not_attempted"
+    // Monitors whose cached IOAV service failed an attempt; the next discovery pass replaces it.
+    private var staleServiceKeys = Set<String>()
+    // True while one rediscovery pass is queued by markServiceStale.
+    private var rediscoveryScheduled = false
     var onHardwareKeyDisplays: (([HardwareKeyDisplay]) -> Void)?
 
     private struct ReportedDisplayState: Equatable {
@@ -237,11 +241,18 @@ final class MacDDCController {
             // Keep the existing IOAV object when this is the same monitor and
             // connection; routine display refreshes must not reset ownership.
             if let prior {
-                if prior.service != nil, let service = transport.service, service != prior.service {
+                // Routine refreshes keep the existing IOAV object unless an attempt marked it stale.
+                let replaceStale = staleServiceKeys.contains(key) && transport.service != nil
+                staleServiceKeys.remove(key)
+                if replaceStale {
+                    if let oldService = prior.service, oldService != transport.service {
+                        Unmanaged<AnyObject>.fromOpaque(oldService).release()
+                    }
+                } else if prior.service != nil, let service = transport.service, service != prior.service {
                     Unmanaged<AnyObject>.fromOpaque(service).release()
                 }
-                let service = prior.service ?? transport.service
-                let chipAddress = prior.service == nil ? transport.chipAddress : prior.chipAddress
+                let service = replaceStale ? transport.service : (prior.service ?? transport.service)
+                let chipAddress = replaceStale || prior.service == nil ? transport.chipAddress : prior.chipAddress
                 displays[key] = DisplayTransport(
                     displayID: transport.displayID, vendor: transport.vendor,
                     product: transport.product, serial: transport.serial, name: transport.name,
@@ -356,6 +367,8 @@ final class MacDDCController {
             core?.submit(["type": "monitor_disconnected", "monitor_id": removed])
         }
         active = present
+        // Drop stale-service marks for displays that are gone so keys do not accumulate.
+        staleServiceKeys.formIntersection(present)
     }
 
     private struct DisplayInfo { let uuid: String?; let location: String?; let name: String? }
@@ -442,6 +455,19 @@ final class MacDDCController {
         return attrs?["ProductName"] as? String
     }
 
+    /// A failed attempt may mean the cached IOAV service went stale after a display change. The next
+    /// discovery pass replaces it; one pass is scheduled at a time, and the core's backoff paces the retries.
+    private func markServiceStale(_ key: String) {
+        staleServiceKeys.insert(key)
+        guard !rediscoveryScheduled else { return }
+        rediscoveryScheduled = true
+        queue.async { [weak self] in
+            guard let self, !self.stopped else { return }
+            self.rediscoveryScheduled = false
+            self.discoverDisplays()
+        }
+    }
+
     /// Runs exactly one DDC primitive for the core's `run_attempt` effect on the DDC queue and reports the outcome.
     /// The core owns retries, settle and backoff; this never sleeps between attempts.
     func runAttempt(_ request: ControlsAttemptRequest, completion: @escaping (ControlsAttemptOutcome) -> Void) {
@@ -459,10 +485,15 @@ final class MacDDCController {
                 return
             }
             if request.write {
-                completion(self.writeVCPOnce(transport: transport, code: request.code, value: request.value)
-                    ? .success(value: nil) : .failure("io"))
+                if self.writeVCPOnce(transport: transport, code: request.code, value: request.value) {
+                    completion(.success(value: nil))
+                } else {
+                    self.markServiceStale(request.monitorID)
+                    completion(.failure("io"))
+                }
             } else {
                 guard let reading = self.readVCPOnce(transport: transport, code: request.code) else {
+                    self.markServiceStale(request.monitorID)
                     completion(.failure("io"))
                     return
                 }

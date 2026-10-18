@@ -267,6 +267,7 @@ Status: the Windows code is in the repository and covered by automated tests. Wi
 - [ADR-0029](adr/0029-core-owned-manual-control-queue-and-ddc-dispatch.md): Core-owned manual-control queue, key policy and DDC dispatch behind a clock-injected handle (Accepted for the core and both shells; macOS local test scripts pass, macOS CI and hardware checks pending)
 - [ADR-0030](adr/0030-short-confirmation-wait-after-first-no-face-check.md): Short confirmation wait after the first no-face check, so dimming takes about one sampling interval plus about a second (Accepted)
 - [ADR-0031](adr/0031-publish-each-snapshot-revision-once.md): Publish each snapshot revision once: a revision accessor in the core, no duplicate macOS refresh, and no republish of an already published revision on macOS and Windows
+- [ADR-0032](adr/0032-reopen-ddc-ports-after-topology-change.md): Reopen DDC ports after a topology change or a failed attempt instead of keeping the first transport, without reporting the monitor to the core again (Accepted)
 
 ## About screen and update check — 2026-10-17
 
@@ -332,3 +333,11 @@ Every accepted core command repeated work that only needs to happen once. The ch
 - The Windows bridge worker skips a revision already published, through the header-only `RevisionGate`. `GeneralPage` and `AutomaticBrightnessPage` keep their poll logic because they also refresh state that does not come from the snapshot.
 
 The decision is recorded in [ADR 0031](adr/0031-publish-each-snapshot-revision-once.md), and the archived plan is at [specs/archived/snapshot-publish-amplification/](specs/archived/snapshot-publish-amplification/). The saving was not measured, and the Windows part is not yet built or run.
+
+## ddc-stale-handle-after-monitor-connect — 2026-10-18
+
+On Windows, connecting a second monitor left the first monitor at "Sem resposta" until the app restarted, because a monitor that stayed connected kept the DDC port it opened at discovery and nothing replaced it. [ADR 0032](adr/0032-reopen-ddc-ports-after-topology-change.md) records the fix: the shells reopen the transport of a monitor that is still present, and never report it to the core again, since a new `monitor_discovered` would reset its generation, pending actions and baseline.
+
+- **Windows:** `DdcController::refresh()` reopens the port of every known, active, stable external monitor (topology change, resume, the refresh button and startup), keeping the old port if the open fails. `DdcController::run()` reopens the port once and repeats the same primitive when it fails with anything other than `unsupported`. `run()` is therefore one primitive, or two after a failure; the core still owns retries and backoff.
+- **macOS:** a failed attempt marks the display's cached IOAV service as stale and schedules one discovery pass that replaces it. This path was reviewed by reading only; it was not compiled or reproduced.
+- **No core, ABI or snapshot change.** The archived plan is at [specs/archived/ddc-stale-handle-after-monitor-connect/](specs/archived/ddc-stale-handle-after-monitor-connect/). Windows native tests pass (625 tests, 0 failed, 2026-10-18). The owner's manual validation was reported as passed, with no per-step record, so macOS hardware support is not claimed here. Two machines sharing one monitor still compete for the DDC bus.

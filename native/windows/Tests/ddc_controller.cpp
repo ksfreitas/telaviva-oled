@@ -66,15 +66,21 @@ struct Channel {
 struct PortState {
     std::map<uint8_t, Channel> channels;
     std::vector<std::string> calls;  // "read 16", "write 16=58"
+    int openCount = 0;
+    int validFrom = 0;  // ports opened before this serial are stale and fail with Io
 };
 
 class FakePort final : public IDdcPort {
 public:
-    explicit FakePort(std::shared_ptr<PortState> state) : state_(std::move(state)) {}
+    FakePort(std::shared_ptr<PortState> state, int serial) : state_(std::move(state)), serial_(serial) {}
 
     bool readVcp(uint8_t code, DdcReading& out, DdcError& error) override
     {
         state_->calls.push_back("read " + std::to_string(code));
+        if (serial_ < state_->validFrom) {
+            error = DdcError::Io;
+            return false;
+        }
         const Channel& channel = state_->channels[code];
         if (!channel.readable) {
             error = DdcError::Unsupported;
@@ -89,6 +95,10 @@ public:
     bool writeVcp(uint8_t code, uint32_t value, DdcError& error) override
     {
         state_->calls.push_back("write " + std::to_string(code) + "=" + std::to_string(value));
+        if (serial_ < state_->validFrom) {
+            error = DdcError::Io;
+            return false;
+        }
         Channel& channel = state_->channels[code];
         if (channel.writeError) {
             error = *channel.writeError;
@@ -103,6 +113,7 @@ public:
 
 private:
     std::shared_ptr<PortState> state_;
+    int serial_;
 };
 
 class FakePortProvider final : public IDdcPortProvider {
@@ -117,7 +128,8 @@ public:
         if (withoutHandle.count(entry.identity.id) != 0) {
             return nullptr;
         }
-        return std::make_unique<FakePort>(state(entry.identity.id));
+        std::shared_ptr<PortState> portState = state(entry.identity.id);
+        return std::make_unique<FakePort>(portState, ++portState->openCount);
     }
 
     std::shared_ptr<PortState> state(const std::string& id)
@@ -127,6 +139,13 @@ public:
             slot = std::make_shared<PortState>();
         }
         return slot;
+    }
+
+    // Marks every port opened so far as stale; a later open() returns a valid port.
+    void invalidate(const std::string& id)
+    {
+        std::shared_ptr<PortState> portState = state(id);
+        portState->validFrom = portState->openCount + 1;
     }
 
     std::vector<std::string> callsFor(const std::string& id) { return state(id)->calls; }
@@ -453,7 +472,7 @@ TEST(ddc_controller_run_monitor_without_port_is_unsupported)
     CHECK_EQ(outcome.error, std::string("unsupported"));
 }
 
-TEST(ddc_controller_run_failing_write_is_attempted_once_without_sleep)
+TEST(ddc_controller_run_failing_write_retries_once_on_reopened_port_without_sleep)
 {
     Rig rig;
     rig.catalog.entries = {makeEntry(kIdA, true, kName)};
@@ -463,7 +482,9 @@ TEST(ddc_controller_run_failing_write_is_attempted_once_without_sleep)
     const AttemptOutcome outcome = rig.controller.run(writeRequest(kIdA, kBrightness, 58));
     CHECK(!outcome.ok);
     CHECK_EQ(outcome.error, std::string("io"));
-    CHECK_EQ(countOf(rig.ports.callsFor(kIdA), "write 16=58"), std::size_t(1));
+    // The original attempt plus one retry on the reopened port.
+    CHECK_EQ(countOf(rig.ports.callsFor(kIdA), "write 16=58"), std::size_t(2));
+    CHECK_EQ(countOf(rig.ports.opened, kIdA), std::size_t(2));
     CHECK_EQ(rig.sleeper.calls, sleepsBefore);
 }
 
@@ -495,4 +516,88 @@ TEST(ddc_controller_listener_receives_profile_on_discovery_and_removal)
     rig.controller.refresh();
     CHECK_EQ(rig.listener.removed.size(), std::size_t(1));
     CHECK(rig.listener.removed.front() == kIdA);
+}
+
+TEST(ddc_controller_run_reopens_port_after_stale_handle_and_retries_once)
+{
+    Rig rig;
+    rig.catalog.entries = {makeEntry(kIdA, true, kName)};
+    rig.ports.state(kIdA)->channels[kBrightness].value = 41;
+    rig.ports.state(kIdA)->channels[kVolume].value = 30;
+    rig.controller.refresh();
+    rig.ports.invalidate(kIdA);
+    const AttemptOutcome outcome = rig.controller.run(writeRequest(kIdA, kBrightness, 50));
+    CHECK(outcome.ok);
+    CHECK_EQ(countOf(rig.ports.opened, kIdA), std::size_t(2));
+    CHECK_EQ(countOf(rig.ports.callsFor(kIdA), "write 16=50"), std::size_t(2));
+    CHECK(rig.ports.state(kIdA)->channels[kBrightness].value == uint32_t(50));
+}
+
+TEST(ddc_controller_run_does_not_reopen_on_unsupported)
+{
+    Rig rig;
+    rig.catalog.entries = {makeEntry(kIdA, true, kName)};
+    rig.ports.state(kIdA)->channels[kBrightness].value = 41;
+    rig.ports.state(kIdA)->channels[kVolume].value = 30;
+    rig.controller.refresh();
+    rig.ports.state(kIdA)->channels[kBrightness].readable = false;
+    const AttemptOutcome outcome = rig.controller.run(readRequest(kIdA, kBrightness));
+    CHECK(!outcome.ok);
+    CHECK_EQ(outcome.error, std::string("unsupported"));
+    CHECK_EQ(countOf(rig.ports.opened, kIdA), std::size_t(1));
+}
+
+TEST(ddc_controller_run_returns_original_error_when_reopen_fails)
+{
+    Rig rig;
+    rig.catalog.entries = {makeEntry(kIdA, true, kName)};
+    rig.ports.state(kIdA)->channels[kBrightness].value = 41;
+    rig.ports.state(kIdA)->channels[kVolume].value = 30;
+    rig.controller.refresh();
+    rig.ports.invalidate(kIdA);
+    rig.ports.withoutHandle.insert(kIdA);
+    const AttemptOutcome outcome = rig.controller.run(writeRequest(kIdA, kBrightness, 50));
+    CHECK(!outcome.ok);
+    CHECK_EQ(outcome.error, std::string("io"));
+}
+
+TEST(ddc_controller_refresh_reopens_known_port_without_rediscovery)
+{
+    Rig rig;
+    rig.catalog.entries = {makeEntry(kIdA, true, kName)};
+    rig.ports.state(kIdA)->channels[kBrightness].value = 41;
+    rig.ports.state(kIdA)->channels[kVolume].value = 30;
+    rig.controller.refresh();
+    rig.ports.invalidate(kIdA);
+    rig.controller.refresh();
+    CHECK_EQ(countOf(rig.submitter.sent,
+                     discoveredJson(kIdA, true, kName, supportedChannel(41, 100), supportedChannel(30, 100))),
+             std::size_t(1));
+    CHECK_EQ(countOf(rig.ports.opened, kIdA), std::size_t(2));
+    const AttemptOutcome outcome = rig.controller.run(writeRequest(kIdA, kBrightness, 50));
+    CHECK(outcome.ok);
+    CHECK_EQ(countOf(rig.ports.opened, kIdA), std::size_t(2));
+}
+
+TEST(ddc_controller_refresh_keeps_old_port_when_reopen_returns_null)
+{
+    Rig rig;
+    rig.catalog.entries = {makeEntry(kIdA, true, kName)};
+    rig.ports.state(kIdA)->channels[kBrightness].value = 41;
+    rig.ports.state(kIdA)->channels[kVolume].value = 30;
+    rig.controller.refresh();
+    rig.ports.withoutHandle.insert(kIdA);
+    rig.controller.refresh();
+    const AttemptOutcome outcome = rig.controller.run(writeRequest(kIdA, kBrightness, 50));
+    CHECK(outcome.ok);
+    CHECK(rig.ports.state(kIdA)->channels[kBrightness].value == uint32_t(50));
+}
+
+TEST(ddc_controller_refresh_does_not_reopen_ambiguous_or_internal_entries)
+{
+    Rig rig;
+    rig.catalog.entries = {makeEntry(kIdB, false, kName), makeEntry(kInternalId, true, "Built-in", true)};
+    rig.controller.refresh();
+    rig.controller.refresh();
+    CHECK(rig.ports.opened.empty());
 }

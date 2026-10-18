@@ -68,7 +68,10 @@ public:
     // Each removed id is reported as monitor_disconnected and forgotten. Internal panels
     // are ignored. An ambiguous (unstable) identity is still discovered with
     // identity_status "ambiguous", but it is not read, so both features are sent as
-    // unsupported and no port is used for it.
+    // unsupported and no port is used for it. For each monitor already known and still
+    // listed (external, active, stable identity), the port is reopened without reporting
+    // anything to the core, so a handle invalidated by a topology change recovers; a failed
+    // reopen keeps the old port.
     void refresh();
 
     // Records the connection generation and display state of each known monitor in the
@@ -85,7 +88,8 @@ public:
     void shutdown();
 
     // Runs exactly one DDC primitive for the monitor: a write of request.value, or a read of
-    // request.code. No retries, sleeps or readback comparison. Unknown monitor or shutdown gives
+    // request.code. No sleeps or readback comparison; a failure other than "unsupported" reopens
+    // the monitor's port once and runs the same primitive again. Unknown monitor or shutdown gives
     // "disconnected"; an ambiguous monitor or one without a port gives "unsupported". Called on
     // the executor thread; the port lock is released before the port is touched.
     AttemptOutcome run(const AttemptRequest& request) override;

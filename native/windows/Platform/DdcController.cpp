@@ -67,6 +67,30 @@ std::string errorName(DdcError error)
     return "io";
 }
 
+// Runs exactly one primitive on the port: a write of request.value, or a read of request.code.
+AttemptOutcome runPrimitive(IDdcPort& port, const AttemptRequest& request)
+{
+    AttemptOutcome outcome;
+    DdcError error = DdcError::None;
+    if (request.write) {
+        if (port.writeVcp(request.code, request.value, error)) {
+            outcome.ok = true;
+        } else {
+            outcome.error = errorName(error);
+        }
+        return outcome;
+    }
+
+    DdcReading reading;
+    if (port.readVcp(request.code, reading, error)) {
+        outcome.ok = true;
+        outcome.value = static_cast<double>(reading.current);
+    } else {
+        outcome.error = errorName(error);
+    }
+    return outcome;
+}
+
 }  // namespace
 
 // Every member is guarded by mutex_. Port calls, catalog enumeration and submissions happen
@@ -141,6 +165,9 @@ struct DdcController::Impl {
             }
         }
 
+        // Entries just added are not in monitors_ yet, so they are skipped here.
+        reopenKnownPorts(current);
+
         for (const CatalogEntry& entry : diff.added) {
             if (entry.isInternalPanel) {
                 continue;
@@ -184,6 +211,84 @@ struct DdcController::Impl {
                 target->onMonitorProfile(info.id, entry.manufacturer);
             }
         }
+    }
+
+    // Runs on the executor. Replaces the port of every known external monitor that is still listed, so a
+    // handle that a topology change invalidated is renewed. The core is not told: the monitor is the same,
+    // and a new monitor_discovered would reset its generation, pending actions and baseline. A failed open
+    // keeps the old port.
+    void reopenKnownPorts(const std::vector<CatalogEntry>& current)
+    {
+        for (const CatalogEntry& entry : current) {
+            if (entry.isInternalPanel || !entry.active || !entry.identity.stable || entry.identity.id.empty()) {
+                continue;
+            }
+            {
+                std::lock_guard<std::recursive_mutex> lock(mutex_);
+                if (stopped_) {
+                    return;
+                }
+                const auto found = monitors_.find(entry.identity.id);
+                if (found == monitors_.end() || found->second.ambiguous || !found->second.port) {
+                    continue;
+                }
+            }
+
+            std::shared_ptr<IDdcPort> reopened = ports_.open(entry);
+            if (!reopened) {
+                continue;
+            }
+            std::lock_guard<std::recursive_mutex> lock(mutex_);
+            if (stopped_) {
+                return;
+            }
+            const auto found = monitors_.find(entry.identity.id);
+            if (found != monitors_.end()) {
+                found->second.port = std::move(reopened);
+            }
+        }
+    }
+
+    // Runs on the executor. Opens a fresh port for one known monitor that is still in the catalog and
+    // stores it. Returns null when the monitor is unknown, gone or cannot be opened.
+    std::shared_ptr<IDdcPort> reopenPort(const std::string& monitorId)
+    {
+        {
+            std::lock_guard<std::recursive_mutex> lock(mutex_);
+            if (stopped_) {
+                return nullptr;
+            }
+            const auto found = monitors_.find(monitorId);
+            if (found == monitors_.end() || found->second.ambiguous || !found->second.port) {
+                return nullptr;
+            }
+        }
+
+        for (const CatalogEntry& entry : catalog_.enumerate()) {
+            if (entry.identity.id != monitorId || entry.isInternalPanel || !entry.active) {
+                continue;
+            }
+            std::shared_ptr<IDdcPort> reopened = ports_.open(entry);
+            if (!reopened) {
+                return nullptr;
+            }
+            {
+                std::lock_guard<std::recursive_mutex> lock(mutex_);
+                if (stopped_) {
+                    return nullptr;
+                }
+                const auto found = monitors_.find(monitorId);
+                if (found == monitors_.end()) {
+                    return nullptr;
+                }
+                found->second.port = reopened;
+            }
+            if (trace_) {
+                trace_("ddc reopened port for " + monitorId);
+            }
+            return reopened;
+        }
+        return nullptr;
     }
 
     MonitorInfo::Channel readFeature(IDdcPort& port, const DdcTimingProfile& profile, uint8_t code)
@@ -321,25 +426,17 @@ AttemptOutcome DdcController::run(const AttemptRequest& request)
         port = found->second.port;
     }
 
-    // The port is touched with the lock released. Exactly one primitive, no retry.
-    DdcError error = DdcError::None;
-    if (request.write) {
-        if (port->writeVcp(request.code, request.value, error)) {
-            outcome.ok = true;
-        } else {
-            outcome.error = errorName(error);
-        }
+    // The port is touched with the lock released. One primitive; when it fails for any reason other than an
+    // unsupported feature, the handle may be stale, so the port is reopened and the same primitive runs once more.
+    outcome = runPrimitive(*port, request);
+    if (outcome.ok || outcome.error == "unsupported") {
         return outcome;
     }
-
-    DdcReading reading;
-    if (port->readVcp(request.code, reading, error)) {
-        outcome.ok = true;
-        outcome.value = static_cast<double>(reading.current);
-    } else {
-        outcome.error = errorName(error);
+    const std::shared_ptr<IDdcPort> reopened = impl_->reopenPort(request.monitorId);
+    if (!reopened) {
+        return outcome;
     }
-    return outcome;
+    return runPrimitive(*reopened, request);
 }
 
 }  // namespace telaviva

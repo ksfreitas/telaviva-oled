@@ -25,6 +25,7 @@
 - Widen the macOS Settings window to 760 points by default and at minimum so all tabs fit.
 - On Windows the manual controls compared the raw monitor value with the slider percentage; they now use the normalized percentage, which differs on monitors whose DDC range is not 0 to 100.
 - The monitor now dims about one sampling interval after the face leaves instead of two: the confirming no-face check runs after the short return interval.
+- Windows and macOS: DDC control recovers by itself after another monitor is connected or the display topology changes, without restarting the app.
 
 ## 0.1.1 - 2026-10-18
 
