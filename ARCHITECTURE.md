@@ -51,7 +51,7 @@ The following are intended responsibility boundaries within one application, not
 
 ### Manual monitor controls
 
-The user selects an external monitor and adjusts its brightness or volume. The application uses the corresponding DDC capability when available. Discovery, unsupported-capability reporting, retry limits, and connection behavior require design and hardware validation. The Windows retry budget is decided (3 attempts per primitive, 0.2 s then 1.0 s); hardware validation is pending. On Windows, drafts, coalescing and the DDC retry for these controls run on the core controls handle (see [Controls handle](#controls-handle)); on macOS they remain in the Swift shell.
+The user selects an external monitor and adjusts its brightness or volume. The application uses the corresponding DDC capability when available. Discovery, unsupported-capability reporting, retry limits, and connection behavior require design and hardware validation. The retry budget is decided (3 attempts per primitive, 0.2 s then 1.0 s) and applies on both platforms; hardware validation is pending. On both platforms, drafts, coalescing and the DDC retry for these controls run on the core controls handle (see [Controls handle](#controls-handle)).
 
 ### Presence protection
 
@@ -110,7 +110,7 @@ The original [feature specification](specs/archived/external-monitor-control-and
 
 ### Current implementation details
 
-- Policy/settings/ABI live in the core crate. The originally proposed separate Rust adapter and worker modules were not built, except the controls handle in `crates/telaviva-core/src/controls/` (see the [Controls handle](#controls-handle) section): on macOS, manual controls and hardware keys still run in native Swift device queues (`ManualMonitorControls`, `HardwareKeyRouter`, and the DDC retry in `DDCTransaction`), while on Windows they run on that handle. The inference crate contains YuNet preprocessing and execution.
+- Policy/settings/ABI live in the core crate. The originally proposed separate Rust adapter and worker modules were not built, except the controls handle in `crates/telaviva-core/src/controls/` (see the [Controls handle](#controls-handle) section), which runs manual controls, the hardware-key policy and DDC dispatch on both Windows and macOS. The inference crate contains YuNet preprocessing and execution.
 - Presence sampling accepts 5–300 seconds (default 10); return sampling accepts 0.25–5 seconds (default 1). Older valid schema-1 interval values are clamped on load without discarding other preferences.
 - Normal checks capture a single frame. Return checks retain the camera session across deadlines, including the 5-second return interval; unused frames are discarded and inference remains limited to the chosen cadence. Disabled, suspended and shutdown states stop acquisition. Low-light recovery samples light every 10 seconds.
 - The camera snapshot separates operational status from presentation status: `display_status` carries language-neutral codes such as `checking`, `ready`, `insufficient_light`, `error` and the `suspended_*` reasons, and each native shell maps them to its own localized text ([ADR 0015](adr/0015-native-shells-own-ui-strings.md)). Successful fresh observations update operational readiness.
@@ -141,7 +141,7 @@ The decision is recorded in [ADR 0011](adr/0011-camera-brightness-activation-thr
 
 ## External monitor hardware keys and fluid controls — 2026-10-16
 
-Opt-in macOS keyboard routing adjusts an external monitor's brightness by pointer (key codes 144 and 145), and its volume and mute only while that monitor is the Mac's default sound output, matched by CoreAudio device UID against the display EDID UUID; other targets pass through to macOS. Menu bar sliders use bounded draft coalescing, and DDC writes are serialized through a transaction that verifies readback. On Windows, the key step, intent, rebase and mute policy run on the core controls handle instead; the macOS router keeps its own policy until its adapter moves, and Windows hardware checks are pending. The accepted decision is in [ADR 0004](adr/0004-external-monitor-hardware-keys-and-fluid-controls.md), and the feature records are in the [archive](specs/archived/external-monitor-hardware-keys-and-fluid-controls/).
+Opt-in macOS keyboard routing adjusts an external monitor's brightness by pointer (key codes 144 and 145), and its volume and mute only while that monitor is the Mac's default sound output, matched by CoreAudio device UID against the display EDID UUID; other targets pass through to macOS. Menu bar sliders use bounded draft coalescing, and DDC writes are serialized through a transaction that verifies readback. The key step, intent, rebase and mute policy run on the core controls handle (see the [Controls handle](#controls-handle) section), and the event tap makes one synchronous call into it to decide whether to swallow the key. Hardware checks are pending on both platforms. The accepted decision is in [ADR 0004](adr/0004-external-monitor-hardware-keys-and-fluid-controls.md), and the feature records are in the [archive](specs/archived/external-monitor-hardware-keys-and-fluid-controls/).
 
 The key step is configurable separately for brightness and volume, from 1 to 15 percentage points per press (default 5), and is stored in the core settings. Shift+Option is a fixed 1-point fine step. The native router receives plain values through `setSteps(brightness:volume:)`, which clamps them and stores them under its state lock. Popup brightness and volume sliders are continuous and are unaffected by the key step.
 
@@ -182,7 +182,7 @@ The macOS camera path now limits its own cost without changing sampling cadence,
 
 In the inference crate, 640x480 frames skip interpolation when letterboxed into the fixed 640x640 detector input (the output is identical to the generic path, proven against a reference implementation), output names are constants, and ONNX Runtime thread spinning is disabled. Release builds use thin LTO with one codegen unit; `panic = "unwind"` stays because every FFI export relies on `catch_unwind`.
 
-The decision is recorded in the 2026-10-16 amendment of [ADR 0003](adr/0003-camera-lifecycle-and-display-suspension.md), and the archived plan is at [specs/archived/always-on-camera-resource-optimization/plan.md](specs/archived/always-on-camera-resource-optimization/plan.md). No CPU, energy or wakeup measurement exists yet, and a real capture session with the new rate control has not been verified on hardware. Snapshot publish amplification was deferred to [specs/snapshot-publish-amplification.md](specs/snapshot-publish-amplification.md).
+The decision is recorded in the 2026-10-16 amendment of [ADR 0003](adr/0003-camera-lifecycle-and-display-suspension.md), and the archived plan is at [specs/archived/always-on-camera-resource-optimization/plan.md](specs/archived/always-on-camera-resource-optimization/plan.md). No CPU, energy or wakeup measurement exists yet, and a real capture session with the new rate control has not been verified on hardware. Snapshot publish amplification was deferred to [specs/archived/snapshot-publish-amplification/plan.md](specs/archived/snapshot-publish-amplification/plan.md).
 
 ## app-icons-and-presence-status-icon — 2026-10-16
 
@@ -264,8 +264,9 @@ Status: the Windows code is in the repository and covered by automated tests. Wi
 - [ADR-0026](adr/0026-about-screen-and-github-update-check.md): About screen and an informational update check against GitHub releases (Accepted)
 - [ADR-0027](adr/0027-selectable-inference-device-and-igpu-offload.md): Selectable inference device and iGPU offload (Accepted)
 - [ADR-0028](adr/0028-align-windows-toggles-right.md): Windows Settings toggles right-aligned by resetting the ToggleSwitch `MinWidth` in the shared row builder (Accepted)
-- [ADR-0029](adr/0029-core-owned-manual-control-queue-and-ddc-dispatch.md): Core-owned manual-control queue, key policy and DDC dispatch behind a clock-injected handle (Accepted for the core and Windows; macOS adapter pending)
+- [ADR-0029](adr/0029-core-owned-manual-control-queue-and-ddc-dispatch.md): Core-owned manual-control queue, key policy and DDC dispatch behind a clock-injected handle (Accepted for the core and both shells; macOS local test scripts pass, macOS CI and hardware checks pending)
 - [ADR-0030](adr/0030-short-confirmation-wait-after-first-no-face-check.md): Short confirmation wait after the first no-face check, so dimming takes about one sampling interval plus about a second (Accepted)
+- [ADR-0031](adr/0031-publish-each-snapshot-revision-once.md): Publish each snapshot revision once: a revision accessor in the core, no duplicate macOS refresh, and no republish of an already published revision on macOS and Windows
 
 ## About screen and update check — 2026-10-17
 
@@ -304,7 +305,7 @@ The macOS Settings window opens at 760 points wide, with the same minimum width 
 
 ## core-command-queue — 2026-10-18
 
-The feature design is in `specs/core-command-queue/` and is not yet archived. This section records what is implemented.
+The feature design is archived in [specs/archived/core-command-queue/](specs/archived/core-command-queue/). This section records what is implemented.
 
 ### Controls handle
 
@@ -314,10 +315,20 @@ The handle takes one JSON event and returns one JSON result, and every event car
 
 On Windows, `ControlsDriver` in `native/windows/Platform` drives the handle and `DdcController` runs one primitive per effect. The core's dispatcher keeps one DDC primitive executing at a time across all monitors. The earlier `ManualControls`, `KeyIntentRouter` and `VolumeActionTracker` are no longer used by `AppController`; their files and their tests are removed, and the ported cases live in the Rust contract and unit tests. `DdcTransaction` and `DdcTimingProfile` remain for discovery and the `--probe-ddc` diagnostic. Two Windows behaviors change: DDC writes are now retried (three attempts), and a rejected result submission is resubmitted at most three times instead of re-running the write on every snapshot. `observe` carries each monitor's normalized percentage. Windows native tests pass (614 tests, 0 failed, 2026-10-18); hardware verification is pending, and no Windows hardware support is claimed here.
 
-The macOS shell has not moved to the handle. It still runs its own Swift queue (`ManualMonitorControls`, `HardwareKeyRouter`, and the DDC retry in `DDCTransaction`). The owner decided on 2026-10-18 that the macOS adapter will be implemented by the owner on a Mac, so macOS keeps its own queue until then. The decision is recorded in [ADR 0029](adr/0029-core-owned-manual-control-queue-and-ddc-dispatch.md), which amends ADR 0001 and supersedes the router decisions of ADR 0021 for Windows.
+The macOS shell runs on the handle too. `ControlsBridge.swift` (the handle wrapper) and `ControlsDriver.swift` (the effect executor and the single timer armed from `next_deadline`) replace the Swift manual-control, key-policy and DDC-dispatch queues. `ManualMonitorControls` is now a UI binding, `HardwareKeyRouter` decodes events, owns the tap and permissions, and makes one synchronous `key` call per event, and `DDCTransaction` runs one attempt per primitive. The Swift queue, receipts and their tests are removed. The app sources type-check and link against the core library, and all 16 local `tools/tests/test-*.sh` scripts pass on an Apple Silicon Mac, including the new `test-controls-bridge.sh`. The full app packaging, the macOS CI run and the macOS hardware checks are still pending, so no macOS hardware support is claimed here. Discovery keeps its own retrying DDC primitives on both platforms. The decision is recorded in [ADR 0029](adr/0029-core-owned-manual-control-queue-and-ddc-dispatch.md), which amends ADR 0001, supersedes the router decisions of ADR 0021 for Windows, and amends ADRs 0004, 0005 and 0008 for macOS.
 
 ## oled-protection-absence-confirmation-latency — 2026-10-18
 
 [ADR 0030](adr/0030-short-confirmation-wait-after-first-no-face-check.md) changes when the confirming no-face check is taken, not how many are needed. Absence is still confirmed by two valid no-face checks, but after the first one the core reports the short return interval (`return_sampling_interval_s`, 1 second by default) as `camera.next_sample_in_ms`, so the monitor dims about one sampling interval plus about a second after the face leaves instead of about two intervals.
 
 The change lives only in `crates/telaviva-core/src/core.rs` (`absence_confirmation_pending` and the face-mode cadence arm of `snapshot_value`) and is shared by both shells, which already schedule from `next_sample_in_ms`. It adds no setting and no ABI or snapshot-schema change. The low-light handling is unchanged: a dark confirming frame still keeps the camera on for 5 seconds and assesses one frame at the end. Hardware verification of the timing is pending.
+
+## snapshot-publish-amplification — 2026-10-18
+
+Every accepted core command repeated work that only needs to happen once. The change removes those repeats without changing the snapshot content, the callback payload or the C ABI:
+
+- The core has `Core::revision()`, and `tv_submit` reads the revision for the snapshot-ready callback without building a snapshot. The callback payload and the ABI are unchanged.
+- macOS `CoreBridge` calls `refresh()` after an accepted submit only while shutting down, and skips a snapshot whose revision is not newer than the last published one.
+- The Windows bridge worker skips a revision already published, through the header-only `RevisionGate`. `GeneralPage` and `AutomaticBrightnessPage` keep their poll logic because they also refresh state that does not come from the snapshot.
+
+The decision is recorded in [ADR 0031](adr/0031-publish-each-snapshot-revision-once.md), and the archived plan is at [specs/archived/snapshot-publish-amplification/](specs/archived/snapshot-publish-amplification/). The saving was not measured, and the Windows part is not yet built or run.

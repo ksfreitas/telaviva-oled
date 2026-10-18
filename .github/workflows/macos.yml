@@ -73,6 +73,8 @@ jobs:
         run: tools/tests/test-core-bridge.sh
       - name: Test camera lifecycle bridge
         run: tools/tests/test-camera-lifecycle-bridge.sh
+      - name: Test controls bridge
+        run: tools/tests/test-controls-bridge.sh
       - name: Fetch pinned Apple Silicon ONNX Runtime
         run: tools/inference/fetch-macos-runtime.sh
       - name: Package native macOS app

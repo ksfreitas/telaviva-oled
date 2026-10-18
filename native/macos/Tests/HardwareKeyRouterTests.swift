@@ -6,7 +6,7 @@ private func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
     guard condition() else { fatalError("HardwareKeyRouterTests: \(message)") }
 }
 
-private func display(id: String = "monitor-a", generation: UInt64 = 1, origin: CGPoint = .zero,
+private func display(id: String? = "monitor-a", generation: UInt64? = 1, origin: CGPoint = .zero,
                      bounds: CGRect = CGRect(x: 0, y: 0, width: 1000, height: 800),
                      builtin: Bool = false, brightness: Double? = 50, volume: Double? = 50,
                      brightnessSupported: Bool = true, volumeSupported: Bool = true,
@@ -25,36 +25,66 @@ private func key(_ keyType: Int, phase: HardwareKeyEvent.Phase = .down, repeat i
                             isRepeat: isRepeat, isFineStep: fine, modifiersEligible: modifiersEligible)
 }
 
-private func muteKey(phase: HardwareKeyEvent.Phase = .down, repeat isRepeat: Bool = false) -> HardwareKeyEvent {
+private func muteKey(phase: HardwareKeyEvent.Phase = .down, repeat isRepeat: Bool = false,
+                     modifiersEligible: Bool = true) -> HardwareKeyEvent {
     HardwareKeyEvent(keyIdentity: Int(NX_KEYTYPE_MUTE), feature: .volume, direction: .decrease, phase: phase,
-                     isRepeat: isRepeat, isFineStep: false, modifiersEligible: true, isMute: true)
+                     isRepeat: isRepeat, isFineStep: false, modifiersEligible: modifiersEligible, isMute: true)
 }
 
 private let outputUID = "1E6D8877-0000-0000-0722-0104B5462878"
 private let elsewhere = CGPoint(x: 5000, y: 5000)
+private let onMonitor = CGPoint(x: 10, y: 10)
+private let onOther = CGPoint(x: 2010, y: 10)
+private let monitorA = HardwareKeyOwner(monitorID: "monitor-a", generation: 1)
+private let monitorB = HardwareKeyOwner(monitorID: "monitor-b", generation: 1)
 
-private final class FakeSubmission {
-    private let condition = NSCondition()
-    private(set) var commands: [HardwareKeyCommand] = []
-    private var completions: [((Bool) -> Void)] = []
+/// One key as the fake core received it.
+private struct ControlsCall: Equatable {
+    let key: String
+    let down: Bool
+    let isRepeat: Bool
+    let fine: Bool
+    let owner: HardwareKeyOwner?
+}
 
-    func submit(_ command: HardwareKeyCommand, completion: @escaping (Bool) -> Void) {
-        condition.lock(); commands.append(command); completions.append(completion); condition.broadcast(); condition.unlock()
+/// Records every key the router sends to the core and answers each one with `answer`.
+private final class FakeControls: HardwareKeyControlling {
+    var answer = true
+    private(set) var calls: [ControlsCall] = []
+
+    func key(_ key: String, down: Bool, isRepeat: Bool, fine: Bool, owner: HardwareKeyOwner?) -> Bool {
+        calls.append(ControlsCall(key: key, down: down, isRepeat: isRepeat, fine: fine, owner: owner))
+        return answer
     }
+}
 
-    func waitForCommands(_ count: Int) -> [HardwareKeyCommand] {
-        condition.lock()
-        let deadline = Date(timeIntervalSinceNow: 3)
-        while commands.count < count && condition.wait(until: deadline) {}
-        let result = commands
-        condition.unlock()
-        expect(result.count >= count, "expected async submission count \(count), got \(result.count)")
-        return result
-    }
+/// Resolves one event through the pure resolver. The defaults are a pointer on the first monitor and the matched output.
+private func resolve(_ resolver: inout HardwareKeyOwnerResolver, _ event: HardwareKeyEvent, displays: [HardwareKeyDisplay],
+                     pointer: CGPoint = onMonitor, enabled: Bool = true, output: String? = outputUID,
+                     followed: Set<String> = []) -> HardwareKeyOwner? {
+    resolver.owner(for: event, pointer: pointer, enabled: enabled, defaultOutputUID: output,
+                   displays: displays, followedBrightness: followed)
+}
 
-    func acknowledge(_ index: Int, accepted: Bool) {
-        condition.lock(); let completion = completions[index]; condition.unlock(); completion(accepted)
-    }
+/// Routes one event through the router and returns the owner the fake core received with it.
+private func routed(_ router: HardwareKeyRouter, _ controls: FakeControls, _ event: HardwareKeyEvent,
+                    pointer: CGPoint = elsewhere, displays: [HardwareKeyDisplay]) -> HardwareKeyOwner? {
+    let before = controls.calls.count
+    _ = router.processForTesting(event, pointer: pointer, displays: displays)
+    expect(controls.calls.count == before + 1, "the key reaches the core exactly once")
+    return controls.calls.last?.owner
+}
+
+/// Routes a full down, repeat and up sequence and returns the owner the core received with each phase.
+private func holdOwners(_ router: HardwareKeyRouter, _ controls: FakeControls, keyType: Int = Int(NX_KEYTYPE_SOUND_UP),
+                        pointer: CGPoint, displays: [HardwareKeyDisplay]) -> [HardwareKeyOwner?] {
+    let isMute = keyType == Int(NX_KEYTYPE_MUTE)
+    let down = isMute ? muteKey() : key(keyType)
+    let repeated = isMute ? muteKey(repeat: true) : key(keyType, repeat: true)
+    let up = isMute ? muteKey(phase: .up) : key(keyType, phase: .up)
+    return [routed(router, controls, down, pointer: pointer, displays: displays),
+            routed(router, controls, repeated, pointer: pointer, displays: displays),
+            routed(router, controls, up, pointer: pointer, displays: displays)]
 }
 
 /// Runs the main run loop briefly so asynchronous status and permission publications are delivered.
@@ -87,43 +117,38 @@ private struct HardwareKeyRouterTests {
     static func main() {
         sdkEventClassification()
         keyboardBrightnessEvents()
-        targetAndStepPolicy()
-        sequenceRouting()
+        keyboardKeysReachTheCore()
+        controlsKeyNames()
+        targetPolicy()
         volumeTargetPolicy()
+        firstPressResolvesOwner()
+        ineligibleFirstPressesResolveNoOwner()
+        heldOwnerSurvivesPointerMovement()
+        heldOwnerDropsWhenInvalid()
+        orphanRepeatsResolveNoOwner()
+        releaseSendsHeldOwnerAndClearsIt()
+        ownerRememberedOnlyWhenConsumed()
         volumeFollowsSoundOutput()
         volumeHoldAcrossOutputChanges()
-        volumeBoundariesModifiersAndLatches()
-        muteBehavior()
-        volumeStaleGenerationPassesThrough()
+        staleGenerationReleaseKeepsHeldOwner()
+        modifiersAndFineStep()
+        brightnessAndVolumeLatchesAreIndependent()
+        muteOwnership()
         disableAndShutdownClearOutput()
         permissionLossKeepsOutput()
+        routerForwardsToCore()
+        volumeOwnerMonitorFollowsOutput()
         statusPolicyMatrix()
         permissionChangeNotifications()
         tapRetryAfterFailure()
         inputMonitoringAndRevocationStatus()
-        intentCoalescingAndRebase()
-        laterKeySupersedesOlderManualAcceptance()
-        rejectedAndStaleWork()
-        handoffInvalidationAndLateShutdown()
-        observedChangesAndOrphanRepeats()
-        rebasingDoesNotGrowInFlightWork()
-        pureSteppingPolicy()
-        setStepsClampsAndFallsBack()
-        independentConfiguredSteps()
-        fineStepIgnoresConfiguredStep()
-        stepChangeAppliesToNextPress()
-        boundaryClampsWithLargeStep()
-        muteRestoreUsesVolumeStep()
-        rebaseWaitsForOwnHardwareActions()
-        rebaseResumesAfterSettleWindow()
-        outstandingActionExpires()
-        earlyCompletionLeavesNothingOutstanding()
+        lateSnapshotsCannotRestartStoppedRouter()
         followedBrightnessPassesThrough()
         followedVolumeAndMuteUnchanged()
         unfollowedBrightnessStillHandled()
         emptyFollowedSetRestoresBrightness()
         followedChangeKeepsInFlightPress()
-        print("Hardware-key router and coordinator tests passed")
+        print("Hardware-key router tests passed")
     }
 
     private static func sdkEventClassification() {
@@ -202,47 +227,48 @@ private struct HardwareKeyRouterTests {
                "flags-changed events do not decode as keys")
         expect(HardwareKeyEvent.decodeKeyboard(type: .mouseMoved, keyCode: 144, isRepeat: false, flags: fn) == nil,
                "mouse events do not decode as keys")
+    }
 
-        // Routing mirrors the media key: a press follows the pointer, and a held key coalesces its repeats.
+    /// Keyboard brightness reaches the core with its key name, and its owner follows the pointer like the media key.
+    private static func keyboardKeysReachTheCore() {
+        let fn: CGEventFlags = [.maskSecondaryFn]
         func keyboard(_ type: CGEventType, repeat isRepeat: Bool = false) -> HardwareKeyEvent {
             guard let event = HardwareKeyEvent.decodeKeyboard(type: type, keyCode: 144, isRepeat: isRepeat, flags: fn) else {
                 fatalError("HardwareKeyRouterTests: keyboard brightness key did not decode")
             }
             return event
         }
-        let fake = FakeSubmission()
-        let router = HardwareKeyRouter(submit: fake.submit)
+        let controls = FakeControls()
+        let router = HardwareKeyRouter(controls: controls)
         let monitor = display()
-        expect(router.processForTesting(keyboard(.keyDown), pointer: .zero, displays: [monitor]), "keyboard press is consumed")
-        // Waiting for the first command keeps the repeat's coalesced write deterministic, as in intentCoalescingAndRebase.
-        let first = fake.waitForCommands(1)
-        expect(first.count == 1 && first[0].monitorID == "monitor-a" && first[0].feature == .brightness,
-               "keyboard press targets the brightness of the monitor under the pointer")
-        expect(first[0].target == 50 + HardwareKeyPolicy.defaultStep, "keyboard press steps brightness by the default step")
-        expect(router.processForTesting(keyboard(.keyDown, repeat: true), pointer: .zero, displays: [monitor]),
-               "keyboard autorepeat is consumed")
-        expect(router.processForTesting(keyboard(.keyUp), pointer: .zero, displays: [monitor]), "keyboard release is consumed")
-        expect(fake.commands.count == 1, "held keyboard brightness submits no second command while in flight")
-        fake.acknowledge(0, accepted: true)
-        let coalesced = fake.waitForCommands(2)[1]
-        expect(coalesced.target == 50 + 2 * HardwareKeyPolicy.defaultStep, "keyboard repeat coalesces into one follow-up write")
-        fake.acknowledge(1, accepted: true)
-        router.waitForWorkerForTesting()
+        expect(routed(router, controls, keyboard(.keyDown), pointer: onMonitor, displays: [monitor]) == monitorA,
+               "keyboard press resolves the brightness of the monitor under the pointer")
+        expect(controls.calls.last == ControlsCall(key: "brightness_up", down: true, isRepeat: false, fine: false, owner: monitorA),
+               "keyboard press is forwarded as brightness_up")
+        expect(routed(router, controls, keyboard(.keyDown, repeat: true), pointer: elsewhere, displays: [monitor]) == monitorA,
+               "keyboard autorepeat keeps the owner")
+        expect(routed(router, controls, keyboard(.keyUp), pointer: elsewhere, displays: [monitor]) == monitorA,
+               "keyboard release sends the owner")
+        expect(routed(router, controls, keyboard(.keyDown), pointer: elsewhere, displays: [monitor]) == nil,
+               "keyboard press outside every display resolves no owner")
         router.shutdown()
-
-        // Outside every display the whole sequence passes through and nothing is submitted.
-        let passFake = FakeSubmission()
-        let passRouter = HardwareKeyRouter(submit: passFake.submit)
-        let passDown = passRouter.processForTesting(keyboard(.keyDown), pointer: elsewhere, displays: [monitor])
-        let passRepeat = passRouter.processForTesting(keyboard(.keyDown, repeat: true), pointer: elsewhere, displays: [monitor])
-        let passUp = passRouter.processForTesting(keyboard(.keyUp), pointer: elsewhere, displays: [monitor])
-        expect((passDown, passRepeat, passUp) == (false, false, false), "keyboard brightness outside every display passes through")
-        passRouter.waitForWorkerForTesting()
-        expect(passFake.commands.isEmpty, "pass-through keyboard brightness submits nothing")
-        passRouter.shutdown()
     }
 
-    private static func targetAndStepPolicy() {
+    /// The core receives the five key names, and mute is named "mute" whatever its feature.
+    private static func controlsKeyNames() {
+        expect(key(Int(NX_KEYTYPE_BRIGHTNESS_UP)).controlsKey == "brightness_up", "brightness up is brightness_up")
+        expect(key(Int(NX_KEYTYPE_BRIGHTNESS_DOWN)).controlsKey == "brightness_down", "brightness down is brightness_down")
+        expect(key(Int(NX_KEYTYPE_SOUND_UP)).controlsKey == "volume_up", "sound up is volume_up")
+        expect(key(Int(NX_KEYTYPE_SOUND_DOWN)).controlsKey == "volume_down", "sound down is volume_down")
+        expect(muteKey().controlsKey == "mute", "mute press is mute")
+        expect(muteKey(phase: .up).controlsKey == "mute", "mute release is mute")
+        let keyboardDown = HardwareKeyEvent.decodeKeyboard(type: .keyDown, keyCode: 145, isRepeat: false, flags: [])
+        expect(keyboardDown?.controlsKey == "brightness_down", "keyboard key code 145 is brightness_down")
+        let keyboardUp = HardwareKeyEvent.decodeKeyboard(type: .keyUp, keyCode: 144, isRepeat: false, flags: [])
+        expect(keyboardUp?.controlsKey == "brightness_up", "keyboard key code 144 release is brightness_up")
+    }
+
+    private static func targetPolicy() {
         let first = display()
         expect(HardwareKeyPolicy.target(at: CGPoint(x: 20, y: 20), displays: [first], feature: .brightness) != nil,
                "single eligible external target is selected")
@@ -256,199 +282,6 @@ private struct HardwareKeyRouterTests {
                "unsupported feature passes through independently")
         expect(HardwareKeyPolicy.target(at: CGPoint(x: 20, y: 20), displays: [display(awake: false)], feature: .brightness) == nil,
                "sleeping display passes through")
-        expect(HardwareKeyPolicy.stepped(96.875, direction: .increase, fine: false, step: HardwareKeyPolicy.defaultStep) == 100, "normal step clamps at maximum")
-        expect(HardwareKeyPolicy.stepped(0, direction: .decrease, fine: true, step: HardwareKeyPolicy.defaultStep) == 0, "fine step clamps at minimum")
-        expect(HardwareKeyPolicy.stepped(50, direction: .increase, fine: false, step: HardwareKeyPolicy.defaultStep) == 55, "normal step is the default 5")
-        expect(HardwareKeyPolicy.stepped(50, direction: .decrease, fine: true, step: HardwareKeyPolicy.defaultStep) == 49, "fine step is 1 point")
-    }
-
-    private static func sequenceRouting() {
-        var sequence = HardwareKeySequence()
-        let initial = display()
-        var values: [String: Double] = ["monitor-a": 50]
-        var writes: [Double] = []
-        let valueFor: (HardwareKeyDisplay, HardwareKeyFeature) -> Double? = { d, _ in values[d.monitorID!] }
-        let reserve: (HardwareKeyDisplay, HardwareKeyFeature, HardwareKeyEvent.Direction, Bool, Double) -> Bool = { d, _, direction, fine, current in
-            let next = HardwareKeyPolicy.stepped(current, direction: direction, fine: fine, step: HardwareKeyPolicy.defaultStep)
-            if next != current { writes.append(next); values[d.monitorID!] = next }
-            return true
-        }
-        let down = key(Int(NX_KEYTYPE_BRIGHTNESS_UP))
-        expect(sequence.process(down, pointer: CGPoint(x: 1, y: 1), enabled: true, defaultOutputUID: nil, displays: [initial], valueFor: valueFor, reserve: reserve),
-               "eligible keydown is consumed after reserving")
-        expect(sequence.process(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), repeat: true), pointer: CGPoint(x: 1200, y: 10), enabled: true, defaultOutputUID: nil,
-                                displays: [initial], valueFor: valueFor, reserve: reserve), "repeat stays latched across pointer movement")
-        expect(writes == [55, 60], "repeat increments the original monitor intent")
-        expect(sequence.process(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up, modifiersEligible: false), pointer: .zero,
-                                enabled: true, defaultOutputUID: nil, displays: [initial], valueFor: valueFor, reserve: reserve),
-               "handled key-up remains consumed after modifiers change")
-        expect(writes.count == 2, "key-up applies no delta")
-
-        expect(!sequence.process(key(Int(NX_KEYTYPE_SOUND_UP), modifiersEligible: false), pointer: .zero, enabled: true, defaultOutputUID: nil,
-                                  displays: [initial], valueFor: valueFor, reserve: reserve), "ineligible modifiers pass through")
-        expect(!sequence.process(key(Int(NX_KEYTYPE_SOUND_UP), phase: .up), pointer: .zero, enabled: true, defaultOutputUID: nil,
-                                 displays: [initial], valueFor: valueFor, reserve: reserve), "unhandled sequence key-up passes through")
-        expect(!sequence.process(key(Int(NX_KEYTYPE_SOUND_UP)), pointer: CGPoint(x: 2000, y: 1), enabled: true, defaultOutputUID: nil,
-                                 displays: [initial], valueFor: valueFor, reserve: reserve), "ineligible initial target passes through")
-        expect(!sequence.process(key(Int(NX_KEYTYPE_SOUND_UP), phase: .up), pointer: .zero, enabled: true, defaultOutputUID: nil,
-                                 displays: [initial], valueFor: valueFor, reserve: reserve), "no-hit sequence remains passthrough")
-
-        let boundary = display(brightness: 100)
-        values["monitor-a"] = 100
-        expect(sequence.process(down, pointer: .zero, enabled: true, defaultOutputUID: nil, displays: [boundary], valueFor: valueFor, reserve: reserve),
-               "owned key at maximum is consumed")
-        expect(writes.count == 2, "boundary press reserves no redundant write")
-        expect(sequence.process(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up), pointer: .zero, enabled: true, defaultOutputUID: nil,
-                                displays: [boundary], valueFor: valueFor, reserve: reserve), "boundary release is consumed")
-
-        values["monitor-a"] = 50
-        expect(sequence.process(down, pointer: .zero, enabled: true, defaultOutputUID: nil, displays: [initial], valueFor: valueFor, reserve: reserve), "fresh press starts a new latch")
-        let replaced = display(generation: 2)
-        expect(sequence.process(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), repeat: true), pointer: .zero, enabled: true, defaultOutputUID: nil,
-                                   displays: [replaced], valueFor: valueFor, reserve: reserve), "stale held key remains consumed")
-        expect(sequence.process(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up), pointer: .zero, enabled: true, defaultOutputUID: nil,
-                                  displays: [replaced], valueFor: valueFor, reserve: reserve), "stale held key-up remains consumed")
-        expect(writes.count == 3, "stale generation cancels future deltas")
-        sequence.clear()
-        expect(!sequence.process(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up), pointer: .zero, enabled: true, defaultOutputUID: nil,
-                                 displays: [initial], valueFor: valueFor, reserve: reserve), "teardown clears held-key state")
-    }
-
-    private static func intentCoalescingAndRebase() {
-        let fake = FakeSubmission()
-        let router = HardwareKeyRouter(submit: fake.submit)
-        let d = display()
-        let down = key(Int(NX_KEYTYPE_BRIGHTNESS_UP))
-        expect(router.processForTesting(down, pointer: .zero, displays: [d]), "first press reserves an intent")
-        let first = fake.waitForCommands(1)
-        expect(first[0].target == 55 && first[0].generation == 1, "first worker command has normalized target and generation")
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), repeat: true), pointer: .zero, displays: [d]), "repeat while first command is in flight is consumed")
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), repeat: true), pointer: .zero, displays: [d]), "second repeat accumulates while first command is in flight")
-        fake.acknowledge(0, accepted: true)
-        let second = fake.waitForCommands(2)
-        expect(second[1].target == 65, "in-flight repeats coalesce to latest accumulated value")
-        fake.acknowledge(1, accepted: true)
-
-        router.manualControlChanged(monitorID: "monitor-a", generation: 1, feature: .brightness, value: 20, revision: 1)
-        expect(router.processForTesting(down, pointer: .zero, displays: [d]), "manual rebase is used by next key")
-        let third = fake.waitForCommands(3)
-        expect(third[2].target == 25, "manual app value rebases future keyboard steps")
-        fake.acknowledge(2, accepted: false)
-    }
-
-    private static func rejectedAndStaleWork() {
-        let fake = FakeSubmission()
-        let router = HardwareKeyRouter(submit: fake.submit)
-        let d = display(audioUID: outputUID)
-        router.setDefaultOutput(uid: outputUID)
-        let down = key(Int(NX_KEYTYPE_SOUND_UP))
-        expect(router.processForTesting(down, pointer: .zero, displays: [d]), "rejected submission event is already consumed")
-        let submitted = fake.waitForCommands(1)
-        expect(submitted[0].feature == .volume, "volume command uses corresponding feature")
-        fake.acknowledge(0, accepted: false)
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP), phase: .up), pointer: .zero, displays: [d]),
-                                        "submission failure does not reinject or unconsume the paired release")
-
-        let staleFake = FakeSubmission()
-        let staleRouter = HardwareKeyRouter(submit: staleFake.submit)
-        expect(staleRouter.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), pointer: .zero, displays: [d]), "stale-work setup press")
-        _ = staleFake.waitForCommands(1)
-        expect(staleRouter.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), repeat: true), pointer: .zero,
-                                              displays: [display(generation: 2)]), "stale repeat remains consumed")
-        expect(staleRouter.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up), pointer: .zero,
-                                              displays: [display(generation: 2)]), "stale hold release remains consumed")
-        staleFake.acknowledge(0, accepted: true)
-        // Acknowledgement of an in-flight stale command cannot schedule any write for its old generation.
-        staleRouter.shutdown()
-    }
-
-    private static func laterKeySupersedesOlderManualAcceptance() {
-        let fake = FakeSubmission()
-        let router = HardwareKeyRouter(submit: fake.submit)
-        let d = display()
-        _ = router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up), pointer: .zero, displays: [d])
-        router.manualControlChanged(monitorID: "monitor-a", generation: 1, feature: .brightness, value: 20, revision: 42)
-        let up = key(Int(NX_KEYTYPE_BRIGHTNESS_UP))
-        expect(router.processForTesting(up, pointer: .zero, displays: [d]), "key after slider reserves a newer target")
-        let first = fake.waitForCommands(1)[0]
-        expect(first.target == 25, "key target starts from latest slider value")
-
-        router.manualControlAccepted(monitorID: "monitor-a", generation: 1, feature: .brightness,
-                                     value: 20, revision: 42)
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), repeat: true), pointer: .zero, displays: [d]),
-               "held key remains routed after the late slider acceptance")
-        fake.acknowledge(0, accepted: true)
-        let second = fake.waitForCommands(2)[1]
-        expect(second.target == 30, "older slider acceptance cannot rebase over the newer key target")
-        fake.acknowledge(1, accepted: false)
-        router.shutdown()
-    }
-    private static func handoffInvalidationAndLateShutdown() {
-        let fake = FakeSubmission()
-        let router = HardwareKeyRouter(submit: fake.submit)
-        let d = display()
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), pointer: .zero, displays: [d]), "handoff setup")
-        let old = fake.waitForCommands(1)[0]
-        expect(router.isCommandCurrent(old), "a reserved command remains valid before handoff")
-        router.manualControlChanged(monitorID: "monitor-a", generation: 1, feature: .brightness, value: 20, revision: 1)
-        expect(!router.isCommandCurrent(old), "an accepted slider command invalidates an already handed-off key")
-        fake.acknowledge(0, accepted: false)
-        router.waitForWorkerForTesting()
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), repeat: true), pointer: .zero, displays: [d]), "held key continues from the manual rebase")
-        let current = fake.waitForCommands(2)[1]
-        expect(current.target == 25 && router.isCommandCurrent(current), "stale completion cannot erase a newer manual epoch")
-        router.shutdown()
-        expect(!router.isCommandCurrent(current), "shutdown invalidates handed-off work")
-        router.apply(enabled: true, displays: [d])
-        expect(!router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP)), pointer: .zero, displays: [d]), "late snapshots cannot restart a stopped router")
-        fake.acknowledge(1, accepted: true)
-        router.waitForWorkerForTesting()
-    }
-
-    private static func observedChangesAndOrphanRepeats() {
-        var sequence = HardwareKeySequence()
-        var reserved = false
-        expect(!sequence.process(key(Int(NX_KEYTYPE_SOUND_UP), repeat: true), pointer: .zero,
-                                 enabled: true, defaultOutputUID: nil, displays: [display()], valueFor: { _, _ in 50 },
-                                 reserve: { _, _, _, _, _ in reserved = true; return true }),
-               "a repeat without its initial down must pass through")
-        expect(!reserved, "orphan repeats reserve no work")
-
-        let fake = FakeSubmission()
-        let router = HardwareKeyRouter(submit: fake.submit)
-        router.setDefaultOutput(uid: outputUID)
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP)), pointer: .zero, displays: [display(audioUID: outputUID)]), "observed rebase setup")
-        _ = fake.waitForCommands(1)
-        fake.acknowledge(0, accepted: true)
-        router.waitForWorkerForTesting()
-        _ = router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP), phase: .up), pointer: .zero, displays: [display(volume: 56, audioUID: outputUID)])
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP)), pointer: .zero, displays: [display(volume: 30, audioUID: outputUID)]), "external adjustment is reconciled before a new press")
-        let updated = fake.waitForCommands(2)[1]
-        expect(updated.target == 35, "external observed change replaces idle keyboard intent")
-        fake.acknowledge(1, accepted: true)
-        router.waitForWorkerForTesting()
-        router.shutdown()
-    }
-
-    private static func rebasingDoesNotGrowInFlightWork() {
-        let fake = FakeSubmission()
-        let router = HardwareKeyRouter(submit: fake.submit)
-        let d = display(audioUID: outputUID)
-        router.setDefaultOutput(uid: outputUID)
-        _ = router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP)), pointer: .zero, displays: [d])
-        _ = fake.waitForCommands(1)
-        for revision in 0..<100 {
-            router.manualControlChanged(monitorID: "monitor-a", generation: 1, feature: .volume, value: 40, revision: UInt64(revision + 1))
-            _ = router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP), repeat: true), pointer: .zero, displays: [d])
-        }
-        router.waitForWorkerForTesting()
-        expect(fake.waitForCommands(1).count == 1, "manual rebases cannot create unbounded outstanding submissions")
-        fake.acknowledge(0, accepted: false)
-        let latest = fake.waitForCommands(2)
-        expect(latest[1].target == 45, "one coalesced intent follows a superseded in-flight epoch")
-        fake.acknowledge(1, accepted: true)
-        router.waitForWorkerForTesting()
-        router.shutdown()
     }
 
     private static func volumeTargetPolicy() {
@@ -471,389 +304,528 @@ private struct HardwareKeyRouterTests {
         expect(HardwareKeyPolicy.volumeTarget(defaultOutputUID: outputUID, displays: [display(volume: 101, audioUID: outputUID)]) == nil, "out-of-range value selects nothing")
     }
 
-    /// Drives one full down/repeat/up sequence and reports (down, repeat, up) consumption.
-    private static func hold(_ router: HardwareKeyRouter, keyType: Int = Int(NX_KEYTYPE_SOUND_UP), pointer: CGPoint,
-                             displays: [HardwareKeyDisplay]) -> (Bool, Bool, Bool) {
-        let down = router.processForTesting(key(keyType), pointer: pointer, displays: displays)
-        let repeated = router.processForTesting(key(keyType, repeat: true), pointer: pointer, displays: displays)
-        let up = router.processForTesting(key(keyType, phase: .up), pointer: pointer, displays: displays)
-        return (down, repeated, up)
+    /// A first press resolves the pointer's monitor for brightness and the default output's monitor for volume and mute.
+    private static func firstPressResolvesOwner() {
+        var resolver = HardwareKeyOwnerResolver()
+        let monitor = display(audioUID: outputUID)
+        let other = display(id: "monitor-b", origin: CGPoint(x: 2000, y: 0), audioUID: "OtherSpeakerDevice")
+        let both = [monitor, other]
+        expect(resolve(&resolver, key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), displays: both, pointer: onMonitor) == monitorA,
+               "brightness press resolves the monitor under the pointer")
+        expect(resolve(&resolver, key(Int(NX_KEYTYPE_BRIGHTNESS_DOWN)), displays: both, pointer: onOther) == monitorB,
+               "brightness down resolves the other monitor under its pointer")
+        expect(resolve(&resolver, key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), displays: both, pointer: elsewhere) == nil,
+               "brightness press outside every display resolves nothing")
+        expect(resolve(&resolver, key(Int(NX_KEYTYPE_SOUND_UP)), displays: both, pointer: elsewhere) == monitorA,
+               "volume press resolves the default output's monitor, whatever the pointer")
+        expect(resolve(&resolver, key(Int(NX_KEYTYPE_SOUND_DOWN)), displays: both, pointer: onOther) == monitorA,
+               "volume down ignores the pointer as well")
+        expect(resolve(&resolver, muteKey(), displays: both, pointer: elsewhere) == monitorA,
+               "mute resolves the default output's monitor")
+        expect(resolve(&resolver, key(Int(NX_KEYTYPE_SOUND_UP)), displays: both, pointer: elsewhere, output: "OtherSpeakerDevice") == monitorB,
+               "volume follows the sound output to the other monitor")
     }
 
+    /// Modifiers, disabled routing, built-in, ambiguity, missing output and unusable state each resolve no owner.
+    private static func ineligibleFirstPressesResolveNoOwner() {
+        var resolver = HardwareKeyOwnerResolver()
+        let monitor = display(audioUID: outputUID)
+        expect(resolve(&resolver, key(Int(NX_KEYTYPE_BRIGHTNESS_UP), modifiersEligible: false), displays: [monitor]) == nil,
+               "disallowed modifiers resolve no brightness owner")
+        expect(resolve(&resolver, key(Int(NX_KEYTYPE_SOUND_UP), modifiersEligible: false), displays: [monitor]) == nil,
+               "disallowed modifiers resolve no volume owner")
+        expect(resolve(&resolver, muteKey(modifiersEligible: false), displays: [monitor]) == nil,
+               "disallowed modifiers resolve no mute owner")
+        expect(resolve(&resolver, key(Int(NX_KEYTYPE_SOUND_UP)), displays: [monitor], enabled: false) == nil,
+               "disabled routing resolves no volume owner")
+        expect(resolve(&resolver, key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), displays: [monitor], enabled: false) == nil,
+               "disabled routing resolves no brightness owner")
+        expect(resolve(&resolver, key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), displays: [display(builtin: true)]) == nil,
+               "built-in display resolves no brightness owner")
+        expect(resolve(&resolver, key(Int(NX_KEYTYPE_SOUND_UP)), displays: [display(builtin: true, audioUID: outputUID)]) == nil,
+               "built-in display resolves no volume owner")
+        expect(resolve(&resolver, key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), displays: [display(), display(id: "monitor-b")]) == nil,
+               "overlapping displays resolve no brightness owner")
+        expect(resolve(&resolver, key(Int(NX_KEYTYPE_SOUND_UP)), displays: [display(id: "monitor-b", audioUID: outputUID), monitor]) == nil,
+               "duplicate output UIDs resolve no volume owner")
+        expect(resolve(&resolver, key(Int(NX_KEYTYPE_SOUND_UP)), displays: [monitor], output: nil) == nil,
+               "no default output resolves no volume owner")
+        expect(resolve(&resolver, muteKey(), displays: [monitor], output: nil) == nil,
+               "no default output resolves no mute owner")
+        expect(resolve(&resolver, key(Int(NX_KEYTYPE_SOUND_UP)), displays: [monitor], output: "BuiltInSpeakerDevice") == nil,
+               "an unmatched output resolves no volume owner")
+        expect(resolve(&resolver, key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), displays: [display(brightnessSupported: false)]) == nil,
+               "unsupported brightness resolves no owner")
+        expect(resolve(&resolver, key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), displays: [display(awake: false)]) == nil,
+               "sleeping display resolves no brightness owner")
+        expect(resolve(&resolver, key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), displays: [display(brightness: nil)]) == nil,
+               "unknown brightness resolves no owner")
+        expect(resolve(&resolver, key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), displays: [display(brightness: 101)]) == nil,
+               "out-of-range brightness resolves no owner")
+        expect(resolve(&resolver, key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), displays: [display(id: nil)]) == nil,
+               "a display without a monitor ID resolves no owner")
+        expect(resolve(&resolver, key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), displays: [display(generation: nil)]) == nil,
+               "a display without a generation resolves no owner")
+        expect(resolve(&resolver, key(Int(NX_KEYTYPE_SOUND_UP)), displays: [display(volumeSupported: false, audioUID: outputUID)]) == nil,
+               "unsupported volume resolves no owner")
+        expect(resolve(&resolver, key(Int(NX_KEYTYPE_SOUND_UP)), displays: [display(awake: false, audioUID: outputUID)]) == nil,
+               "sleeping display resolves no volume owner")
+        expect(resolve(&resolver, key(Int(NX_KEYTYPE_SOUND_UP)), displays: [display(audioUID: nil)]) == nil,
+               "unstable identity resolves no volume owner")
+        expect(resolve(&resolver, key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), displays: [monitor], pointer: elsewhere) == nil,
+               "a pointer in a gap resolves no brightness owner")
+        expect(resolve(&resolver, key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), displays: [monitor], followed: ["monitor-a"]) == nil,
+               "a followed monitor resolves no brightness owner")
+    }
+
+    /// Brightness repeats keep their latched owner however the pointer moves; volume repeats ignore the pointer too.
+    private static func heldOwnerSurvivesPointerMovement() {
+        let monitor = display(audioUID: outputUID)
+        let other = display(id: "monitor-b", origin: CGPoint(x: 2000, y: 0))
+        var resolver = HardwareKeyOwnerResolver()
+        let press = key(Int(NX_KEYTYPE_BRIGHTNESS_UP))
+        let pressOwner = resolve(&resolver, press, displays: [monitor, other], pointer: onMonitor)
+        expect(pressOwner == monitorA, "press latches the monitor under the pointer")
+        resolver.record(press, owner: pressOwner, consumed: true)
+        let repeated = key(Int(NX_KEYTYPE_BRIGHTNESS_UP), repeat: true)
+        expect(resolve(&resolver, repeated, displays: [monitor, other], pointer: onOther) == monitorA,
+               "repeat keeps the latched owner when the pointer moves to another monitor")
+        expect(resolve(&resolver, repeated, displays: [monitor, other], pointer: elsewhere) == monitorA,
+               "repeat keeps the latched owner outside every display")
+        expect(resolve(&resolver, key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up), displays: [monitor, other], pointer: elsewhere) == monitorA,
+               "release sends the latched owner")
+
+        var volume = HardwareKeyOwnerResolver()
+        let volumeDown = key(Int(NX_KEYTYPE_SOUND_UP))
+        let volumeOwner = resolve(&volume, volumeDown, displays: [monitor], pointer: elsewhere)
+        expect(volumeOwner == monitorA, "volume press latches the default output's monitor")
+        volume.record(volumeDown, owner: volumeOwner, consumed: true)
+        expect(resolve(&volume, key(Int(NX_KEYTYPE_SOUND_UP), repeat: true), displays: [monitor], pointer: onOther) == monitorA,
+               "volume repeat ignores the pointer")
+    }
+
+    /// A repeat drops to no owner when its display is gone, its generation changed, it sleeps, or (volume) the output changed.
+    private static func heldOwnerDropsWhenInvalid() {
+        let monitor = display(audioUID: outputUID)
+        let brightnessDown = key(Int(NX_KEYTYPE_BRIGHTNESS_UP))
+        let brightnessRepeat = key(Int(NX_KEYTYPE_BRIGHTNESS_UP), repeat: true)
+        let volumeDown = key(Int(NX_KEYTYPE_SOUND_UP))
+        let volumeRepeat = key(Int(NX_KEYTYPE_SOUND_UP), repeat: true)
+
+        /// A resolver that has latched the owner of `press` on `monitor`.
+        func held(_ press: HardwareKeyEvent) -> HardwareKeyOwnerResolver {
+            var resolver = HardwareKeyOwnerResolver()
+            let owner = resolve(&resolver, press, displays: [monitor])
+            resolver.record(press, owner: owner, consumed: true)
+            return resolver
+        }
+        /// The owner a repeat resolves to after `press`, with the given displays and output.
+        func repeatOwner(_ repeated: HardwareKeyEvent, after press: HardwareKeyEvent, displays: [HardwareKeyDisplay],
+                         output: String? = outputUID) -> HardwareKeyOwner? {
+            var resolver = held(press)
+            return resolve(&resolver, repeated, displays: displays, pointer: elsewhere, output: output)
+        }
+
+        expect(repeatOwner(brightnessRepeat, after: brightnessDown, displays: [display(brightness: 70, audioUID: outputUID)]) == monitorA,
+               "brightness repeat keeps the owner when the value changes")
+        expect(repeatOwner(brightnessRepeat, after: brightnessDown, displays: [monitor], output: "BuiltInSpeakerDevice") == monitorA,
+               "brightness repeat ignores the sound output")
+        expect(repeatOwner(brightnessRepeat, after: brightnessDown, displays: [display(id: "monitor-b")]) == nil,
+               "brightness repeat drops when its monitor is gone")
+        expect(repeatOwner(brightnessRepeat, after: brightnessDown, displays: []) == nil,
+               "brightness repeat with no displays resolves nothing")
+        expect(repeatOwner(brightnessRepeat, after: brightnessDown, displays: [display(generation: 2)]) == nil,
+               "brightness repeat drops when the generation changed")
+        expect(repeatOwner(brightnessRepeat, after: brightnessDown, displays: [display(awake: false)]) == nil,
+               "brightness repeat drops when the monitor sleeps")
+        expect(repeatOwner(brightnessRepeat, after: brightnessDown, displays: [display(brightnessSupported: false)]) == nil,
+               "brightness repeat drops when brightness becomes unsupported")
+        expect(repeatOwner(brightnessRepeat, after: brightnessDown, displays: [display(brightness: nil)]) == nil,
+               "brightness repeat drops when the value is unknown")
+        expect(repeatOwner(brightnessRepeat, after: brightnessDown, displays: [display(brightness: Double.nan)]) == nil,
+               "brightness repeat drops when the value is not finite")
+        expect(repeatOwner(brightnessRepeat, after: brightnessDown, displays: [display(builtin: true)]) == nil,
+               "brightness repeat drops when the display becomes built-in")
+
+        expect(repeatOwner(volumeRepeat, after: volumeDown, displays: [monitor], output: outputUID) == monitorA,
+               "volume repeat keeps the owner while the output matches")
+        expect(repeatOwner(volumeRepeat, after: volumeDown, displays: [monitor], output: "BuiltInSpeakerDevice") == nil,
+               "volume repeat drops when the default output changes")
+        expect(repeatOwner(volumeRepeat, after: volumeDown, displays: [monitor], output: nil) == nil,
+               "volume repeat drops when there is no default output")
+        expect(repeatOwner(volumeRepeat, after: volumeDown, displays: [display(generation: 2, audioUID: outputUID)]) == nil,
+               "volume repeat drops when the generation changed")
+        expect(repeatOwner(volumeRepeat, after: volumeDown, displays: []) == nil,
+               "volume repeat drops when the monitor is gone")
+        expect(repeatOwner(volumeRepeat, after: volumeDown, displays: [display(awake: false, audioUID: outputUID)]) == nil,
+               "volume repeat drops when the monitor sleeps")
+        expect(repeatOwner(volumeRepeat, after: volumeDown, displays: [display(volumeSupported: false, audioUID: outputUID)]) == nil,
+               "volume repeat drops when volume becomes unsupported")
+        expect(repeatOwner(volumeRepeat, after: volumeDown, displays: [display(volume: nil, audioUID: outputUID)]) == nil,
+               "volume repeat drops when the value is unknown")
+    }
+
+    /// A repeat with no press (for example after a release, or a press that was never latched) resolves nothing.
+    private static func orphanRepeatsResolveNoOwner() {
+        let monitor = display(audioUID: outputUID)
+        var resolver = HardwareKeyOwnerResolver()
+        expect(resolve(&resolver, key(Int(NX_KEYTYPE_BRIGHTNESS_UP), repeat: true), displays: [monitor]) == nil,
+               "a brightness repeat without its press resolves nothing")
+        expect(resolve(&resolver, key(Int(NX_KEYTYPE_SOUND_UP), repeat: true), displays: [monitor]) == nil,
+               "a volume repeat without its press resolves nothing")
+        let press = key(Int(NX_KEYTYPE_SOUND_UP))
+        let owner = resolve(&resolver, press, displays: [monitor])
+        resolver.record(press, owner: owner, consumed: true)
+        let release = key(Int(NX_KEYTYPE_SOUND_UP), phase: .up)
+        let released = resolve(&resolver, release, displays: [monitor])
+        resolver.record(release, owner: released, consumed: true)
+        expect(resolve(&resolver, key(Int(NX_KEYTYPE_SOUND_UP), repeat: true), displays: [monitor]) == nil,
+               "a repeat after the release resolves nothing")
+    }
+
+    /// A release sends the latched owner even when its display has gone, and then the latch is cleared.
+    private static func releaseSendsHeldOwnerAndClearsIt() {
+        let monitor = display(audioUID: outputUID)
+        var resolver = HardwareKeyOwnerResolver()
+        let press = key(Int(NX_KEYTYPE_BRIGHTNESS_UP))
+        let pressOwner = resolve(&resolver, press, displays: [monitor], pointer: onMonitor)
+        resolver.record(press, owner: pressOwner, consumed: true)
+        let release = key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up)
+        let released = resolve(&resolver, release, displays: [], pointer: elsewhere)
+        expect(released == monitorA, "release sends the held owner even when its display is gone")
+        resolver.record(release, owner: released, consumed: true)
+        expect(resolve(&resolver, release, displays: [monitor]) == nil, "a second release finds nothing held")
+        expect(resolve(&resolver, key(Int(NX_KEYTYPE_SOUND_UP), phase: .up), displays: [monitor]) == nil,
+               "a release without a press resolves nothing")
+    }
+
+    /// Only a press the core consumed latches its owner; a declined press or repeat latches nothing.
+    private static func ownerRememberedOnlyWhenConsumed() {
+        let monitor = display(audioUID: outputUID)
+        let press = key(Int(NX_KEYTYPE_BRIGHTNESS_UP))
+        let repeated = key(Int(NX_KEYTYPE_BRIGHTNESS_UP), repeat: true)
+        let release = key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up)
+
+        var declined = HardwareKeyOwnerResolver()
+        let declinedOwner = resolve(&declined, press, displays: [monitor], pointer: onMonitor)
+        expect(declinedOwner == monitorA, "the declined press still resolves its owner")
+        declined.record(press, owner: declinedOwner, consumed: false)
+        expect(resolve(&declined, repeated, displays: [monitor]) == nil, "an unconsumed press is not latched")
+        expect(resolve(&declined, release, displays: [monitor]) == nil, "an unconsumed press releases nothing")
+
+        var noOwner = HardwareKeyOwnerResolver()
+        let noOwnerResult = resolve(&noOwner, press, displays: [], pointer: elsewhere)
+        noOwner.record(press, owner: noOwnerResult, consumed: true)
+        expect(resolve(&noOwner, repeated, displays: [monitor]) == nil, "a consumed press without an owner latches nothing")
+
+        var dropped = HardwareKeyOwnerResolver()
+        let droppedOwner = resolve(&dropped, press, displays: [monitor], pointer: onMonitor)
+        dropped.record(press, owner: droppedOwner, consumed: true)
+        let declinedRepeat = resolve(&dropped, repeated, displays: [monitor])
+        expect(declinedRepeat == monitorA, "the repeat resolves the latched owner")
+        dropped.record(repeated, owner: declinedRepeat, consumed: false)
+        expect(resolve(&dropped, release, displays: [monitor]) == nil, "a declined repeat unlatches the key")
+    }
+
+    /// Volume follows the default output whatever the pointer does, and a changed output drops the held owner's repeats.
     private static func volumeFollowsSoundOutput() {
-        let fake = FakeSubmission()
-        let router = HardwareKeyRouter(submit: fake.submit)
+        let controls = FakeControls()
+        let router = HardwareKeyRouter(controls: controls)
         let monitor = display(audioUID: outputUID)
         router.setDefaultOutput(uid: outputUID)
         // The pointer is in a gap, far away, or over the built-in display: it is irrelevant for volume.
         let builtin = display(id: "built-in", origin: CGPoint(x: 5000, y: 5000), builtin: true)
         for pointer in [elsewhere, CGPoint(x: 1500, y: 20), CGPoint(x: 5100, y: 5100)] {
-            let result = hold(router, pointer: pointer, displays: [monitor, builtin])
-            expect(result == (true, true, true), "matched monitor handles the whole hold regardless of pointer")
+            expect(holdOwners(router, controls, pointer: pointer, displays: [monitor, builtin]) == [monitorA, monitorA, monitorA],
+                   "matched monitor owns the whole volume hold regardless of pointer")
         }
-        let first = fake.waitForCommands(1)[0]
-        expect(first.monitorID == "monitor-a" && first.feature == .volume && first.target > 50,
-               "volume command targets the monitor selected by sound output")
-        fake.acknowledge(0, accepted: true)
-        router.waitForWorkerForTesting()
         router.shutdown()
 
         func passes(_ uid: String?, _ displays: [HardwareKeyDisplay], _ message: String) {
-            let router = HardwareKeyRouter(submit: { _, _ in expect(false, "pass-through must not submit: \(message)") })
-            router.setDefaultOutput(uid: uid)
+            let passControls = FakeControls()
+            let passRouter = HardwareKeyRouter(controls: passControls)
+            passRouter.setDefaultOutput(uid: uid)
             // The pointer sits over a supported monitor on purpose.
-            let result = hold(router, pointer: CGPoint(x: 10, y: 10), displays: displays)
-            expect(result == (false, false, false), message)
-            router.waitForWorkerForTesting()
-            router.shutdown()
+            expect(holdOwners(passRouter, passControls, pointer: onMonitor, displays: displays) == [nil, nil, nil], message)
         }
-        passes("BuiltInSpeakerDevice", [monitor], "built-in output passes the whole sequence through")
-        passes("AppleUSBAudioEngine:Unmatched", [monitor], "unmatched UID passes through")
-        passes(nil, [monitor], "nil output passes through")
+        passes("BuiltInSpeakerDevice", [monitor], "built-in output resolves no volume owner")
+        passes("AppleUSBAudioEngine:Unmatched", [monitor], "unmatched UID resolves no volume owner")
+        passes(nil, [monitor], "nil output resolves no volume owner")
         passes(outputUID, [monitor, display(id: "monitor-b", origin: CGPoint(x: 2000, y: 0), audioUID: outputUID)],
-               "duplicate audio UIDs pass through")
-        passes(outputUID, [display(volumeSupported: false, audioUID: outputUID)], "unsupported volume passes through")
-        passes(outputUID, [display(awake: false, audioUID: outputUID)], "sleeping monitor passes through")
-        passes(outputUID, [display(audioUID: nil)], "unstable identity passes through")
-        passes(outputUID, [display(builtin: true, audioUID: outputUID)], "built-in display passes through")
+               "duplicate audio UIDs resolve no volume owner")
+        passes(outputUID, [display(volumeSupported: false, audioUID: outputUID)], "unsupported volume resolves no volume owner")
+        passes(outputUID, [display(awake: false, audioUID: outputUID)], "sleeping monitor resolves no volume owner")
+        passes(outputUID, [display(audioUID: nil)], "unstable identity resolves no volume owner")
+        passes(outputUID, [display(builtin: true, audioUID: outputUID)], "built-in display resolves no volume owner")
 
-        let caseFake = FakeSubmission()
-        let caseRouter = HardwareKeyRouter(submit: caseFake.submit)
+        let caseControls = FakeControls()
+        let caseRouter = HardwareKeyRouter(controls: caseControls)
         caseRouter.setDefaultOutput(uid: outputUID.lowercased())
-        expect(hold(caseRouter, pointer: elsewhere, displays: [display(audioUID: outputUID)]) == (true, true, true),
-               "case-insensitive UID match is handled")
-        _ = caseFake.waitForCommands(1)
-        caseFake.acknowledge(0, accepted: true)
-        caseRouter.waitForWorkerForTesting()
+        expect(holdOwners(caseRouter, caseControls, pointer: elsewhere, displays: [display(audioUID: outputUID)]) == [monitorA, monitorA, monitorA],
+               "case-insensitive UID match owns the hold")
         caseRouter.shutdown()
     }
 
+    /// The output switches away mid-hold: repeats drop to no owner, the release still sends the held owner, and the next press follows the new output.
     private static func volumeHoldAcrossOutputChanges() {
-        let fake = FakeSubmission()
-        let router = HardwareKeyRouter(submit: fake.submit)
+        let controls = FakeControls()
+        let router = HardwareKeyRouter(controls: controls)
         let monitor = display(audioUID: outputUID)
         router.setDefaultOutput(uid: outputUID)
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP)), pointer: elsewhere, displays: [monitor]), "hold starts on the monitor")
-        _ = fake.waitForCommands(1)
+        expect(routed(router, controls, key(Int(NX_KEYTYPE_SOUND_UP)), pointer: elsewhere, displays: [monitor]) == monitorA,
+               "hold starts on the monitor")
         router.setDefaultOutput(uid: "BuiltInSpeakerDevice")
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP), repeat: true), pointer: elsewhere, displays: [monitor]),
-               "repeat after the output switched away is still consumed")
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP), repeat: true), pointer: elsewhere, displays: [monitor]),
-               "later repeats are still consumed")
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP), phase: .up), pointer: elsewhere, displays: [monitor]),
-               "key-up is consumed after the output switched away")
-        fake.acknowledge(0, accepted: true)
-        router.waitForWorkerForTesting()
-        expect(fake.commands.count == 1, "no write is submitted once the output switched away")
-        expect(!router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP)), pointer: elsewhere, displays: [monitor]),
-               "next press follows the new output and passes through")
-        _ = router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP), phase: .up), pointer: elsewhere, displays: [monitor])
+        expect(routed(router, controls, key(Int(NX_KEYTYPE_SOUND_UP), repeat: true), pointer: elsewhere, displays: [monitor]) == nil,
+               "repeat after the output switched away resolves no owner")
+        expect(routed(router, controls, key(Int(NX_KEYTYPE_SOUND_UP), repeat: true), pointer: elsewhere, displays: [monitor]) == nil,
+               "later repeats resolve no owner")
+        expect(routed(router, controls, key(Int(NX_KEYTYPE_SOUND_UP), phase: .up), pointer: elsewhere, displays: [monitor]) == monitorA,
+               "release still sends the held owner after the output switched away")
+        expect(routed(router, controls, key(Int(NX_KEYTYPE_SOUND_UP)), pointer: elsewhere, displays: [monitor]) == nil,
+               "next press follows the new output and resolves nothing")
+        _ = routed(router, controls, key(Int(NX_KEYTYPE_SOUND_UP), phase: .up), pointer: elsewhere, displays: [monitor])
 
-        // A passed-through key stays passed through even if the output becomes the monitor mid-hold.
-        let passFake = FakeSubmission()
-        let passRouter = HardwareKeyRouter(submit: passFake.submit)
+        // A press declined for lack of an owner stays unowned even if the output becomes the monitor mid-hold.
+        let passControls = FakeControls()
+        let passRouter = HardwareKeyRouter(controls: passControls)
         passRouter.setDefaultOutput(uid: "BuiltInSpeakerDevice")
-        expect(!passRouter.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP)), pointer: .zero, displays: [monitor]), "hold starts passed through")
+        expect(routed(passRouter, passControls, key(Int(NX_KEYTYPE_SOUND_UP)), pointer: .zero, displays: [monitor]) == nil,
+               "hold starts unowned")
         passRouter.setDefaultOutput(uid: outputUID)
-        expect(!passRouter.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP), repeat: true), pointer: .zero, displays: [monitor]),
-               "repeat stays pass-through after the output switched to the monitor")
-        expect(!passRouter.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP), phase: .up), pointer: .zero, displays: [monitor]),
-               "key-up stays pass-through after the output switched to the monitor")
-        expect(passRouter.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP)), pointer: .zero, displays: [monitor]),
+        expect(routed(passRouter, passControls, key(Int(NX_KEYTYPE_SOUND_UP), repeat: true), pointer: .zero, displays: [monitor]) == nil,
+               "repeat stays unowned after the output switched to the monitor")
+        expect(routed(passRouter, passControls, key(Int(NX_KEYTYPE_SOUND_UP), phase: .up), pointer: .zero, displays: [monitor]) == nil,
+               "release stays unowned after the output switched to the monitor")
+        expect(routed(passRouter, passControls, key(Int(NX_KEYTYPE_SOUND_UP)), pointer: .zero, displays: [monitor]) == monitorA,
                "next distinct press re-evaluates and targets the monitor")
-        _ = passFake.waitForCommands(1)
-        passFake.acknowledge(0, accepted: true)
-        passRouter.waitForWorkerForTesting()
         passRouter.shutdown()
         router.shutdown()
     }
 
-    private static func volumeBoundariesModifiersAndLatches() {
-        let fake = FakeSubmission()
-        let router = HardwareKeyRouter(submit: fake.submit)
+    /// A display replaced by a new generation mid-hold: the repeat resolves no owner, and the release still sends the held one.
+    private static func staleGenerationReleaseKeepsHeldOwner() {
+        let controls = FakeControls()
+        let router = HardwareKeyRouter(controls: controls)
         router.setDefaultOutput(uid: outputUID)
+        expect(routed(router, controls, key(Int(NX_KEYTYPE_SOUND_UP)), pointer: elsewhere, displays: [display(audioUID: outputUID)]) == monitorA,
+               "volume hold starts on generation one")
+        let replaced = display(generation: 2, audioUID: outputUID)
+        expect(routed(router, controls, key(Int(NX_KEYTYPE_SOUND_UP), repeat: true), pointer: elsewhere, displays: [replaced]) == nil,
+               "stale volume repeat resolves no owner")
+        expect(routed(router, controls, key(Int(NX_KEYTYPE_SOUND_UP), phase: .up), pointer: elsewhere, displays: [replaced]) == monitorA,
+               "stale volume release still sends the held owner")
+        router.shutdown()
+    }
 
-        // Boundary values are consumed without a write.
-        let maxed = display(volume: 100, audioUID: outputUID)
-        expect(hold(router, pointer: elsewhere, displays: [maxed]) == (true, true, true), "volume at maximum is consumed")
-        let floored = display(volume: 0, audioUID: outputUID)
-        expect(hold(router, keyType: Int(NX_KEYTYPE_SOUND_DOWN), pointer: elsewhere, displays: [floored]) == (true, true, true),
-               "volume at minimum is consumed")
-        router.waitForWorkerForTesting()
-        expect(fake.commands.isEmpty, "boundary presses submit no write")
-
-        // Disallowed modifiers pass through; Shift+Option takes the fine step.
+    /// Ineligible modifiers resolve no owner; Shift+Option keeps the owner and reaches the core as the fine flag.
+    private static func modifiersAndFineStep() {
+        let controls = FakeControls()
+        let router = HardwareKeyRouter(controls: controls)
+        router.setDefaultOutput(uid: outputUID)
         let monitor = display(audioUID: outputUID)
-        expect(!router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP), modifiersEligible: false), pointer: elsewhere, displays: [monitor]),
-               "disallowed modifiers pass through")
-        expect(!router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP), phase: .up, modifiersEligible: false), pointer: elsewhere, displays: [monitor]),
-               "disallowed-modifier release passes through")
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_SOUND_DOWN), fine: true), pointer: elsewhere, displays: [monitor]), "fine press is handled")
-        expect(fake.waitForCommands(1)[0].target == 49, "fine step is one point")
-        fake.acknowledge(0, accepted: true)
-        router.waitForWorkerForTesting()
-        _ = router.processForTesting(key(Int(NX_KEYTYPE_SOUND_DOWN), phase: .up), pointer: elsewhere, displays: [monitor])
+        expect(routed(router, controls, key(Int(NX_KEYTYPE_SOUND_UP), modifiersEligible: false), displays: [monitor]) == nil,
+               "disallowed modifiers resolve no volume owner")
+        expect(routed(router, controls, key(Int(NX_KEYTYPE_SOUND_UP), phase: .up, modifiersEligible: false), displays: [monitor]) == nil,
+               "disallowed-modifier release resolves no volume owner")
+        expect(routed(router, controls, key(Int(NX_KEYTYPE_SOUND_DOWN), fine: true), displays: [monitor]) == monitorA,
+               "fine press keeps the volume owner")
+        expect(controls.calls.last == ControlsCall(key: "volume_down", down: true, isRepeat: false, fine: true, owner: monitorA),
+               "the fine flag reaches the core")
+        _ = routed(router, controls, key(Int(NX_KEYTYPE_SOUND_DOWN), phase: .up), displays: [monitor])
+        router.shutdown()
+    }
 
-        // Brightness follows the pointer and ignores the audio output; latches are independent.
+    /// Brightness follows the pointer and ignores the sound output; the brightness and volume latches are independent.
+    private static func brightnessAndVolumeLatchesAreIndependent() {
+        let controls = FakeControls()
+        let router = HardwareKeyRouter(controls: controls)
         let both = display(audioUID: outputUID)
         router.setDefaultOutput(uid: "BuiltInSpeakerDevice")
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), pointer: CGPoint(x: 10, y: 10), displays: [both]),
+        expect(routed(router, controls, key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), pointer: onMonitor, displays: [both]) == monitorA,
                "brightness follows the pointer when the output is elsewhere")
-        expect(!router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP)), pointer: CGPoint(x: 10, y: 10), displays: [both]),
-               "volume passes through while the brightness latch is handled")
+        expect(routed(router, controls, key(Int(NX_KEYTYPE_SOUND_UP)), pointer: onMonitor, displays: [both]) == nil,
+               "volume resolves no owner while the output is elsewhere")
         router.setDefaultOutput(uid: outputUID)
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), repeat: true), pointer: CGPoint(x: 10, y: 10), displays: [both]),
+        expect(routed(router, controls, key(Int(NX_KEYTYPE_BRIGHTNESS_UP), repeat: true), pointer: onMonitor, displays: [both]) == monitorA,
                "brightness latch is unaffected by the output change")
-        expect(!router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP), repeat: true), pointer: CGPoint(x: 10, y: 10), displays: [both]),
-               "volume pass-through latch is unaffected by the output change")
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up), pointer: CGPoint(x: 10, y: 10), displays: [both]),
-               "brightness release is consumed")
-        expect(!router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP), phase: .up), pointer: CGPoint(x: 10, y: 10), displays: [both]),
-               "volume release passes through")
-        expect(!router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), pointer: elsewhere, displays: [both]),
-               "brightness outside every display passes through even when the monitor is the output")
-        _ = router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up), pointer: elsewhere, displays: [both])
-        _ = fake.waitForCommands(2)
-        fake.acknowledge(1, accepted: true)
-        router.waitForWorkerForTesting()
+        expect(routed(router, controls, key(Int(NX_KEYTYPE_SOUND_UP), repeat: true), pointer: onMonitor, displays: [both]) == nil,
+               "volume latch stays unowned after the output changes")
+        expect(routed(router, controls, key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up), pointer: onMonitor, displays: [both]) == monitorA,
+               "brightness release sends its owner")
+        expect(routed(router, controls, key(Int(NX_KEYTYPE_SOUND_UP), phase: .up), pointer: onMonitor, displays: [both]) == nil,
+               "volume release sends no owner")
+        expect(routed(router, controls, key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), pointer: elsewhere, displays: [both]) == nil,
+               "brightness outside every display resolves no owner even when the monitor is the output")
+        _ = routed(router, controls, key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up), pointer: elsewhere, displays: [both])
         router.shutdown()
     }
 
-    private static func muteBehavior() {
+    /// Mute is owned by the default output's monitor and is never followed; it resolves no owner in the same
+    /// cases in which volume does.
+    private static func muteOwnership() {
         let loud = display(audioUID: outputUID)
         let silent = display(volume: 0, audioUID: outputUID)
-
-        // a. Mute writes zero once; the held repeat and the key-up add no command.
-        let fake = FakeSubmission()
-        let router = HardwareKeyRouter(submit: fake.submit)
+        let controls = FakeControls()
+        let router = HardwareKeyRouter(controls: controls)
         router.setDefaultOutput(uid: outputUID)
-        expect(router.processForTesting(muteKey(), pointer: elsewhere, displays: [loud]), "mute press is handled")
-        let muted = fake.waitForCommands(1)[0]
-        expect(muted.feature == .volume && muted.target == 0, "mute writes volume zero")
-        expect(router.processForTesting(muteKey(repeat: true), pointer: elsewhere, displays: [loud]), "held mute repeat is consumed")
-        expect(router.processForTesting(muteKey(phase: .up), pointer: elsewhere, displays: [loud]), "mute key-up is consumed")
-        fake.acknowledge(0, accepted: true)
-        router.waitForWorkerForTesting()
-        expect(fake.commands.count == 1, "held mute submits no second command")
+        expect(routed(router, controls, muteKey(), displays: [loud]) == monitorA, "mute press resolves the default output's monitor")
+        expect(controls.calls.last == ControlsCall(key: "mute", down: true, isRepeat: false, fine: false, owner: monitorA),
+               "mute press is forwarded as mute")
+        expect(routed(router, controls, muteKey(repeat: true), displays: [loud]) == monitorA, "held mute repeat keeps the owner")
+        expect(routed(router, controls, muteKey(phase: .up), displays: [loud]) == monitorA, "mute release sends the owner")
+        expect(routed(router, controls, muteKey(phase: .up), displays: [loud]) == nil, "a second mute release has no owner")
+        expect(routed(router, controls, muteKey(), displays: [silent]) == monitorA,
+               "mute at zero still resolves the owner; the core decides the write")
+        _ = routed(router, controls, muteKey(phase: .up), displays: [silent])
+        router.setFollowedBrightnessDisplays(["monitor-a"])
+        expect(routed(router, controls, muteKey(), displays: [loud]) == monitorA, "a followed monitor never drops mute")
+        _ = routed(router, controls, muteKey(phase: .up), displays: [loud])
         router.shutdown()
 
-        // b. A mute press at zero restores the remembered level.
-        let restoreFake = FakeSubmission()
-        let restoreRouter = HardwareKeyRouter(submit: restoreFake.submit)
-        restoreRouter.setDefaultOutput(uid: outputUID)
-        expect(restoreRouter.processForTesting(muteKey(), pointer: elsewhere, displays: [loud]), "first mute is handled")
-        _ = restoreFake.waitForCommands(1)
-        expect(restoreRouter.processForTesting(muteKey(phase: .up), pointer: elsewhere, displays: [loud]), "first mute release is consumed")
-        restoreFake.acknowledge(0, accepted: true)
-        restoreRouter.waitForWorkerForTesting()
-        expect(restoreRouter.processForTesting(muteKey(), pointer: elsewhere, displays: [silent]), "restoring mute press is handled")
-        expect(restoreRouter.processForTesting(muteKey(phase: .up), pointer: elsewhere, displays: [silent]), "restoring mute release is consumed")
-        let restored = restoreFake.waitForCommands(2)[1]
-        expect(restored.target == 50, "mute restores the remembered level")
-        restoreFake.acknowledge(1, accepted: true)
-        restoreRouter.waitForWorkerForTesting()
-        restoreRouter.shutdown()
+        let changeControls = FakeControls()
+        let changeRouter = HardwareKeyRouter(controls: changeControls)
+        changeRouter.setDefaultOutput(uid: outputUID)
+        expect(routed(changeRouter, changeControls, muteKey(), displays: [loud]) == monitorA, "held mute starts on the monitor")
+        changeRouter.setDefaultOutput(uid: "BuiltInSpeakerDevice")
+        expect(routed(changeRouter, changeControls, muteKey(repeat: true), displays: [loud]) == nil,
+               "held mute repeat after the output switched resolves no owner")
+        expect(routed(changeRouter, changeControls, muteKey(phase: .up), displays: [loud]) == monitorA,
+               "held mute release still sends the owner")
+        expect(routed(changeRouter, changeControls, muteKey(), displays: [loud]) == nil,
+               "the next mute press follows the new output")
+        _ = routed(changeRouter, changeControls, muteKey(phase: .up), displays: [loud])
+        changeRouter.shutdown()
 
-        // c. Volume-up while muted steps from the remembered level; volume-down while muted writes nothing.
-        let upFake = FakeSubmission()
-        let upRouter = HardwareKeyRouter(submit: upFake.submit)
-        upRouter.setDefaultOutput(uid: outputUID)
-        expect(upRouter.processForTesting(muteKey(), pointer: elsewhere, displays: [loud]), "mute before volume-up is handled")
-        _ = upFake.waitForCommands(1)
-        expect(upRouter.processForTesting(muteKey(phase: .up), pointer: elsewhere, displays: [loud]), "mute release before volume-up is consumed")
-        upFake.acknowledge(0, accepted: true)
-        upRouter.waitForWorkerForTesting()
-        expect(upRouter.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP)), pointer: elsewhere, displays: [silent]), "volume-up while muted is handled")
-        expect(upRouter.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP), phase: .up), pointer: elsewhere, displays: [silent]),
-               "volume-up release while muted is consumed")
-        let unmuted = upFake.waitForCommands(2)[1]
-        expect(unmuted.feature == .volume && unmuted.target == 50 + HardwareKeyPolicy.defaultStep,
-               "volume-up while muted steps from the remembered level")
-        upFake.acknowledge(1, accepted: true)
-        upRouter.waitForWorkerForTesting()
-        upRouter.shutdown()
-
-        let downFake = FakeSubmission()
-        let downRouter = HardwareKeyRouter(submit: downFake.submit)
-        downRouter.setDefaultOutput(uid: outputUID)
-        expect(downRouter.processForTesting(muteKey(), pointer: elsewhere, displays: [loud]), "mute before volume-down is handled")
-        _ = downFake.waitForCommands(1)
-        expect(downRouter.processForTesting(muteKey(phase: .up), pointer: elsewhere, displays: [loud]), "mute release before volume-down is consumed")
-        downFake.acknowledge(0, accepted: true)
-        downRouter.waitForWorkerForTesting()
-        expect(downRouter.processForTesting(key(Int(NX_KEYTYPE_SOUND_DOWN)), pointer: elsewhere, displays: [silent]), "volume-down while muted is consumed")
-        expect(downRouter.processForTesting(key(Int(NX_KEYTYPE_SOUND_DOWN), phase: .up), pointer: elsewhere, displays: [silent]),
-               "volume-down release while muted is consumed")
-        downRouter.waitForWorkerForTesting()
-        expect(downFake.commands.count == 1, "volume-down while muted writes nothing")
-        downRouter.shutdown()
-
-        // d. Mute at zero with nothing remembered is consumed without a write.
-        let emptyFake = FakeSubmission()
-        let emptyRouter = HardwareKeyRouter(submit: emptyFake.submit)
-        emptyRouter.setDefaultOutput(uid: outputUID)
-        expect(emptyRouter.processForTesting(muteKey(), pointer: elsewhere, displays: [silent]), "mute at zero with nothing remembered is consumed")
-        expect(emptyRouter.processForTesting(muteKey(phase: .up), pointer: elsewhere, displays: [silent]), "mute at zero release is consumed")
-        emptyRouter.waitForWorkerForTesting()
-        expect(emptyFake.commands.isEmpty, "mute at zero submits no write")
-        emptyRouter.shutdown()
-
-        // e. An external level change discards the remembered level, so the next mute writes zero again.
-        let externalFake = FakeSubmission()
-        let externalRouter = HardwareKeyRouter(submit: externalFake.submit)
-        externalRouter.setDefaultOutput(uid: outputUID)
-        expect(externalRouter.processForTesting(muteKey(), pointer: elsewhere, displays: [loud]), "first mute before external change is handled")
-        _ = externalFake.waitForCommands(1)
-        expect(externalRouter.processForTesting(muteKey(phase: .up), pointer: elsewhere, displays: [loud]), "first mute release is consumed")
-        externalFake.acknowledge(0, accepted: true)
-        externalRouter.waitForWorkerForTesting()
-        let changed = display(volume: 30, audioUID: outputUID)
-        expect(externalRouter.processForTesting(muteKey(), pointer: elsewhere, displays: [changed]), "mute after external change is handled")
-        expect(externalRouter.processForTesting(muteKey(phase: .up), pointer: elsewhere, displays: [changed]), "mute release after external change is consumed")
-        let rewritten = externalFake.waitForCommands(2)[1]
-        expect(rewritten.target == 0, "external change discards the remembered level")
-        externalFake.acknowledge(1, accepted: true)
-        externalRouter.waitForWorkerForTesting()
-        externalRouter.shutdown()
-
-        // f. Switching the output away and back forgets the remembered level.
-        let roundTripFake = FakeSubmission()
-        let roundTripRouter = HardwareKeyRouter(submit: roundTripFake.submit)
-        roundTripRouter.setDefaultOutput(uid: outputUID)
-        expect(roundTripRouter.processForTesting(muteKey(), pointer: elsewhere, displays: [loud]), "mute before output round trip is handled")
-        _ = roundTripFake.waitForCommands(1)
-        expect(roundTripRouter.processForTesting(muteKey(phase: .up), pointer: elsewhere, displays: [loud]), "mute release before output round trip is consumed")
-        roundTripFake.acknowledge(0, accepted: true)
-        roundTripRouter.waitForWorkerForTesting()
-        roundTripRouter.setDefaultOutput(uid: "BuiltInSpeakerDevice")
-        roundTripRouter.setDefaultOutput(uid: outputUID)
-        expect(roundTripRouter.processForTesting(muteKey(), pointer: elsewhere, displays: [silent]), "mute after output round trip is consumed")
-        expect(roundTripRouter.processForTesting(muteKey(phase: .up), pointer: elsewhere, displays: [silent]), "mute release after output round trip is consumed")
-        roundTripRouter.waitForWorkerForTesting()
-        expect(roundTripFake.commands.count == 1, "output change forgets the remembered level")
-        roundTripRouter.shutdown()
-
-        // g. Mute passes through the whole sequence when routing does not select a supported monitor.
         func mutePasses(_ uid: String?, _ displays: [HardwareKeyDisplay], _ message: String) {
-            let passRouter = HardwareKeyRouter(submit: { _, _ in expect(false, "pass-through mute must not submit") })
+            let passControls = FakeControls()
+            let passRouter = HardwareKeyRouter(controls: passControls)
             passRouter.setDefaultOutput(uid: uid)
-            let down = passRouter.processForTesting(muteKey(), pointer: .zero, displays: displays)
-            let repeated = passRouter.processForTesting(muteKey(repeat: true), pointer: .zero, displays: displays)
-            let up = passRouter.processForTesting(muteKey(phase: .up), pointer: .zero, displays: displays)
-            expect((down, repeated, up) == (false, false, false), message)
-            passRouter.waitForWorkerForTesting()
-            passRouter.shutdown()
+            expect(holdOwners(passRouter, passControls, keyType: Int(NX_KEYTYPE_MUTE), pointer: .zero, displays: displays) == [nil, nil, nil],
+                   message)
         }
-        mutePasses("BuiltInSpeakerDevice", [loud], "built-in output mute passes through")
-        mutePasses(nil, [loud], "nil output mute passes through")
-        mutePasses(outputUID, [display(volumeSupported: false, audioUID: outputUID)], "unsupported volume mute passes through")
-        mutePasses(outputUID, [display(awake: false, audioUID: outputUID)], "sleeping monitor mute passes through")
-        mutePasses(outputUID, [display(audioUID: nil)], "unstable identity mute passes through")
+        mutePasses("BuiltInSpeakerDevice", [loud], "built-in output mute resolves no owner")
+        mutePasses(nil, [loud], "nil output mute resolves no owner")
+        mutePasses(outputUID, [display(volumeSupported: false, audioUID: outputUID)], "unsupported volume mute resolves no owner")
+        mutePasses(outputUID, [display(awake: false, audioUID: outputUID)], "sleeping monitor mute resolves no owner")
+        mutePasses(outputUID, [display(audioUID: nil)], "unstable identity mute resolves no owner")
+        mutePasses(outputUID, [display(builtin: true, audioUID: outputUID)], "built-in display mute resolves no owner")
 
-        // h. An output switch cancels a held mute: its repeat and release are consumed, and nothing more is written.
-        let cancelFake = FakeSubmission()
-        let cancelRouter = HardwareKeyRouter(submit: cancelFake.submit)
-        cancelRouter.setDefaultOutput(uid: outputUID)
-        expect(cancelRouter.processForTesting(muteKey(), pointer: elsewhere, displays: [loud]), "held mute starts on the monitor")
-        _ = cancelFake.waitForCommands(1)
-        cancelRouter.setDefaultOutput(uid: "BuiltInSpeakerDevice")
-        expect(cancelRouter.processForTesting(muteKey(repeat: true), pointer: elsewhere, displays: [loud]), "held mute repeat after output switch is consumed")
-        expect(cancelRouter.processForTesting(muteKey(phase: .up), pointer: elsewhere, displays: [loud]), "held mute release after output switch is consumed")
-        cancelFake.acknowledge(0, accepted: true)
-        cancelRouter.waitForWorkerForTesting()
-        expect(cancelFake.commands.count == 1, "output switch cancels the held mute")
-        cancelRouter.shutdown()
-
-        // i. Brightness ignores the mute memory on the same monitor.
-        let brightnessFake = FakeSubmission()
-        let brightnessRouter = HardwareKeyRouter(submit: brightnessFake.submit)
-        brightnessRouter.setDefaultOutput(uid: outputUID)
-        expect(brightnessRouter.processForTesting(muteKey(), pointer: elsewhere, displays: [loud]), "mute before brightness is handled")
-        _ = brightnessFake.waitForCommands(1)
-        expect(brightnessRouter.processForTesting(muteKey(phase: .up), pointer: elsewhere, displays: [loud]), "mute release before brightness is consumed")
-        brightnessFake.acknowledge(0, accepted: true)
-        brightnessRouter.waitForWorkerForTesting()
-        expect(brightnessRouter.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), pointer: .zero, displays: [loud]),
-               "brightness press after a mute is handled")
-        let brightness = brightnessFake.waitForCommands(2)[1]
-        expect(brightness.feature == .brightness, "brightness command ignores the mute memory")
-        brightnessFake.acknowledge(1, accepted: true)
-        brightnessRouter.waitForWorkerForTesting()
-        brightnessRouter.shutdown()
-
-        // j. A mute with disallowed modifiers passes through, on press and release.
-        let ineligibleFake = FakeSubmission()
-        let ineligibleRouter = HardwareKeyRouter(submit: ineligibleFake.submit)
+        let ineligibleControls = FakeControls()
+        let ineligibleRouter = HardwareKeyRouter(controls: ineligibleControls)
         ineligibleRouter.setDefaultOutput(uid: outputUID)
-        let ineligibleDown = HardwareKeyEvent(keyIdentity: Int(NX_KEYTYPE_MUTE), feature: .volume, direction: .decrease,
-                                              phase: .down, isRepeat: false, isFineStep: false,
-                                              modifiersEligible: false, isMute: true)
-        let ineligibleUp = HardwareKeyEvent(keyIdentity: Int(NX_KEYTYPE_MUTE), feature: .volume, direction: .decrease,
-                                            phase: .up, isRepeat: false, isFineStep: false,
-                                            modifiersEligible: false, isMute: true)
-        expect(!ineligibleRouter.processForTesting(ineligibleDown, pointer: elsewhere, displays: [loud]), "mute with disallowed modifiers passes through")
-        expect(!ineligibleRouter.processForTesting(ineligibleUp, pointer: elsewhere, displays: [loud]), "mute release with disallowed modifiers passes through")
-        ineligibleRouter.waitForWorkerForTesting()
-        expect(ineligibleFake.commands.isEmpty, "ineligible mute submits no write")
+        expect(routed(ineligibleRouter, ineligibleControls, muteKey(modifiersEligible: false), displays: [loud]) == nil,
+               "mute with disallowed modifiers resolves no owner")
+        expect(routed(ineligibleRouter, ineligibleControls, muteKey(phase: .up, modifiersEligible: false), displays: [loud]) == nil,
+               "mute release with disallowed modifiers resolves no owner")
         ineligibleRouter.shutdown()
-    }
-
-    private static func volumeStaleGenerationPassesThrough() {
-        let fake = FakeSubmission()
-        let router = HardwareKeyRouter(submit: fake.submit)
-        router.setDefaultOutput(uid: outputUID)
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP)), pointer: elsewhere, displays: [display(audioUID: outputUID)]),
-               "volume hold starts on generation one")
-        _ = fake.waitForCommands(1)
-        let replaced = display(generation: 2, audioUID: outputUID)
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP), repeat: true), pointer: elsewhere, displays: [replaced]),
-               "stale volume repeat remains consumed")
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP), phase: .up), pointer: elsewhere, displays: [replaced]),
-               "stale volume hold release remains consumed")
-        fake.acknowledge(0, accepted: true)
-        router.waitForWorkerForTesting()
-        expect(fake.commands.count == 1, "stale generation cancels future volume deltas")
-        router.shutdown()
     }
 
     private static func disableAndShutdownClearOutput() {
         let monitor = display(audioUID: outputUID)
-        let router = HardwareKeyRouter(submit: { _, _ in })
+        let controls = FakeControls()
+        let router = HardwareKeyRouter(controls: controls)
         router.setDefaultOutput(uid: outputUID)
         router.apply(enabled: false, displays: [monitor])
-        expect(!router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP)), pointer: elsewhere, displays: [monitor]),
+        expect(routed(router, controls, key(Int(NX_KEYTYPE_SOUND_UP)), displays: [monitor]) == nil,
                "disabling routing clears the default output")
-        _ = router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP), phase: .up), pointer: elsewhere, displays: [monitor])
+        _ = routed(router, controls, key(Int(NX_KEYTYPE_SOUND_UP), phase: .up), displays: [monitor])
         router.shutdown()
         router.setDefaultOutput(uid: outputUID)
+        let before = controls.calls.count
         expect(!router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP)), pointer: elsewhere, displays: [monitor]),
-               "a stopped router ignores the default output")
+               "a stopped router passes the key through")
+        expect(controls.calls.count == before, "a stopped router does not reach the core")
     }
 
-    private static func makeRouter(_ permissions: FakePermissions, _ installer: FakeTapInstaller) -> HardwareKeyRouter {
-        HardwareKeyRouter(submit: { _, _ in }, permissionProvider: { permissions.value }, tapInstaller: installer.install)
+    private static func makeRouter(_ permissions: FakePermissions, _ installer: FakeTapInstaller,
+                                   _ controls: HardwareKeyControlling = FakeControls()) -> HardwareKeyRouter {
+        HardwareKeyRouter(controls: controls, permissionProvider: { permissions.value }, tapInstaller: installer.install)
     }
 
     private static func permissionLossKeepsOutput() {
         let monitor = display(audioUID: outputUID)
         let permissions = FakePermissions(false, true)
-        let router = makeRouter(permissions, FakeTapInstaller())
+        let controls = FakeControls()
+        let router = makeRouter(permissions, FakeTapInstaller(), controls)
         router.setDefaultOutput(uid: outputUID)
         router.apply(enabled: true, displays: [monitor])
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP)), pointer: elsewhere, displays: [monitor]),
+        expect(routed(router, controls, key(Int(NX_KEYTYPE_SOUND_UP)), displays: [monitor]) == monitorA,
                "permission loss does not clear the default output")
-        _ = router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP), phase: .up), pointer: elsewhere, displays: [monitor])
+        _ = routed(router, controls, key(Int(NX_KEYTYPE_SOUND_UP), phase: .up), displays: [monitor])
         router.apply(enabled: false, displays: [monitor])
-        expect(!router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP)), pointer: elsewhere, displays: [monitor]),
+        expect(routed(router, controls, key(Int(NX_KEYTYPE_SOUND_UP)), displays: [monitor]) == nil,
                "disable still clears the default output after permission loss")
-        _ = router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP), phase: .up), pointer: elsewhere, displays: [monitor])
+        _ = routed(router, controls, key(Int(NX_KEYTYPE_SOUND_UP), phase: .up), displays: [monitor])
 
-        let other = makeRouter(permissions, FakeTapInstaller())
+        let other = makeRouter(permissions, FakeTapInstaller(), controls)
         other.setDefaultOutput(uid: outputUID)
         other.apply(enabled: true, displays: [monitor])
         other.shutdown()
         expect(!other.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP)), pointer: elsewhere, displays: [monitor]),
                "shutdown still clears the default output")
+    }
+
+    /// The router passes the key name, phase, repeat and fine flags and the owner to the core, and returns the core's answer.
+    private static func routerForwardsToCore() {
+        let controls = FakeControls()
+        let router = HardwareKeyRouter(controls: controls)
+        router.setDefaultOutput(uid: outputUID)
+        let monitor = display(audioUID: outputUID)
+        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), pointer: onMonitor, displays: [monitor]),
+               "a press the core consumes is consumed")
+        expect(controls.calls.last == ControlsCall(key: "brightness_up", down: true, isRepeat: false, fine: false, owner: monitorA),
+               "the press is forwarded with its name, phase and owner")
+        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), repeat: true), pointer: elsewhere, displays: [monitor]),
+               "a repeat the core consumes is consumed")
+        expect(controls.calls.last == ControlsCall(key: "brightness_up", down: true, isRepeat: true, fine: false, owner: monitorA),
+               "the repeat is forwarded with the latched owner")
+        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up), pointer: elsewhere, displays: [monitor]),
+               "a release the core consumes is consumed")
+        expect(controls.calls.last == ControlsCall(key: "brightness_up", down: false, isRepeat: false, fine: false, owner: monitorA),
+               "the release is forwarded with the latched owner")
+
+        controls.answer = false
+        expect(!router.processForTesting(key(Int(NX_KEYTYPE_SOUND_DOWN), fine: true), pointer: elsewhere, displays: [monitor]),
+               "a press the core declines passes through")
+        expect(controls.calls.last == ControlsCall(key: "volume_down", down: true, isRepeat: false, fine: true, owner: monitorA),
+               "the fine volume press is forwarded with the fine flag")
+        expect(!router.processForTesting(key(Int(NX_KEYTYPE_SOUND_DOWN), phase: .up), pointer: elsewhere, displays: [monitor]),
+               "the release of a declined press passes through")
+        expect(controls.calls.last == ControlsCall(key: "volume_down", down: false, isRepeat: false, fine: false, owner: nil),
+               "a declined press latches nothing, so its release carries no owner")
+
+        controls.answer = true
+        expect(router.processForTesting(muteKey(), pointer: elsewhere, displays: [monitor]), "mute press is consumed")
+        expect(controls.calls.last == ControlsCall(key: "mute", down: true, isRepeat: false, fine: false, owner: monitorA),
+               "mute is forwarded as mute with the monitor as owner")
+        router.shutdown()
+    }
+
+    /// The volume owner follows the default output and the displays, and is nil while routing is off or stopped.
+    private static func volumeOwnerMonitorFollowsOutput() {
+        let installer = FakeTapInstaller()
+        installer.allow = true
+        let router = makeRouter(FakePermissions(true, true), installer)
+        let monitor = display(audioUID: outputUID)
+        expect(router.volumeOwnerMonitorID() == nil, "no volume owner before routing is enabled")
+        router.setDefaultOutput(uid: outputUID)
+        router.apply(enabled: true, displays: [monitor])
+        expect(router.volumeOwnerMonitorID() == "monitor-a", "the default output's monitor owns volume")
+        router.setDefaultOutput(uid: outputUID.lowercased())
+        expect(router.volumeOwnerMonitorID() == "monitor-a", "the output UID match is case-insensitive")
+        router.setDefaultOutput(uid: "BuiltInSpeakerDevice")
+        expect(router.volumeOwnerMonitorID() == nil, "another default output owns no monitor")
+        router.setDefaultOutput(uid: outputUID)
+        router.apply(enabled: true, displays: [display(volume: nil, audioUID: outputUID)])
+        expect(router.volumeOwnerMonitorID() == nil, "an unknown volume value owns no monitor")
+        router.apply(enabled: true, displays: [monitor, display(id: "monitor-b", origin: CGPoint(x: 2000, y: 0), audioUID: outputUID)])
+        expect(router.volumeOwnerMonitorID() == nil, "duplicate output UIDs own no monitor")
+        router.apply(enabled: true, displays: [monitor])
+        expect(router.volumeOwnerMonitorID() == "monitor-a", "the monitor owns volume again once the duplicate is gone")
+        router.apply(enabled: false, displays: [monitor])
+        expect(router.volumeOwnerMonitorID() == nil, "disabled routing owns no monitor")
+        router.shutdown()
+        expect(router.volumeOwnerMonitorID() == nil, "a stopped router owns no monitor")
     }
 
     private static func statusPolicyMatrix() {
@@ -1000,391 +972,103 @@ private struct HardwareKeyRouterTests {
         fresh.shutdown()
     }
 
-    /// One press on a fresh router with the given steps and monitor levels.
-    /// Returns the submitted target, or nil when the press wrote nothing.
-    private static func pressOnce(_ keyType: Int, brightness: Double = 50, volume: Double = 50,
-                                  brightnessStep: Double = 5, volumeStep: Double = 5, fine: Bool = false) -> Double? {
-        let fake = FakeSubmission()
-        let router = HardwareKeyRouter(submit: fake.submit)
-        router.setDefaultOutput(uid: outputUID)
-        router.setSteps(brightness: brightnessStep, volume: volumeStep)
-        let monitor = display(brightness: brightness, volume: volume, audioUID: outputUID)
-        expect(router.processForTesting(key(keyType, fine: fine), pointer: .zero, displays: [monitor]), "single press is consumed")
-        router.waitForWorkerForTesting()
-        let target = fake.commands.first?.target
-        router.shutdown()
-        return target
-    }
-
-    /// The pure stepping and clamping rules, in both directions, for fine and normal steps.
-    private static func pureSteppingPolicy() {
-        let up = HardwareKeyEvent.Direction.increase
-        let down = HardwareKeyEvent.Direction.decrease
-        expect(HardwareKeyPolicy.stepped(50, direction: up, fine: false, step: 5) == 55, "normal increase adds the step")
-        expect(HardwareKeyPolicy.stepped(50, direction: down, fine: false, step: 5) == 45, "normal decrease subtracts the step")
-        expect(HardwareKeyPolicy.stepped(50, direction: up, fine: false, step: 15) == 65, "normal increase uses a 15-point step")
-        expect(HardwareKeyPolicy.stepped(50, direction: down, fine: false, step: 1) == 49, "normal decrease uses a 1-point step")
-        expect(HardwareKeyPolicy.stepped(50, direction: up, fine: true, step: 15) == 51, "fine increase ignores the configured step")
-        expect(HardwareKeyPolicy.stepped(50, direction: down, fine: true, step: 15) == 49, "fine decrease ignores the configured step")
-        expect(HardwareKeyPolicy.stepped(50, direction: up, fine: true, step: 1) == 51, "fine increase moves one point")
-        expect(HardwareKeyPolicy.stepped(95, direction: up, fine: false, step: 15) == 100, "normal increase clamps at 100")
-        expect(HardwareKeyPolicy.stepped(5, direction: down, fine: false, step: 15) == 0, "normal decrease clamps at 0")
-        expect(HardwareKeyPolicy.stepped(100, direction: up, fine: true, step: 15) == 100, "fine increase clamps at 100")
-        expect(HardwareKeyPolicy.defaultStep == 5 && HardwareKeyPolicy.minStep == 1 && HardwareKeyPolicy.maxStep == 15
-               && HardwareKeyPolicy.fineStep == 1, "default 5, range 1...15, fine step 1")
-        expect(HardwareKeyPolicy.clampedStep(0) == 1 && HardwareKeyPolicy.clampedStep(99) == 15, "clampedStep clamps to 1...15")
-        expect(HardwareKeyPolicy.clampedStep(.nan) == 5 && HardwareKeyPolicy.clampedStep(.infinity) == 5,
-               "clampedStep maps non-finite input to the default")
-        expect(HardwareKeyPolicy.clampedStep(7.4) == 7 && HardwareKeyPolicy.clampedStep(7.6) == 8, "clampedStep rounds to whole points")
-    }
-
-    /// setSteps clamps each step to whole points in 1...15; NaN falls back to the default 5.
-    private static func setStepsClampsAndFallsBack() {
-        expect(pressOnce(Int(NX_KEYTYPE_BRIGHTNESS_UP), brightnessStep: 0) == 51, "brightness step 0 clamps to 1")
-        expect(pressOnce(Int(NX_KEYTYPE_BRIGHTNESS_UP), brightnessStep: 99) == 65, "brightness step 99 clamps to 15")
-        expect(pressOnce(Int(NX_KEYTYPE_BRIGHTNESS_UP), brightnessStep: .nan) == 55, "brightness step NaN falls back to 5")
-        expect(pressOnce(Int(NX_KEYTYPE_BRIGHTNESS_UP), brightnessStep: 7.4) == 57, "brightness step 7.4 rounds to 7")
-        expect(pressOnce(Int(NX_KEYTYPE_SOUND_DOWN), volumeStep: 0) == 49, "volume step 0 clamps to 1")
-        expect(pressOnce(Int(NX_KEYTYPE_SOUND_DOWN), volumeStep: 99) == 35, "volume step 99 clamps to 15")
-        expect(pressOnce(Int(NX_KEYTYPE_SOUND_DOWN), volumeStep: .nan) == 45, "volume step NaN falls back to 5")
-        expect(pressOnce(Int(NX_KEYTYPE_SOUND_DOWN), volumeStep: 7.4) == 43, "volume step 7.4 rounds to 7")
-    }
-
-    /// Brightness and volume keep their own steps in one session: 1 point for brightness, 15 for volume.
-    private static func independentConfiguredSteps() {
-        let fake = FakeSubmission()
-        let router = HardwareKeyRouter(submit: fake.submit)
-        router.setDefaultOutput(uid: outputUID)
-        router.setSteps(brightness: 1, volume: 15)
+    /// A late snapshot cannot re-enable a shut-down router, and a stopped router never reaches the core.
+    private static func lateSnapshotsCannotRestartStoppedRouter() {
         let monitor = display(audioUID: outputUID)
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), pointer: .zero, displays: [monitor]), "brightness press is handled")
-        let brightness = fake.waitForCommands(1)[0]
-        expect(brightness.feature == .brightness && brightness.target == 51, "brightness steps by its own 1-point step")
-        fake.acknowledge(0, accepted: true)
-        router.waitForWorkerForTesting()
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up), pointer: .zero, displays: [monitor]),
-               "brightness release is consumed")
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP)), pointer: .zero, displays: [monitor]), "volume press is handled")
-        let volume = fake.waitForCommands(2)[1]
-        expect(volume.feature == .volume && volume.target == 65, "volume steps by its own 15-point step")
-        fake.acknowledge(1, accepted: true)
-        router.waitForWorkerForTesting()
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP), phase: .up), pointer: .zero, displays: [monitor]),
-               "volume release is consumed")
-        router.shutdown()
-    }
-
-    /// Shift+Option moves exactly one point whatever the configured step is.
-    private static func fineStepIgnoresConfiguredStep() {
-        expect(pressOnce(Int(NX_KEYTYPE_BRIGHTNESS_UP), brightnessStep: 15) == 65, "normal brightness press at step 15 moves 15 points")
-        expect(pressOnce(Int(NX_KEYTYPE_BRIGHTNESS_UP), brightnessStep: 15, fine: true) == 51, "Shift+Option brightness moves 1 point at step 15")
-        expect(pressOnce(Int(NX_KEYTYPE_BRIGHTNESS_DOWN), brightnessStep: 1, fine: true) == 49, "Shift+Option brightness moves 1 point at step 1")
-        expect(pressOnce(Int(NX_KEYTYPE_SOUND_UP), volumeStep: 15, fine: true) == 51, "Shift+Option volume moves 1 point at step 15")
-        expect(pressOnce(Int(NX_KEYTYPE_SOUND_DOWN), volumeStep: 15, fine: true) == 49, "Shift+Option volume down moves 1 point at step 15")
-    }
-
-    /// A step change applies to the next press; a key still held keeps being consumed and uses the step current at each repeat.
-    private static func stepChangeAppliesToNextPress() {
-        let fake = FakeSubmission()
-        let router = HardwareKeyRouter(submit: fake.submit)
-        let monitor = display()
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), pointer: .zero, displays: [monitor]), "first press is handled")
-        expect(fake.waitForCommands(1)[0].target == 55, "first press uses the default 5-point step")
-        fake.acknowledge(0, accepted: true)
-        router.waitForWorkerForTesting()
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up), pointer: .zero, displays: [monitor]),
-               "first release is consumed")
-
-        router.setSteps(brightness: 12, volume: 5)
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), pointer: .zero, displays: [monitor]), "next press is handled")
-        expect(fake.waitForCommands(2)[1].target == 67, "next press uses the new 12-point step")
-
-        // The key is still held while the step changes again.
-        router.setSteps(brightness: 3, volume: 5)
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), repeat: true), pointer: .zero, displays: [monitor]),
-               "held key repeat is consumed after the step change")
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up), pointer: .zero, displays: [monitor]),
-               "held key release is consumed")
-        fake.acknowledge(1, accepted: true)
-        router.waitForWorkerForTesting()
-        expect(fake.waitForCommands(3)[2].target == 70, "held key repeat uses the step current at the repeat")
-        fake.acknowledge(2, accepted: true)
-        router.waitForWorkerForTesting()
-        router.shutdown()
-    }
-
-    /// Clamping at 0 and 100 with a step of 15 stops at the bounds and writes nothing when already there.
-    private static func boundaryClampsWithLargeStep() {
-        expect(pressOnce(Int(NX_KEYTYPE_BRIGHTNESS_UP), brightness: 90, brightnessStep: 15) == 100, "brightness up clamps at 100")
-        expect(pressOnce(Int(NX_KEYTYPE_BRIGHTNESS_DOWN), brightness: 10, brightnessStep: 15) == 0, "brightness down clamps at 0")
-        expect(pressOnce(Int(NX_KEYTYPE_BRIGHTNESS_UP), brightness: 100, brightnessStep: 15) == nil, "brightness at 100 writes nothing")
-        expect(pressOnce(Int(NX_KEYTYPE_SOUND_UP), volume: 95, volumeStep: 15) == 100, "volume up clamps at 100")
-        expect(pressOnce(Int(NX_KEYTYPE_SOUND_DOWN), volume: 5, volumeStep: 15) == 0, "volume down clamps at 0")
-        expect(pressOnce(Int(NX_KEYTYPE_SOUND_DOWN), volume: 0, volumeStep: 15) == nil, "volume at 0 writes nothing")
-    }
-
-    /// A brightness-up press whose readback is `readback`; the release follows at once.
-    private static func pressBrightnessUp(_ router: HardwareKeyRouter, readback: Double) {
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), pointer: .zero, displays: [display(brightness: readback)]),
-               "brightness press is handled")
-        _ = router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up), pointer: .zero, displays: [display(brightness: readback)])
-    }
-
-    /// A display snapshot with no key effect: an unpaired release only reconciles the intents with the readback.
-    private static func observeReadback(_ router: HardwareKeyRouter, readback: Double) {
-        _ = router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up), pointer: .zero, displays: [display(brightness: readback)])
-    }
-
-    /// While our accepted write is outstanding, a readback that still shows the old level must not rebase the target 55.
-    private static func rebaseWaitsForOwnHardwareActions() {
-        let fake = FakeSubmission()
-        let clock: UInt64 = 1_000
-        let router = HardwareKeyRouter(submit: fake.submit, nowMs: { clock })
-        pressBrightnessUp(router, readback: 50)
-        expect(fake.waitForCommands(1)[0].target == 55, "first write targets 55")
-        router.hardwareActionAccepted(monitorID: "monitor-a", generation: 1, feature: .brightness, actionGeneration: 7)
-        fake.acknowledge(0, accepted: true)
-        router.waitForWorkerForTesting()
-        observeReadback(router, readback: 20)
-        pressBrightnessUp(router, readback: 20)
-        expect(fake.waitForCommands(2)[1].target == 60, "next press starts from target 55, not from readback 20")
-        fake.acknowledge(1, accepted: true)
-        router.waitForWorkerForTesting()
-        router.shutdown()
-    }
-
-    /// The settle window after our completed write ignores the readback; after it, an external change rebases.
-    private static func rebaseResumesAfterSettleWindow() {
-        let fake = FakeSubmission()
-        var clock: UInt64 = 1_000
-        let router = HardwareKeyRouter(submit: fake.submit, nowMs: { clock })
-        pressBrightnessUp(router, readback: 50)
-        _ = fake.waitForCommands(1)
-        router.hardwareActionAccepted(monitorID: "monitor-a", generation: 1, feature: .brightness, actionGeneration: 7)
-        fake.acknowledge(0, accepted: true)
-        router.waitForWorkerForTesting()
-        clock = 1_100
-        router.hardwareActionCompleted(monitorID: "monitor-a", generation: 1, feature: .brightness, actionGeneration: 7)
-        clock = 1_500
-        pressBrightnessUp(router, readback: 20)
-        expect(fake.waitForCommands(2)[1].target == 60, "inside the settle window the readback does not rebase the target")
-        fake.acknowledge(1, accepted: true)
-        router.waitForWorkerForTesting()
-        clock = 2_200
-        observeReadback(router, readback: 20)
-        pressBrightnessUp(router, readback: 20)
-        expect(fake.waitForCommands(3)[2].target == 25, "after the settle window an external readback rebases the next press")
-        fake.acknowledge(2, accepted: true)
-        router.waitForWorkerForTesting()
-        router.shutdown()
-    }
-
-    /// An accepted write whose completion never arrives stops blocking rebases once outstandingExpiryMs has passed.
-    private static func outstandingActionExpires() {
-        let fake = FakeSubmission()
-        var clock: UInt64 = 1_000
-        let router = HardwareKeyRouter(submit: fake.submit, nowMs: { clock })
-        pressBrightnessUp(router, readback: 50)
-        _ = fake.waitForCommands(1)
-        router.hardwareActionAccepted(monitorID: "monitor-a", generation: 1, feature: .brightness, actionGeneration: 7)
-        fake.acknowledge(0, accepted: true)
-        router.waitForWorkerForTesting()
-        clock = 1_000 + HardwareKeyRouter.outstandingExpiryMs - 1
-        observeReadback(router, readback: 20)
-        pressBrightnessUp(router, readback: 20)
-        expect(fake.waitForCommands(2)[1].target == 60, "an unfinished write still blocks the rebase just before expiry")
-        fake.acknowledge(1, accepted: true)
-        router.waitForWorkerForTesting()
-        clock = 1_000 + HardwareKeyRouter.outstandingExpiryMs + 1
-        observeReadback(router, readback: 20)
-        pressBrightnessUp(router, readback: 20)
-        expect(fake.waitForCommands(3)[2].target == 25, "an expired acceptance no longer blocks the rebase")
-        fake.acknowledge(2, accepted: true)
-        router.waitForWorkerForTesting()
-        router.shutdown()
-    }
-
-    /// A completion that arrives before its acceptance cancels that acceptance instead of leaving it outstanding.
-    private static func earlyCompletionLeavesNothingOutstanding() {
-        let fake = FakeSubmission()
-        var clock: UInt64 = 1_000
-        let router = HardwareKeyRouter(submit: fake.submit, nowMs: { clock })
-        pressBrightnessUp(router, readback: 50)
-        _ = fake.waitForCommands(1)
-        router.hardwareActionCompleted(monitorID: "monitor-a", generation: 1, feature: .brightness, actionGeneration: 9)
-        router.hardwareActionAccepted(monitorID: "monitor-a", generation: 1, feature: .brightness, actionGeneration: 9)
-        fake.acknowledge(0, accepted: true)
-        router.waitForWorkerForTesting()
-        // Only the settle window (until 2000) applies; nothing is left outstanding after it.
-        clock = 2_100
-        observeReadback(router, readback: 20)
-        pressBrightnessUp(router, readback: 20)
-        expect(fake.waitForCommands(2)[1].target == 25, "a completed early acceptance leaves nothing outstanding")
-        fake.acknowledge(1, accepted: true)
-        router.waitForWorkerForTesting()
-        router.shutdown()
-    }
-
-    /// Mute, then volume-up restores the remembered level and adds the volume step; a brightness step change does not alter it.
-    private static func muteRestoreUsesVolumeStep() {
-        let loud = display(audioUID: outputUID)
-        let silent = display(volume: 0, audioUID: outputUID)
-        let fake = FakeSubmission()
-        let router = HardwareKeyRouter(submit: fake.submit)
+        let controls = FakeControls()
+        let router = HardwareKeyRouter(controls: controls)
         router.setDefaultOutput(uid: outputUID)
-        router.setSteps(brightness: 9, volume: 12)
-        expect(router.processForTesting(muteKey(), pointer: elsewhere, displays: [loud]), "mute press is handled")
-        _ = fake.waitForCommands(1)
-        expect(router.processForTesting(muteKey(phase: .up), pointer: elsewhere, displays: [loud]), "mute release is consumed")
-        fake.acknowledge(0, accepted: true)
-        router.waitForWorkerForTesting()
-        // The brightness step changes while muted; the volume restore must not follow it.
-        router.setSteps(brightness: 1, volume: 12)
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP)), pointer: elsewhere, displays: [silent]), "volume-up while muted is handled")
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP), phase: .up), pointer: elsewhere, displays: [silent]),
-               "volume-up release while muted is consumed")
-        let restored = fake.waitForCommands(2)[1]
-        expect(restored.feature == .volume && restored.target == 62, "restore from the remembered 50 adds the 12-point volume step")
-        fake.acknowledge(1, accepted: true)
-        router.waitForWorkerForTesting()
         router.shutdown()
+        router.apply(enabled: true, displays: [monitor])
+        let before = controls.calls.count
+        expect(!router.processForTesting(key(Int(NX_KEYTYPE_SOUND_UP)), pointer: elsewhere, displays: [monitor]),
+               "late snapshots cannot restart a stopped router")
+        expect(controls.calls.count == before, "a stopped router does not reach the core")
+        drain()
     }
 
-    /// Brightness keys on a followed monitor pass through on press, repeat and release; without the set they are handled.
+    /// Brightness keys on a followed monitor resolve no owner on press, repeat and release; without the set they are owned.
     private static func followedBrightnessPassesThrough() {
         let monitor = display()
-        let control = FakeSubmission()
-        let controlRouter = HardwareKeyRouter(submit: control.submit)
-        expect(hold(controlRouter, keyType: Int(NX_KEYTYPE_BRIGHTNESS_UP), pointer: .zero, displays: [monitor]) == (true, true, true),
-               "control: brightness press is handled before any set is installed")
-        let controlCommand = control.waitForCommands(1)[0]
-        expect(controlCommand.monitorID == "monitor-a" && controlCommand.feature == .brightness,
-               "control: the handled brightness press emits a command")
-        control.acknowledge(0, accepted: true)
-        controlRouter.waitForWorkerForTesting()
+        let control = FakeControls()
+        let controlRouter = HardwareKeyRouter(controls: control)
+        expect(holdOwners(controlRouter, control, keyType: Int(NX_KEYTYPE_BRIGHTNESS_UP), pointer: onMonitor, displays: [monitor])
+                == [monitorA, monitorA, monitorA],
+               "control: brightness hold is owned before any set is installed")
         controlRouter.shutdown()
 
-        let fake = FakeSubmission()
-        let router = HardwareKeyRouter(submit: fake.submit)
+        let followed = FakeControls()
+        let router = HardwareKeyRouter(controls: followed)
         router.setFollowedBrightnessDisplays(["monitor-a"])
-        expect(hold(router, keyType: Int(NX_KEYTYPE_BRIGHTNESS_UP), pointer: .zero, displays: [monitor]) == (false, false, false),
-               "brightness down, repeat and up on a followed monitor pass through")
-        expect(hold(router, keyType: Int(NX_KEYTYPE_BRIGHTNESS_DOWN), pointer: .zero, displays: [monitor]) == (false, false, false),
-               "brightness-down on a followed monitor passes through")
-        router.waitForWorkerForTesting()
-        expect(fake.commands.isEmpty, "followed brightness keys submit no hardware command")
+        expect(holdOwners(router, followed, keyType: Int(NX_KEYTYPE_BRIGHTNESS_UP), pointer: onMonitor, displays: [monitor]) == [nil, nil, nil],
+               "brightness down, repeat and up on a followed monitor resolve no owner")
+        expect(holdOwners(router, followed, keyType: Int(NX_KEYTYPE_BRIGHTNESS_DOWN), pointer: onMonitor, displays: [monitor]) == [nil, nil, nil],
+               "brightness-down on a followed monitor resolves no owner")
         router.shutdown()
     }
 
-    /// Volume and mute on the same followed monitor are routed exactly as before the set existed.
+    /// Volume and mute on the same followed monitor keep their owner, exactly as before the set existed.
     private static func followedVolumeAndMuteUnchanged() {
         let monitor = display(audioUID: outputUID)
-        let onMonitor = CGPoint(x: 10, y: 10)
-
-        func volumeHold(_ keyType: Int, _ expected: Double, _ label: String) {
-            let fake = FakeSubmission()
-            let router = HardwareKeyRouter(submit: fake.submit)
-            router.setDefaultOutput(uid: outputUID)
-            router.setFollowedBrightnessDisplays(["monitor-a"])
-            expect(router.processForTesting(key(keyType), pointer: onMonitor, displays: [monitor]), "\(label) press is handled")
-            let command = fake.waitForCommands(1)[0]
-            expect(command.monitorID == "monitor-a" && command.feature == .volume && command.target == expected,
-                   "\(label) still steps the followed monitor")
-            expect(router.processForTesting(key(keyType, repeat: true), pointer: onMonitor, displays: [monitor]), "\(label) repeat is handled")
-            expect(router.processForTesting(key(keyType, phase: .up), pointer: onMonitor, displays: [monitor]), "\(label) release is handled")
-            fake.acknowledge(0, accepted: true)
-            router.waitForWorkerForTesting()
-            router.shutdown()
-        }
-        volumeHold(Int(NX_KEYTYPE_SOUND_UP), 55, "followed volume up")
-        volumeHold(Int(NX_KEYTYPE_SOUND_DOWN), 45, "followed volume down")
-
-        let muteFake = FakeSubmission()
-        let muteRouter = HardwareKeyRouter(submit: muteFake.submit)
-        muteRouter.setDefaultOutput(uid: outputUID)
-        muteRouter.setFollowedBrightnessDisplays(["monitor-a"])
-        expect(muteRouter.processForTesting(muteKey(), pointer: onMonitor, displays: [monitor]), "followed mute press is handled")
-        let muted = muteFake.waitForCommands(1)[0]
-        expect(muted.monitorID == "monitor-a" && muted.feature == .volume && muted.target == 0,
-               "followed mute still writes zero to the monitor")
-        expect(muteRouter.processForTesting(muteKey(repeat: true), pointer: onMonitor, displays: [monitor]), "followed mute repeat is handled")
-        expect(muteRouter.processForTesting(muteKey(phase: .up), pointer: onMonitor, displays: [monitor]), "followed mute release is handled")
-        muteFake.acknowledge(0, accepted: true)
-        muteRouter.waitForWorkerForTesting()
-        expect(muteFake.commands.count == 1, "followed mute submits no second command")
-        muteRouter.shutdown()
+        let controls = FakeControls()
+        let router = HardwareKeyRouter(controls: controls)
+        router.setDefaultOutput(uid: outputUID)
+        router.setFollowedBrightnessDisplays(["monitor-a"])
+        expect(holdOwners(router, controls, keyType: Int(NX_KEYTYPE_SOUND_UP), pointer: onMonitor, displays: [monitor]) == [monitorA, monitorA, monitorA],
+               "followed volume up still resolves the monitor")
+        expect(holdOwners(router, controls, keyType: Int(NX_KEYTYPE_SOUND_DOWN), pointer: onMonitor, displays: [monitor]) == [monitorA, monitorA, monitorA],
+               "followed volume down still resolves the monitor")
+        expect(holdOwners(router, controls, keyType: Int(NX_KEYTYPE_MUTE), pointer: onMonitor, displays: [monitor]) == [monitorA, monitorA, monitorA],
+               "followed mute still resolves the monitor")
+        router.shutdown()
     }
 
-    /// A brightness key on a monitor outside the set is still handled, while the followed one next to it passes through.
+    /// A brightness key on a monitor outside the set is still owned, while the followed one next to it resolves none.
     private static func unfollowedBrightnessStillHandled() {
         let followed = display()
         let other = display(id: "monitor-b", origin: CGPoint(x: 2000, y: 0))
-        let fake = FakeSubmission()
-        let router = HardwareKeyRouter(submit: fake.submit)
+        let controls = FakeControls()
+        let router = HardwareKeyRouter(controls: controls)
         router.setFollowedBrightnessDisplays(["monitor-a"])
-        expect(hold(router, keyType: Int(NX_KEYTYPE_BRIGHTNESS_UP), pointer: .zero, displays: [followed, other]) == (false, false, false),
-               "followed monitor under the pointer passes brightness through")
-        let unfollowedPoint = CGPoint(x: 2010, y: 10)
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_DOWN)), pointer: unfollowedPoint, displays: [followed, other]),
-               "unfollowed monitor under the pointer still handles brightness")
-        let command = fake.waitForCommands(1)[0]
-        expect(command.monitorID == "monitor-b" && command.feature == .brightness && command.target == 45,
-               "unfollowed brightness steps its own monitor")
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_DOWN), repeat: true), pointer: unfollowedPoint, displays: [followed, other]),
-               "unfollowed brightness repeat is handled")
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_DOWN), phase: .up), pointer: unfollowedPoint, displays: [followed, other]),
-               "unfollowed brightness release is handled")
-        fake.acknowledge(0, accepted: true)
-        router.waitForWorkerForTesting()
+        expect(holdOwners(router, controls, keyType: Int(NX_KEYTYPE_BRIGHTNESS_UP), pointer: onMonitor, displays: [followed, other]) == [nil, nil, nil],
+               "followed monitor under the pointer resolves no brightness owner")
+        expect(holdOwners(router, controls, keyType: Int(NX_KEYTYPE_BRIGHTNESS_DOWN), pointer: onOther, displays: [followed, other]) == [monitorB, monitorB, monitorB],
+               "unfollowed monitor under the pointer keeps its brightness owner")
         router.shutdown()
     }
 
-    /// Installing an empty set after a pass-through restores normal brightness handling on the next press.
+    /// Clearing the followed set restores brightness ownership on the next press.
     private static func emptyFollowedSetRestoresBrightness() {
         let monitor = display()
-        let fake = FakeSubmission()
-        let router = HardwareKeyRouter(submit: fake.submit)
+        let controls = FakeControls()
+        let router = HardwareKeyRouter(controls: controls)
         router.setFollowedBrightnessDisplays(["monitor-a"])
-        expect(hold(router, keyType: Int(NX_KEYTYPE_BRIGHTNESS_UP), pointer: .zero, displays: [monitor]) == (false, false, false),
-               "followed brightness passes through before the set is cleared")
+        expect(holdOwners(router, controls, keyType: Int(NX_KEYTYPE_BRIGHTNESS_UP), pointer: onMonitor, displays: [monitor]) == [nil, nil, nil],
+               "followed brightness resolves no owner before the set is cleared")
         router.setFollowedBrightnessDisplays([])
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), pointer: .zero, displays: [monitor]),
-               "an empty set restores brightness handling")
-        let command = fake.waitForCommands(1)[0]
-        expect(command.monitorID == "monitor-a" && command.feature == .brightness && command.target == 55,
-               "restored brightness press steps the monitor")
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up), pointer: .zero, displays: [monitor]),
-               "restored brightness release is consumed")
-        fake.acknowledge(0, accepted: true)
-        router.waitForWorkerForTesting()
-        expect(fake.commands.count == 1, "restored brightness press submits exactly one command")
+        expect(routed(router, controls, key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), pointer: onMonitor, displays: [monitor]) == monitorA,
+               "an empty set restores brightness ownership")
+        expect(routed(router, controls, key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up), pointer: onMonitor, displays: [monitor]) == monitorA,
+               "the restored press is released with its owner")
         router.shutdown()
     }
 
-    /// A set change mid-press keeps the latched outcome; the new set decides only the next key-down.
+    /// A set change mid-press keeps the latched owner; the new set decides only the next key-down.
     private static func followedChangeKeepsInFlightPress() {
         let monitor = display()
-        let fake = FakeSubmission()
-        let router = HardwareKeyRouter(submit: fake.submit)
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), pointer: .zero, displays: [monitor]),
-               "press is handled before the set changes")
-        let first = fake.waitForCommands(1)[0]
-        expect(first.target == 55, "the in-flight press targets 55")
+        let controls = FakeControls()
+        let router = HardwareKeyRouter(controls: controls)
+        expect(routed(router, controls, key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), pointer: onMonitor, displays: [monitor]) == monitorA,
+               "press is owned before the set changes")
         router.setFollowedBrightnessDisplays(["monitor-a"])
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), repeat: true), pointer: .zero, displays: [monitor]),
-               "held repeat keeps its handled latch after the set changes")
-        expect(router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up), pointer: .zero, displays: [monitor]),
-               "release of the handled press is still consumed")
-        expect(!router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), pointer: .zero, displays: [monitor]),
-               "the next key-down follows the new set and passes through")
-        expect(!router.processForTesting(key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up), pointer: .zero, displays: [monitor]),
-               "release of the passed-through press passes through")
-        fake.acknowledge(0, accepted: true)
-        router.waitForWorkerForTesting()
-        expect(fake.waitForCommands(2)[1].target == 60, "the held repeat's coalesced write still lands")
-        fake.acknowledge(1, accepted: true)
-        router.waitForWorkerForTesting()
-        expect(fake.commands.count == 2, "the new set adds no command")
+        expect(routed(router, controls, key(Int(NX_KEYTYPE_BRIGHTNESS_UP), repeat: true), pointer: onMonitor, displays: [monitor]) == monitorA,
+               "held repeat keeps its owner after the set changes")
+        expect(routed(router, controls, key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up), pointer: onMonitor, displays: [monitor]) == monitorA,
+               "release of the owned press still sends the owner")
+        expect(routed(router, controls, key(Int(NX_KEYTYPE_BRIGHTNESS_UP)), pointer: onMonitor, displays: [monitor]) == nil,
+               "the next key-down follows the new set and resolves nothing")
+        expect(routed(router, controls, key(Int(NX_KEYTYPE_BRIGHTNESS_UP), phase: .up), pointer: onMonitor, displays: [monitor]) == nil,
+               "release of the unowned press resolves nothing")
         router.shutdown()
     }
 }

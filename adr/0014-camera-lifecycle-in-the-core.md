@@ -22,7 +22,7 @@ The macOS shell keeps camera session timing in `native/macos/TelaViva/CameraLife
 
 ## Alternatives Considered
 
-- **Send every frame decision through `tv_submit`.** Rejected: each accepted command bumps the revision and republishes the snapshot, so per-frame decisions would amplify snapshot publishing. A presence report already causes several snapshot builds and main-thread publications, as the [snapshot publish amplification spec](../specs/snapshot-publish-amplification.md) records.
+- **Send every frame decision through `tv_submit`.** Rejected: each accepted command bumps the revision and republishes the snapshot, so per-frame decisions would amplify snapshot publishing. A presence report already causes several snapshot builds and main-thread publications, as the [snapshot publish amplification spec](../specs/archived/snapshot-publish-amplification/plan.md) records.
 - **Leave the lifecycle in Swift.** Rejected: Windows would duplicate the deadlines and the dark-settle rule, and the two copies could drift apart.
 - **Generate bindings with UniFFI.** Rejected: the ABI is small, JSON-based and checked by header tests, so a generator would add a dependency for little gain. The C# generator that a Windows shell would use is community-maintained.
 

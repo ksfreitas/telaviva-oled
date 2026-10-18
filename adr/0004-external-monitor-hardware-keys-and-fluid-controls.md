@@ -1,6 +1,6 @@
 # ADR-0004: Route external-monitor keyboard controls by pointer and sound output, with serialized fluid DDC writes
 
-**Status:** Accepted
+**Status:** Accepted; the macOS event tap's synchronous call into the controls handle, and the core ownership of draft coalescing and DDC retry, are amended by [ADR 0029](0029-core-owned-manual-control-queue-and-ddc-dispatch.md)
 **Date:** 2026-10-16
 **Feature:** external-monitor-hardware-keys-and-fluid-controls
 **Spec:** [Archived hardware-key spec](../specs/archived/external-monitor-hardware-keys-and-fluid-controls/external-monitor-hardware-keys.md)
@@ -42,3 +42,11 @@ The event tap now sees every keystroke on the main thread, so a stalled main thr
 - WindowServer checks Input Monitoring separately from Accessibility before delivering keys to a tap.
 - An ad-hoc signature with a cdhash designated requirement invalidates permission grants on every rebuild.
 - The user reported on 2026-10-16 that brightness, volume and mute work on the connected LG; the rows of the macOS acceptance checklist were not recorded individually and remain `Not run`.
+
+## Amendment 2026-10-18: Controls handle
+
+[ADR 0029](0029-core-owned-manual-control-queue-and-ddc-dispatch.md) changes three parts of this record for macOS. The rest stands.
+
+- Decision (1): the tap still never calls CoreAudio or DDC, but it now makes one synchronous call into the controls handle (`tv_controls_step` with a `key` event) and swallows the key exactly when the answer is `consume`. The handle's lock is a leaf lock, and no I/O runs under it. Key intents no longer go through a worker queue to the core.
+- Decision (5): draft coalescing and the DDC retry policy run in the core. The shell sends the slider events and runs the effects the handle returns.
+- Decision (6): the core's duplicate write is sent only for the `GSM` manufacturer profile; the macOS primitive still sends each packet twice (`writeTwice`), unchanged. The retry and readback rules are the core's, with three attempts per DDC primitive.

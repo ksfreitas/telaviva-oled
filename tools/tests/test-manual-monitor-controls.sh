@@ -7,6 +7,8 @@ swiftc \
   "$ROOT/native/macos/TelaViva/HardwareKeyRouter.swift" \
   "$ROOT/native/macos/TelaViva/CoreBridge.swift" \
   "$ROOT/native/macos/TelaViva/ManualMonitorControls.swift" \
+  "$ROOT/native/macos/TelaViva/ControlsBridge.swift" \
+  "$ROOT/native/macos/TelaViva/ControlsDriver.swift" \
   "$ROOT/native/macos/Tests/ManualMonitorControlsTests.swift" \
   -o "$TEMP_DIR/manual-monitor-controls-tests"
 "$TEMP_DIR/manual-monitor-controls-tests"

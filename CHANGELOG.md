@@ -16,7 +16,9 @@
 - The Windows popup no longer shows the face-detection status line and its camera icon, so it matches the macOS popup. The footer camera status line ("Camera: <status>") is unchanged.
 - Windows manual controls and hardware keys now run on the core controls handle. Hardware checks are pending.
 - DDC writes on Windows are now retried (up to three attempts), and a rejected result submission is resubmitted at most three times instead of re-running the write on every snapshot.
-- The macOS shell is unchanged for now; it keeps its own manual-control and hardware-key queue until its adapter for the controls handle lands.
+- macOS manual controls, hardware keys and DDC dispatch now run on the core controls handle, as on Windows; the Swift queue and retry code are removed, and `tools/tests/test-controls-bridge.sh` covers the Swift bridge. On macOS each DDC packet is still sent twice inside one primitive, as before; the core's separate duplicate write applies to GSM monitors only. A rejected result is resubmitted at most three times instead of being dropped. Hardware checks are pending.
+
+- Fewer duplicated snapshot reads: `tv_submit` no longer builds a full snapshot to read the revision, macOS no longer refreshes twice for one accepted command and ignores a snapshot whose revision was already published, and the Windows bridge worker skips a revision it already published. The snapshot content and the C ABI are unchanged. The Windows part is not yet built or tested.
 
 ### Fixed
 

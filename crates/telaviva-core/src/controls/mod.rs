@@ -1,4 +1,4 @@
-//! Core-owned manual-control queue and DDC dispatch (see specs/core-command-queue/architecture.md).
+//! Core-owned manual-control queue and DDC dispatch (see specs/archived/core-command-queue/architecture.md).
 
 mod dispatch;
 mod keys;

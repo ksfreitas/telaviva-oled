@@ -7,7 +7,7 @@
 
 ## Context
 
-[ADR 0001](0001-native-shell-and-rust-core.md) states that static locale catalogs cover current messages. The core therefore carried a Fluent catalog for each locale, `locales/en-US.ftl` and `locales/pt-BR.ftl` with 21 messages, and put the parsed messages into every snapshot as `messages`. Swift read only 4 of those keys. The other 116 UI strings lived in `native/macos/TelaViva/Localization.swift`, so the text was split across two places, and 17 of the 21 core messages were carried in every snapshot without being read. The per-snapshot parsing is also one of the costs described in the [snapshot publish amplification spec](../specs/snapshot-publish-amplification.md).
+[ADR 0001](0001-native-shell-and-rust-core.md) states that static locale catalogs cover current messages. The core therefore carried a Fluent catalog for each locale, `locales/en-US.ftl` and `locales/pt-BR.ftl` with 21 messages, and put the parsed messages into every snapshot as `messages`. Swift read only 4 of those keys. The other 116 UI strings lived in `native/macos/TelaViva/Localization.swift`, so the text was split across two places, and 17 of the 21 core messages were carried in every snapshot without being read. The per-snapshot parsing is also one of the costs described in the [snapshot publish amplification spec](../specs/archived/snapshot-publish-amplification/plan.md).
 
 ## Decision
 
@@ -19,7 +19,7 @@
 
 ## Alternatives Considered
 
-- **A core-owned catalog served in every snapshot.** Rejected: the catalog would grow every snapshot, which the [snapshot publish amplification spec](../specs/snapshot-publish-amplification.md) already identifies as a cost, and Swift read only 4 of the 21 keys.
+- **A core-owned catalog served in every snapshot.** Rejected: the catalog would grow every snapshot, which the [snapshot publish amplification spec](../specs/archived/snapshot-publish-amplification/plan.md) already identifies as a cost, and Swift read only 4 of the 21 keys.
 - **One catalog fetched once through a new function.** Rejected for now: it is a larger change to the ABI, and WinUI conventionally uses its own resource files, so a shared catalog would not match the Windows shell.
 
 ## Consequences

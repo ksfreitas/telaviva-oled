@@ -12,17 +12,16 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     @MainActor lazy var updateChecker: UpdateChecker = UpdateChecker(installedVersion: installedVersion,
                                                                      fetcher: URLSessionUpdateFetcher(),
                                                                      evaluate: MenuBarController.updateEvaluator)
-    private lazy var manualControls = ManualMonitorControls(submit: core.submitManualControl)
+    /// The Rust controls core: manual sliders, hardware keys and the DDC attempts it asks for.
+    private lazy var controls = ControlsDriver(stepper: ControlsBridge(), submit: { [weak self] json in
+        self?.core.submitJSON(json) ?? false
+    }, runAttempt: { [weak self] request, done in
+        self?.ddc.runAttempt(request, completion: done)
+    })
+    private lazy var manualControls = ManualMonitorControls(driver: controls)
     let camera = PresenceCamera()
     private lazy var ddc = MacDDCController(core: core)
-    private lazy var hardwareKeyRouter = HardwareKeyRouter(submit: { [weak self] command, completion in
-        guard let self else { completion(false); return }
-        self.ddc.submitHardwareKey(command) { [weak self] accepted in
-            completion(accepted)
-            guard !accepted else { return }
-            DispatchQueue.main.async { [weak self] in self?.rejectExternalKeyboardIntent(command) }
-        }
-    })
+    private lazy var hardwareKeyRouter = HardwareKeyRouter(controls: controls)
     private let defaultAudioOutput = DefaultAudioOutputMonitor()
     private let ambientAvailability = AmbientAvailability()
     private let builtInBackend = DisplayServicesBackend()
@@ -59,7 +58,6 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         return AmbientCalibrationController(backend: builtInBackend, store: CalibrationSessionStore(directory: appSupport), hooks: hooks)
     }()
     private var hardwareKeyDisplays: [HardwareKeyDisplay] = []
-    private var externalKeyboardDrafts: [UInt64: (monitorID: String, generation: UInt64, feature: HardwareKeyFeature, revision: UInt64)] = [:]
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
     private var settingsWindow: NSWindow?
@@ -110,20 +108,19 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         snapshotSubscription = core.$snapshot.receive(on: DispatchQueue.main).sink { [weak self] snapshot in
             guard let self else { return }
             self.updateStatusItemIcon(presence: snapshot.camera?.presence, locale: snapshot.settings?.locale)
-            self.pruneExternalKeyboardDrafts(using: snapshot)
             let inferenceDevice = snapshot.settings?.inference_device ?? "auto"
             if inferenceDevice != self.lastInferenceDevice {
                 self.lastInferenceDevice = inferenceDevice
                 self.camera.setInferenceDevice(inferenceDevice)
             }
             self.camera.apply(snapshot, core: self.core)
-            self.manualControls.apply(snapshot)
+            // Before the terminating guard, so snapshots keep reaching the core during shutdown restoration.
+            self.controls.observe(snapshot)
             self.ddc.process(snapshot)
             guard !self.terminating else { return }
-            self.hardwareKeyRouter.setSteps(brightness: Double(snapshot.settings?.brightness_key_step ?? 5),
-                                            volume: Double(snapshot.settings?.volume_key_step ?? 5))
             self.hardwareKeyRouter.apply(enabled: snapshot.settings?.hardware_keys_enabled ?? false,
                                          displays: self.hardwareKeyDisplays)
+            self.syncControlsConfiguration()
             let followedIDs: Set<String> = snapshot.ambient?.active == true
                 ? Set((snapshot.monitors ?? []).filter { $0.follow == "eligible" }.map(\.id))
                 : []
@@ -138,70 +135,10 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             }
             self.builtInMonitor.setEnabled(snapshot.settings?.ambientFollowEnabled ?? false)
         }
-        core.hardwareKeyValidator = { [weak self] command in
-            guard let self, !self.terminating, AXIsProcessTrusted() else { return false }
-            return self.hardwareKeyRouter.isCommandCurrent(command)
-        }
-        manualControls.onIntent = { [weak self] monitorID, generation, feature, value, revision in
-            guard let self else { return }
-            self.externalKeyboardDrafts = self.externalKeyboardDrafts.filter {
-                $0.value.monitorID != monitorID || $0.value.generation != generation || $0.value.feature != feature
-            }
-            self.hardwareKeyRouter.manualControlChanged(monitorID: monitorID, generation: generation,
-                                                        feature: feature, value: value, revision: revision)
-        }
-        manualControls.onAccepted = { [weak self] monitorID, generation, feature, value, revision, accepted in
-            guard accepted else { return }
-            self?.hardwareKeyRouter.manualControlAccepted(monitorID: monitorID, generation: generation,
-                                                          feature: feature, value: value, revision: revision)
-        }
-        core.onHardwareActionCompleted = { [weak self, weak manualControls] monitorID, actionID, actionGeneration, connectionGeneration, feature, success, rawValue in
-            manualControls?.actionCompleted(monitorID: monitorID, actionID: actionID,
-                                             actionGeneration: actionGeneration,
-                                             connectionGeneration: connectionGeneration, feature: feature,
-                                             success: success, confirmedValue: rawValue)
-            self?.hardwareKeyRouter.hardwareActionCompleted(monitorID: monitorID, generation: connectionGeneration,
-                                                            feature: feature, actionGeneration: actionGeneration)
-        }
-        core.onHardwareKeyAccepted = { [weak self] command, accepted, actionGeneration in
-            guard let self else { return }
-            if accepted, let actionGeneration {
-                self.hardwareKeyRouter.hardwareActionAccepted(monitorID: command.monitorID, generation: command.generation,
-                                                              feature: command.feature, actionGeneration: actionGeneration)
-            }
-            let keyRevision = command.intentRevision
-            guard let draft = self.externalKeyboardDrafts.removeValue(forKey: keyRevision),
-                  self.hardwareKeyRouter.isCommandCurrent(command) else { return }
-            if accepted, let actionGeneration {
-                self.manualControls.bindExternalReceipt(monitorID: draft.monitorID, generation: draft.generation,
-                                                        feature: draft.feature, revision: draft.revision,
-                                                        actionGeneration: actionGeneration)
-            } else {
-                self.manualControls.rejectExternalIntent(monitorID: draft.monitorID, generation: draft.generation,
-                                                         feature: draft.feature, revision: draft.revision)
-            }
-        }
         // Feed the current sound-output UID into the router; see DefaultAudioOutputMonitor.
-        defaultAudioOutput.onChange = { [weak self] uid in self?.hardwareKeyRouter.setDefaultOutput(uid: uid) }
-        hardwareKeyRouter.onReservedTarget = { [weak self] command in
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.hardwareKeyRouter.isCommandCurrent(command) else { return }
-                guard let revision = self.manualControls.adoptExternalIntent(
-                    monitorID: command.monitorID, generation: command.generation,
-                    feature: command.feature, value: command.target, sourceToken: command.intentRevision
-                ) else { return }
-                self.externalKeyboardDrafts = self.externalKeyboardDrafts.filter {
-                    $0.value.monitorID != command.monitorID || $0.value.generation != command.generation ||
-                        $0.value.feature != command.feature
-                }
-                guard self.externalKeyboardDrafts.count < 128 else {
-                    self.manualControls.rejectExternalIntent(monitorID: command.monitorID, generation: command.generation,
-                                                             feature: command.feature, revision: revision)
-                    return
-                }
-                self.externalKeyboardDrafts[command.intentRevision] = (command.monitorID, command.generation,
-                                                                         command.feature, revision)
-            }
+        defaultAudioOutput.onChange = { [weak self] uid in
+            self?.hardwareKeyRouter.setDefaultOutput(uid: uid)
+            self?.syncControlsConfiguration()
         }
         hardwareKeyRouter.onStatusChange = { [weak core = self.core] status in
             let key: String
@@ -230,7 +167,10 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             self.hardwareKeyDisplays = displays
             self.hardwareKeyRouter.apply(enabled: self.core.snapshot.settings?.hardware_keys_enabled ?? false,
                                          displays: displays)
+            self.syncControlsConfiguration()
         }
+        ddc.controls = controls
+        controls.onDraftChanged = { [weak self] _, _ in self?.manualControls.draftChanged() }
         ddc.start()
         builtInMonitor.start()
         calibration.recoverIfNeeded()
@@ -382,6 +322,8 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             self.defaultAudioOutput.stop()
             self.hardwareKeyRouter.shutdown()
             self.removePermissionObservers()
+            // The driver serves the core's shutdown restoration until the DDC controller stops.
+            self.controls.shutdown()
             self.ddc.shutdown()
             self.terminationReply = nil
             NSApp.reply(toApplicationShouldTerminate: allow)
@@ -416,20 +358,35 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
     }
 
-    private func rejectExternalKeyboardIntent(_ command: HardwareKeyCommand) {
-        guard let draft = externalKeyboardDrafts.removeValue(forKey: command.intentRevision) else { return }
-        manualControls.rejectExternalIntent(monitorID: draft.monitorID, generation: draft.generation,
-                                            feature: draft.feature, revision: draft.revision)
+    /// What was last sent with `configure`, so an unchanged state is not re-sent.
+    private struct ControlsConfiguration: Equatable {
+        let brightnessStep: Double
+        let volumeStep: Double
+        let keysEnabled: Bool
+        let volumeOwner: String?
     }
+    private var lastControlsConfiguration: ControlsConfiguration?
 
-    private func pruneExternalKeyboardDrafts(using snapshot: CoreSnapshot) {
-        externalKeyboardDrafts = externalKeyboardDrafts.filter { _, draft in
-            guard let monitor = snapshot.monitors?.first(where: { $0.id == draft.monitorID }),
-                  monitor.generation == draft.generation,
-                  monitor.display_state != "asleep", monitor.identity_status == "stable" else { return false }
-            let value = draft.feature == .brightness ? monitor.brightness : monitor.volume
-            return value?.supported == true
+    /// Sends the key steps, key routing and the monitor that owns the volume keys to the core when any of them changed.
+    /// A different volume owner makes the core forget remembered mute levels. Main thread only.
+    private func syncControlsConfiguration() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in self?.syncControlsConfiguration() }
+            return
         }
+        let settings = core.snapshot.settings
+        let keysEnabled = settings?.hardware_keys_enabled ?? false
+        let configuration = ControlsConfiguration(
+            brightnessStep: Double(settings?.brightness_key_step ?? 5),
+            volumeStep: Double(settings?.volume_key_step ?? 5),
+            keysEnabled: keysEnabled,
+            volumeOwner: keysEnabled ? hardwareKeyRouter.volumeOwnerMonitorID() : nil
+        )
+        guard configuration != lastControlsConfiguration else { return }
+        lastControlsConfiguration = configuration
+        controls.configure(brightnessStep: configuration.brightnessStep, volumeStep: configuration.volumeStep,
+                           keysEnabled: configuration.keysEnabled,
+                           volumeOwner: configuration.volumeOwner.map { .monitor($0) } ?? .none)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -440,6 +397,8 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         hardwareKeyRouter.shutdown()
         removePermissionObservers()
         stopBuiltInMonitor()
+        // The driver serves the core's shutdown restoration until the DDC controller stops.
+        controls.shutdown()
         ddc.shutdown()
     }
 }

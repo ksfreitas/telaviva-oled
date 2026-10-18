@@ -7,9 +7,6 @@ final class CoreBridge: ObservableObject {
     @Published private(set) var snapshot: CoreSnapshot = .unavailable
     @Published var hardwareKeyStatusKey = "hardwareKeys.status.disabled"
     @Published var hardwareKeyPermissions = HardwareKeyPermissions.current()
-    var hardwareKeyValidator: ((HardwareKeyCommand) -> Bool)?
-    var onHardwareActionCompleted: ((String, UInt64, UInt64, UInt64, HardwareKeyFeature, Bool, Double?) -> Void)?
-    var onHardwareKeyAccepted: ((HardwareKeyCommand, Bool, UInt64?) -> Void)?
     /// Test seam: invoked on the worker queue at the start of every snapshot refresh run, before the core is read.
     var refreshRunObserver: (() -> Void)?
     private var core: OpaquePointer?
@@ -78,7 +75,8 @@ final class CoreBridge: ObservableObject {
 
     private func publish(_ value: CoreSnapshot) {
         publishLock.lock()
-        if let pendingPublication, let current = pendingPublication.revision, let next = value.revision, next < current {
+        // The revision is the core's change counter, so an equal revision carries the same state.
+        if let pendingPublication, let current = pendingPublication.revision, let next = value.revision, next <= current {
             publishLock.unlock()
             return
         }
@@ -98,7 +96,7 @@ final class CoreBridge: ObservableObject {
             if value == nil { publicationScheduled = false }
             publishLock.unlock()
             guard let value else { return }
-            if let previous = snapshot.revision, let next = value.revision, next < previous { continue }
+            if let previous = snapshot.revision, let next = value.revision, next <= previous { continue }
             snapshot = value
         }
     }
@@ -111,90 +109,34 @@ final class CoreBridge: ObservableObject {
         ffiLock.lock()
         let accepted = bytes.withUnsafeBytes { raw in tv_submit(core, raw.baseAddress!.assumingMemoryBound(to: UInt8.self), raw.count) == TV_OK }
         ffiLock.unlock()
-        if accepted { refresh() }
+        // The snapshot-ready callback already schedules a refresh for every accepted command. The core skips the
+        // callback once it is stopped, and shutdown restoration still needs this refresh.
+        if accepted && isShuttingDown { refresh() }
         return accepted
         #else
         return false
         #endif
     }
 
+    /// Passes a JSON text built by the Rust controls machine (a command_json or result_json) to tv_submit verbatim.
+    /// Callable from any thread; the caller reports the outcome back to the machine.
     @discardableResult
-    func submitHardwareKey(_ command: HardwareKeyCommand) -> Bool {
-        guard Thread.isMainThread, !isShuttingDown, hardwareKeyValidator?(command) == true else { return false }
-        let type = command.feature == .brightness ? "set_brightness" : "set_volume"
+    func submitJSON(_ text: String) -> Bool {
         #if TELAVIVA_CORE
         guard let core else { return false }
+        let bytes = Array(text.utf8)
+        guard bytes.count <= 65_536 else { return false }
         ffiLock.lock()
-        let actionGeneration = readSnapshot(core)?.revision.map { $0 &+ 1 }
-        let accepted = submit(["type": type, "monitor_id": command.monitorID, "connection_generation": command.generation,
-                               "value": command.target])
+        let accepted = bytes.withUnsafeBytes { raw in
+            tv_submit(core, raw.baseAddress?.assumingMemoryBound(to: UInt8.self), raw.count) == TV_OK
+        }
         ffiLock.unlock()
-        onHardwareKeyAccepted?(command, accepted, accepted ? actionGeneration : nil)
+        // Same rule as submit(_:): the callback refreshes, except after shutdown.
+        if accepted && isShuttingDown { refresh() }
         return accepted
         #else
         return false
         #endif
-    }
-
-    /// Serializes a manual slider command and its snapshot work off the main thread.
-    /// The action generation is captured from the core revision immediately before submit.
-    func submitManualControl(_ command: ManualControlCommand, completion: @escaping (ManualSubmissionResult) -> Void) {
-        #if TELAVIVA_CORE
-        guard !isShuttingDown else { completion(ManualSubmissionResult(accepted: false, actionGeneration: nil)); return }
-        workerQueue.async { [weak self] in
-            guard let self, let core = self.core, !self.isShuttingDown else {
-                DispatchQueue.main.async { completion(ManualSubmissionResult(accepted: false, actionGeneration: nil)) }
-                return
-            }
-            let type = command.feature == .brightness ? "set_brightness" : "set_volume"
-            let object: [String: Any] = ["type": type, "monitor_id": command.monitorID,
-                                         "connection_generation": command.generation, "value": command.value]
-            guard let bytes = try? JSONSerialization.data(withJSONObject: object), bytes.count <= 65_536 else {
-                DispatchQueue.main.async { completion(ManualSubmissionResult(accepted: false, actionGeneration: nil)) }
-                return
-            }
-            let submission: ManualSubmissionResult
-            self.ffiLock.lock()
-            if command.authorization.claim() {
-                let before = self.readSnapshot(core)
-                let actionGeneration = before?.revision.map { $0 &+ 1 }
-                let accepted = bytes.withUnsafeBytes { raw in
-                    tv_submit(core, raw.baseAddress!.assumingMemoryBound(to: UInt8.self), raw.count) == TV_OK
-                }
-                submission = ManualSubmissionResult(accepted: accepted, actionGeneration: accepted ? actionGeneration : nil)
-            } else {
-                submission = ManualSubmissionResult(accepted: false, actionGeneration: nil)
-            }
-            self.ffiLock.unlock()
-            let after = self.readSnapshot(core)
-            if let after { self.publish(after) }
-            DispatchQueue.main.async {
-                completion(submission)
-            }
-        }
-        #else
-        completion(ManualSubmissionResult(accepted: false, actionGeneration: nil))
-        #endif
-    }
-
-    /// Reports a DDC completion with the originating action identity after Rust accepts it.
-    func submitHardwareResult(_ action: PendingAction, connectionGeneration: UInt64, success: Bool,
-                              value: Double? = nil, error: String? = nil) -> Bool {
-        var result: [String: Any] = ["type": "hardware_result", "action_id": action.id,
-                                     "generation": action.generation, "ok": success]
-        if let value { result["value"] = value }
-        if let error { result["error"] = error }
-        let accepted = submit(result)
-        guard accepted else { return false }
-        let feature: HardwareKeyFeature? = action.kind == "set_brightness" ? .brightness :
-            (action.kind == "set_volume" ? .volume : nil)
-        if let feature {
-            DispatchQueue.main.async { [weak self] in
-                self?.onHardwareActionCompleted?(action.monitor_id, action.id, action.generation,
-                                                 connectionGeneration, feature, success, value)
-            }
-        }
-        return true
     }
 
     func updateSettings(_ settings: CoreSettings) {

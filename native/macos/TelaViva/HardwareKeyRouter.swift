@@ -13,9 +13,6 @@ struct HardwareKeyFeatureState {
     let value: Double?
     let supported: Bool
     let awake: Bool
-    var pending = false
-    var tolerance = 0.51
-    var failed = false
 }
 
 /// Current online display geometry is included even when the display cannot receive a command.
@@ -33,15 +30,6 @@ struct HardwareKeyDisplay {
     func state(for feature: HardwareKeyFeature) -> HardwareKeyFeatureState {
         feature == .brightness ? brightness : volume
     }
-}
-
-struct HardwareKeyCommand {
-    let monitorID: String
-    let generation: UInt64
-    let feature: HardwareKeyFeature
-    let target: Double
-    let intentRevision: UInt64
-    let authorizationEpoch: UInt64
 }
 
 enum HardwareKeyRouterStatus: Equatable {
@@ -89,6 +77,17 @@ struct HardwareKeyEvent {
     let modifiersEligible: Bool
     /// The mute key toggles the monitor volume instead of stepping it; its feature is .volume.
     var isMute = false
+
+    /// The key name the core's key machine expects: brightness_up, brightness_down, volume_up, volume_down or mute.
+    var controlsKey: String {
+        if isMute { return "mute" }
+        switch (feature, direction) {
+        case (.brightness, .increase): return "brightness_up"
+        case (.brightness, .decrease): return "brightness_down"
+        case (.volume, .increase): return "volume_up"
+        case (.volume, .decrease): return "volume_down"
+        }
+    }
 
     static func decode(type: CGEventType, subtype: Int, data1: Int64, flags: CGEventFlags) -> HardwareKeyEvent? {
         guard type.rawValue == UInt32(NX_SYSDEFINED) else { return nil }
@@ -144,19 +143,8 @@ struct HardwareKeyEvent {
     }
 }
 
-/// Target selection and normalized stepping contain no operating-system or DDC side effects.
+/// Target selection contains no operating-system or DDC side effects.
 enum HardwareKeyPolicy {
-    static let defaultStep = 5.0
-    static let minStep = 1.0
-    static let maxStep = 15.0
-    static let fineStep = 1.0
-
-    /// Non-finite input falls back to the default; other input is rounded to whole points and kept in minStep...maxStep.
-    static func clampedStep(_ value: Double) -> Double {
-        guard value.isFinite else { return defaultStep }
-        return min(maxStep, max(minStep, value.rounded()))
-    }
-
     static func target(at point: CGPoint, displays: [HardwareKeyDisplay], feature: HardwareKeyFeature) -> HardwareKeyDisplay? {
         let hits = displays.filter { $0.bounds.contains(point) }
         guard hits.count == 1, let display = hits.first, !display.isBuiltin,
@@ -184,170 +172,108 @@ enum HardwareKeyPolicy {
         guard let lhs, let rhs, !lhs.isEmpty, !rhs.isEmpty else { return false }
         return lhs.caseInsensitiveCompare(rhs) == .orderedSame
     }
-
-    /// Fine steps always move one point; normal steps use the configured whole-point step.
-    static func stepped(_ value: Double, direction: HardwareKeyEvent.Direction, fine: Bool, step: Double) -> Double {
-        let amount = fine ? fineStep : step
-        let delta = direction == .increase ? amount : -amount
-        return min(100, max(0, value + delta))
-    }
 }
 
-/// Latches the initial routing decision for each media key until its paired release.
-struct HardwareKeySequence {
-    private enum HeldKey {
-        case passThrough
-        case handled(monitorID: String, generation: UInt64, feature: HardwareKeyFeature,
-                     direction: HardwareKeyEvent.Direction, fine: Bool, cancelled: Bool)
-        case mute(monitorID: String, generation: UInt64, cancelled: Bool)
-    }
-    private var latches: [Int: HeldKey] = [:]
+/// The monitor a key event was resolved to, and the connection generation it was resolved against.
+struct HardwareKeyOwner: Equatable { let monitorID: String; let generation: UInt64 }
 
-    mutating func clear() { latches.removeAll(keepingCapacity: true) }
+/// The core's key machine as the router sees it. Called synchronously from the event tap.
+protocol HardwareKeyControlling: AnyObject {
+    /// Returns true when the key event must be swallowed.
+    func key(_ key: String, down: Bool, isRepeat: Bool, fine: Bool, owner: HardwareKeyOwner?) -> Bool
+}
 
-    mutating func process(_ event: HardwareKeyEvent, pointer: CGPoint, enabled: Bool,
-                          defaultOutputUID: String?,
-                          displays: [HardwareKeyDisplay],
-                          valueFor: (HardwareKeyDisplay, HardwareKeyFeature) -> Double?,
-                          reserve: (HardwareKeyDisplay, HardwareKeyFeature, HardwareKeyEvent.Direction, Bool, Double) -> Bool,
-                          reserveMute: (HardwareKeyDisplay, Double) -> Bool = { _, _ in false },
-                          followedBrightness: Set<String> = []) -> Bool {
+/// Resolves the owner of each key event and keeps the owner latched for the held key until its release.
+/// Performs no operating-system or core calls.
+struct HardwareKeyOwnerResolver {
+    /// Owners of the keys currently held, by keyIdentity.
+    private var held: [Int: HardwareKeyOwner] = [:]
+
+    mutating func clear() { held.removeAll(keepingCapacity: true) }
+
+    /// The owner to send with `event`; nil means "no eligible target".
+    mutating func owner(for event: HardwareKeyEvent, pointer: CGPoint, enabled: Bool, defaultOutputUID: String?,
+                        displays: [HardwareKeyDisplay], followedBrightness: Set<String>) -> HardwareKeyOwner? {
         switch event.phase {
         case .up:
-            guard let held = latches.removeValue(forKey: event.keyIdentity) else { return false }
-            switch held {
-            case .handled, .mute: return true
-            case .passThrough: return false
-            }
+            // A release carries the owner its press latched, so the core can finish that press.
+            return held[event.keyIdentity]
+        case .down where event.isRepeat:
+            // A repeat keeps the press's owner while it is still valid; a repeat without a press has none.
+            guard let owner = held[event.keyIdentity],
+                  Self.isValid(owner, feature: event.feature, defaultOutputUID: defaultOutputUID, displays: displays) else { return nil }
+            return owner
         case .down:
-            if !event.isRepeat { latches.removeValue(forKey: event.keyIdentity) }
-            if let held = latches[event.keyIdentity] {
-                // Repeats of a held mute key are consumed without toggling again.
-                if case let .mute(monitorID, generation, cancelled) = held {
-                    if !cancelled,
-                       let display = displays.first(where: { $0.monitorID == monitorID && $0.generation == generation }),
-                       !display.isBuiltin,
-                       HardwareKeyPolicy.uidsMatch(display.audioDeviceUID, defaultOutputUID),
-                       display.volume.supported, display.volume.awake,
-                       valueFor(display, .volume) != nil {
-                        return true
-                    }
-                    latches[event.keyIdentity] = .mute(monitorID: monitorID, generation: generation, cancelled: true)
-                    return true
-                }
-                guard case let .handled(monitorID, generation, feature, direction, fine, cancelled) = held else { return false }
-                if !cancelled,
-                   let display = displays.first(where: { $0.monitorID == monitorID && $0.generation == generation }),
-                   !display.isBuiltin,
-                   feature != .volume || HardwareKeyPolicy.uidsMatch(display.audioDeviceUID, defaultOutputUID),
-                   display.state(for: feature).supported,
-                   display.state(for: feature).awake,
-                   let value = valueFor(display, feature) {
-                    _ = reserve(display, feature, direction, fine, value)
-                } else {
-                    latches[event.keyIdentity] = .handled(monitorID: monitorID, generation: generation,
-                                                          feature: feature, direction: direction, fine: fine, cancelled: true)
-                }
-                return true
-            }
-            guard !event.isRepeat, enabled, event.modifiersEligible,
-                  let display = event.feature == .volume
-                      ? HardwareKeyPolicy.volumeTarget(defaultOutputUID: defaultOutputUID, displays: displays)
-                      : HardwareKeyPolicy.target(at: pointer, displays: displays, feature: event.feature),
-                  let monitorID = display.monitorID, let generation = display.generation,
-                  // A followed monitor keeps its brightness keys on macOS; volume and mute are never followed.
-                  !(event.feature == .brightness && followedBrightness.contains(monitorID)),
-                  let value = valueFor(display, event.feature),
-                  event.isMute ? reserveMute(display, value)
-                               : reserve(display, event.feature, event.direction, event.isFineStep, value) else {
-                latches[event.keyIdentity] = .passThrough
-                return false
-            }
-            if event.isMute {
-                latches[event.keyIdentity] = .mute(monitorID: monitorID, generation: generation, cancelled: false)
-                return true
-            }
-            latches[event.keyIdentity] = .handled(monitorID: monitorID, generation: generation,
-                                                  feature: event.feature, direction: event.direction,
-                                                  fine: event.isFineStep, cancelled: false)
-            return true
+            held.removeValue(forKey: event.keyIdentity)
+            guard enabled, event.modifiersEligible else { return nil }
+            let target = event.feature == .volume
+                ? HardwareKeyPolicy.volumeTarget(defaultOutputUID: defaultOutputUID, displays: displays)
+                : HardwareKeyPolicy.target(at: pointer, displays: displays, feature: event.feature)
+            guard let target, let monitorID = target.monitorID, let generation = target.generation else { return nil }
+            // A followed monitor keeps its brightness keys on macOS; volume and mute are never followed.
+            if event.feature == .brightness && followedBrightness.contains(monitorID) { return nil }
+            return HardwareKeyOwner(monitorID: monitorID, generation: generation)
         }
+    }
+
+    /// Records the core's answer for `event`. A consumed press latches its owner; a declined repeat and any release unlatch.
+    mutating func record(_ event: HardwareKeyEvent, owner: HardwareKeyOwner?, consumed: Bool) {
+        switch event.phase {
+        case .down where !event.isRepeat:
+            if consumed, let owner { held[event.keyIdentity] = owner } else { held.removeValue(forKey: event.keyIdentity) }
+        case .down:
+            if !consumed { held.removeValue(forKey: event.keyIdentity) }
+        case .up:
+            held.removeValue(forKey: event.keyIdentity)
+        }
+    }
+
+    /// A held owner stays valid while its exact monitor and generation remain eligible for the feature;
+    /// volume additionally needs the monitor to still be the default sound output.
+    private static func isValid(_ owner: HardwareKeyOwner, feature: HardwareKeyFeature, defaultOutputUID: String?,
+                                displays: [HardwareKeyDisplay]) -> Bool {
+        guard let display = displays.first(where: { $0.monitorID == owner.monitorID && $0.generation == owner.generation }),
+              !display.isBuiltin else { return false }
+        let state = display.state(for: feature)
+        guard state.supported, state.awake, state.value?.isFinite == true else { return false }
+        return feature != .volume || HardwareKeyPolicy.uidsMatch(display.audioDeviceUID, defaultOutputUID)
     }
 }
 
-private struct HardwareKeyIntentKey: Hashable {
-    let monitorID: String
-    let generation: UInt64
-    let feature: HardwareKeyFeature
-}
-
-private struct HardwareKeyIntent {
-    var target: Double
-    var revision: UInt64
-    let authorizationEpoch: UInt64
-    var manualRevision: UInt64?
-    var lastObserved: Double?
-    var scheduled = false
-}
-
-/// The router owns a tiny event callback and a bounded, coalescing intent worker.
-/// Core/DDC submission is asynchronous and is never called from the event tap callback.
+/// The router owns a tiny event callback. Each key event makes one synchronous call into the core's
+/// leaf-locked key machine, and the router never writes to a monitor itself.
 final class HardwareKeyRouter: ObservableObject {
-    typealias Submit = (HardwareKeyCommand, @escaping (Bool) -> Void) -> Void
     typealias TapInstaller = () -> (CFMachPort, CFRunLoopSource)?
-    /// After one of our hardware writes completes, the readback may still lag; rebases wait this long (ms).
-    static let rebaseSettleMs: UInt64 = 1_000
-    /// An accepted write whose completion never arrives stops blocking rebases after this long (ms).
-    static let outstandingExpiryMs: UInt64 = 10_000
 
     @Published private(set) var status: HardwareKeyRouterStatus = .disabled
     var onStatusChange: ((HardwareKeyRouterStatus) -> Void)?
     /// Always invoked on the main queue, once on the first evaluation and then only when the value changes.
     var onPermissionsChange: ((HardwareKeyPermissions) -> Void)?
-    var onReservedTarget: ((HardwareKeyCommand) -> Void)?
 
-    private let submit: Submit
+    private let controls: HardwareKeyControlling
     private let permissionProvider: () -> HardwareKeyPermissions
     private let customTapInstaller: TapInstaller?
     private let stateLock = NSLock()
-    private let workerQueue = DispatchQueue(label: "com.codebit.telaviva.hardware-key-intents", qos: .utility)
     private var enabled = false
     private var stopped = false
     private var displays: [HardwareKeyDisplay] = []
     private var defaultOutputUID: String?
-    /// Configured whole-point steps; written by setSteps and read in reserveStep under stateLock.
-    private var brightnessStep = HardwareKeyPolicy.defaultStep
-    private var volumeStep = HardwareKeyPolicy.defaultStep
     /// Monitors whose brightness keys pass through to macOS; written by setFollowedBrightnessDisplays under stateLock.
     private var followedBrightnessDisplays = Set<String>()
-    private var sequence = HardwareKeySequence()
-    private var intents: [HardwareKeyIntentKey: HardwareKeyIntent] = [:]
-    /// Volume level to restore on the next mute press; in memory only and bounded to 128 entries.
-    private var muteMemory: [HardwareKeyIntentKey: Double] = [:]
-    private var inFlightKeys = Set<HardwareKeyIntentKey>()
-    /// Our accepted hardware writes per key (actionGeneration -> acceptance time in ms); bounded to 128 in total.
-    private var outstandingActions: [HardwareKeyIntentKey: [UInt64: UInt64]] = [:]
-    /// Rebases of a key stay blocked until this time in ms; set when one of our writes for that key completes.
-    private var rebaseBlockedUntil: [HardwareKeyIntentKey: UInt64] = [:]
-    /// Completions that arrived before their acceptance was registered; bounded to 64 entries.
-    private var earlyCompleted: [HardwareKeyIntentKey: Set<UInt64>] = [:]
-    /// Millisecond clock, injected by tests so that the settle window and expiry need no real sleeping.
-    private let nowMs: () -> UInt64
-    private var intentRevision: UInt64 = 0
+    /// Owners latched by held keys; cleared on disable, permission loss and shutdown.
+    private var resolver = HardwareKeyOwnerResolver()
     private var tap: CFMachPort?
     private var tapSource: CFRunLoopSource?
     private var tapReenableAttempted = false
     private var tapCreationFailed = false
     private var lastPermissions: HardwareKeyPermissions?
 
-    init(submit: @escaping Submit,
+    init(controls: HardwareKeyControlling,
          permissionProvider: @escaping () -> HardwareKeyPermissions = HardwareKeyPermissions.current,
-         tapInstaller: TapInstaller? = nil,
-         nowMs: @escaping () -> UInt64 = { DispatchTime.now().uptimeNanoseconds / 1_000_000 }) {
-        self.submit = submit
+         tapInstaller: TapInstaller? = nil) {
+        self.controls = controls
         self.permissionProvider = permissionProvider
         self.customTapInstaller = tapInstaller
-        self.nowMs = nowMs
     }
 
     /// Re-reads permissions and retries a failed tap creation. Callable from any thread; there is
@@ -394,7 +320,7 @@ final class HardwareKeyRouter: ObservableObject {
         stateLock.lock()
         guard !stopped else { stateLock.unlock(); return }
         enabled = nextEnabled
-        reconcileDisplaysLocked(nextDisplays.count <= 64 ? nextDisplays : [])
+        displays = nextDisplays.count <= 64 ? nextDisplays : []
         stateLock.unlock()
         evaluate(forceRetry: false)
     }
@@ -438,28 +364,16 @@ final class HardwareKeyRouter: ObservableObject {
         if forceRetry { tapCreationFailed = false }
     }
 
-    /// Stores the default sound output UID read off the event-tap path; nil means pass-through.
+    /// Stores the default sound output UID read off the event-tap path; nil means volume keys have no owner.
     func setDefaultOutput(uid: String?) {
         stateLock.lock()
         defer { stateLock.unlock() }
         guard !stopped else { return }
-        let previous = defaultOutputUID
         defaultOutputUID = uid
-        if uid != previous { muteMemory.removeAll() } // Remembered levels belong to the previous sound output.
-    }
-
-    /// Stores the configured key steps, clamped to whole points in 1...15 (non-finite falls back to the default).
-    /// Intents and the mute memory are kept, so a change applies from the next press onward.
-    func setSteps(brightness: Double, volume: Double) {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        guard !stopped else { return }
-        brightnessStep = HardwareKeyPolicy.clampedStep(brightness)
-        volumeStep = HardwareKeyPolicy.clampedStep(volume)
     }
 
     /// Stores the monitors whose brightness keys pass through to macOS. Only the next key-down sees a change;
-    /// a press already latched keeps its outcome.
+    /// a press already latched keeps its owner.
     func setFollowedBrightnessDisplays(_ monitorIDs: Set<String>) {
         stateLock.lock()
         defer { stateLock.unlock() }
@@ -467,94 +381,12 @@ final class HardwareKeyRouter: ObservableObject {
         followedBrightnessDisplays = monitorIDs
     }
 
-    /// Call immediately before the matching manual core command is submitted.
-    func manualControlChanged(monitorID: String, generation: UInt64, feature: HardwareKeyFeature, value: Double, revision: UInt64) {
-        guard value.isFinite, (0...100).contains(value) else { return }
+    /// The monitor that volume and mute keys resolve to right now, or nil when routing is off or no target is eligible.
+    func volumeOwnerMonitorID() -> String? {
         stateLock.lock()
         defer { stateLock.unlock() }
-        guard enabled, !stopped else { return }
-        let key = HardwareKeyIntentKey(monitorID: monitorID, generation: generation, feature: feature)
-        let observed = displays.first { $0.monitorID == monitorID && $0.generation == generation }?.state(for: feature).value
-        intentRevision &+= 1
-        if intents[key] != nil || intents.count < 128 {
-            // Replacing the authorization epoch also invalidates a command already handed to DDC.
-            intents[key] = HardwareKeyIntent(target: value, revision: intentRevision,
-                                            authorizationEpoch: intentRevision, manualRevision: revision,
-                                            lastObserved: observed)
-        }
-    }
-
-    /// An asynchronous acceptance may rebase only the exact slider intent that created it.
-    func manualControlAccepted(monitorID: String, generation: UInt64, feature: HardwareKeyFeature,
-                               value: Double, revision: UInt64) {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        let key = HardwareKeyIntentKey(monitorID: monitorID, generation: generation, feature: feature)
-        guard var intent = intents[key], intent.manualRevision == revision,
-              intent.target == value else { return }
-        intent.lastObserved = displays.first { $0.monitorID == monitorID && $0.generation == generation }?.state(for: feature).value
-        intents[key] = intent
-    }
-
-    /// Called when the core accepts one of our hardware writes. Until that write completes, the readback of
-    /// its key is our own write in progress, so it must not rebase the key's intent.
-    func hardwareActionAccepted(monitorID: String, generation: UInt64, feature: HardwareKeyFeature, actionGeneration: UInt64) {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        let key = HardwareKeyIntentKey(monitorID: monitorID, generation: generation, feature: feature)
-        // The completion arrived first, so this acceptance is already settled and registers nothing.
-        if earlyCompleted[key]?.remove(actionGeneration) != nil {
-            if earlyCompleted[key]?.isEmpty == true { earlyCompleted.removeValue(forKey: key) }
-            return
-        }
-        registerOutstandingLocked(key, actionGeneration: actionGeneration, now: nowMs())
-    }
-
-    /// Called when the core reports that one of our hardware writes finished, successfully or not. The readback
-    /// can still lag behind the final value for a moment, so rebases stay blocked for a short settle window.
-    func hardwareActionCompleted(monitorID: String, generation: UInt64, feature: HardwareKeyFeature, actionGeneration: UInt64) {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        let key = HardwareKeyIntentKey(monitorID: monitorID, generation: generation, feature: feature)
-        if outstandingActions[key]?.removeValue(forKey: actionGeneration) != nil {
-            if outstandingActions[key]?.isEmpty == true { outstandingActions.removeValue(forKey: key) }
-        } else {
-            // The acceptance has not been registered yet; remember this completion so that it cancels the acceptance.
-            if earlyCompleted.values.reduce(0, { $0 + $1.count }) >= 64 { earlyCompleted.removeAll() }
-            earlyCompleted[key, default: []].insert(actionGeneration)
-        }
-        rebaseBlockedUntil[key] = nowMs() + HardwareKeyRouter.rebaseSettleMs
-    }
-
-    /// Records an acceptance. At the 128-entry bound the oldest acceptance is dropped: first for this key, then overall.
-    private func registerOutstandingLocked(_ key: HardwareKeyIntentKey, actionGeneration: UInt64, now: UInt64) {
-        if (outstandingActions[key]?.count ?? 0) >= 128 { dropOldestOutstandingLocked(in: key) }
-        if outstandingActions.values.reduce(0, { $0 + $1.count }) >= 128 { dropOldestOutstandingLocked(in: nil) }
-        outstandingActions[key, default: [:]][actionGeneration] = now
-    }
-
-    private func dropOldestOutstandingLocked(in key: HardwareKeyIntentKey?) {
-        var oldest: (key: HardwareKeyIntentKey, action: UInt64, at: UInt64)?
-        for (candidate, actions) in outstandingActions where key == nil || key == candidate {
-            for (action, at) in actions where at < (oldest?.at ?? UInt64.max) {
-                oldest = (candidate, action, at)
-            }
-        }
-        guard let oldest else { return }
-        outstandingActions[oldest.key]?.removeValue(forKey: oldest.action)
-        if outstandingActions[oldest.key]?.isEmpty == true { outstandingActions.removeValue(forKey: oldest.key) }
-    }
-
-    func isCommandCurrent(_ command: HardwareKeyCommand) -> Bool {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        let key = HardwareKeyIntentKey(monitorID: command.monitorID, generation: command.generation, feature: command.feature)
-        guard enabled, !stopped, let intent = intents[key],
-              intent.authorizationEpoch == command.authorizationEpoch,
-              intent.revision == command.intentRevision, intent.target == command.target,
-              let display = displays.first(where: { $0.monitorID == key.monitorID && $0.generation == key.generation }) else { return false }
-        let state = display.state(for: key.feature)
-        return !display.isBuiltin && state.supported && state.awake && !state.failed
+        guard enabled, !stopped else { return nil }
+        return HardwareKeyPolicy.volumeTarget(defaultOutputUID: defaultOutputUID, displays: displays)?.monitorID
     }
 
     func shutdown() {
@@ -567,7 +399,7 @@ final class HardwareKeyRouter: ObservableObject {
         setStatus(.disabled)
     }
 
-    /// Deterministic seam used by the helper tests; it runs the same sequence and intent path
+    /// Deterministic seam used by the helper tests; it runs the same owner and core path as the tap callback
     /// without creating an event tap, prompting for permission, or touching a physical display.
     @discardableResult
     func processForTesting(_ event: HardwareKeyEvent, pointer: CGPoint,
@@ -575,20 +407,10 @@ final class HardwareKeyRouter: ObservableObject {
         stateLock.lock()
         guard !stopped else { stateLock.unlock(); return false }
         enabled = true
-        reconcileDisplaysLocked(nextDisplays.count <= 64 ? nextDisplays : [])
-        let handled = sequence.process(event, pointer: pointer, enabled: true, defaultOutputUID: defaultOutputUID,
-                                       displays: displays,
-                                       valueFor: { [unowned self] display, feature in self.currentIntentValue(display: display, feature: feature) },
-                                       reserve: { [unowned self] display, feature, direction, fine, value in
-                                           self.reserveStep(display: display, feature: feature, direction: direction, fine: fine, value: value)
-                                       },
-                                       reserveMute: { [unowned self] display, value in self.reserveMute(display: display, value: value) },
-                                       followedBrightness: followedBrightnessDisplays)
+        displays = nextDisplays.count <= 64 ? nextDisplays : []
         stateLock.unlock()
-        return handled
+        return route(event, pointer: pointer)
     }
-
-    func waitForWorkerForTesting() { workerQueue.sync {} }
 
     private func ensureTap(_ permissions: HardwareKeyPermissions) {
         stateLock.lock()
@@ -639,32 +461,8 @@ final class HardwareKeyRouter: ObservableObject {
     }
 
     private func clearPendingLocked(clearOutput: Bool = false) {
-        sequence.clear()
-        intents.removeAll(keepingCapacity: true)
-        outstandingActions.removeAll(keepingCapacity: true)
-        rebaseBlockedUntil.removeAll(keepingCapacity: true)
-        earlyCompleted.removeAll(keepingCapacity: true)
-        muteMemory.removeAll(keepingCapacity: true)
+        resolver.clear()
         if clearOutput { defaultOutputUID = nil }
-    }
-
-    /// Drops acceptances older than outstandingExpiryMs, settle windows that have ended, and state of displays that are gone.
-    private func pruneRebaseStateLocked(now: UInt64) {
-        for key in Array(outstandingActions.keys) {
-            let live = (outstandingActions[key] ?? [:]).filter { now <= $0.value + HardwareKeyRouter.outstandingExpiryMs }
-            outstandingActions[key] = live.isEmpty ? nil : live
-        }
-        rebaseBlockedUntil = rebaseBlockedUntil.filter { $0.value > now }
-        let keys = Set(outstandingActions.keys).union(rebaseBlockedUntil.keys).union(earlyCompleted.keys)
-        for key in keys where !displays.contains(where: { $0.monitorID == key.monitorID && $0.generation == key.generation }) {
-            forgetRebaseStateLocked(key)
-        }
-    }
-
-    private func forgetRebaseStateLocked(_ key: HardwareKeyIntentKey) {
-        outstandingActions.removeValue(forKey: key)
-        rebaseBlockedUntil.removeValue(forKey: key)
-        earlyCompleted.removeValue(forKey: key)
     }
 
     private func setStatus(_ next: HardwareKeyRouterStatus) {
@@ -713,179 +511,23 @@ final class HardwareKeyRouter: ObservableObject {
             decoded = systemEvent
         }
         let pointer = CGEvent(source: nil)?.location ?? CGPoint(x: CGFloat.infinity, y: CGFloat.infinity)
-        // This mutex protects only bounded value copies/intent updates; no core or device call
-        // holds it. A handled key-up must never leak to macOS due to snapshot contention.
+        // A consumed key is swallowed and a declined one reaches macOS unchanged, exactly as the core answered.
+        return route(decoded, pointer: pointer) ? nil : Unmanaged.passUnretained(event)
+    }
+
+    /// The key path shared by the tap callback and the test seam. The owner is resolved under stateLock, the core is
+    /// called outside it, and the core's answer is recorded under stateLock again. Returns the consume decision.
+    private func route(_ event: HardwareKeyEvent, pointer: CGPoint) -> Bool {
         stateLock.lock()
-        let result = sequence.process(decoded, pointer: pointer, enabled: enabled, defaultOutputUID: defaultOutputUID,
-                                      displays: displays,
-                                      valueFor: { [unowned self] display, feature in self.currentIntentValue(display: display, feature: feature) },
-                                      reserve: { [unowned self] display, feature, direction, fine, value in
-                                          self.reserveStep(display: display, feature: feature, direction: direction, fine: fine, value: value)
-                                      },
-                                      reserveMute: { [unowned self] display, value in self.reserveMute(display: display, value: value) },
-                                      followedBrightness: followedBrightnessDisplays)
+        let owner = resolver.owner(for: event, pointer: pointer, enabled: enabled, defaultOutputUID: defaultOutputUID,
+                                   displays: displays, followedBrightness: followedBrightnessDisplays)
         stateLock.unlock()
-        return result ? nil : Unmanaged.passUnretained(event)
-    }
-
-    private func reconcileDisplaysLocked(_ next: [HardwareKeyDisplay]) {
-        displays = next
-        let now = nowMs()
-        pruneRebaseStateLocked(now: now)
-        // A remembered level survives only while its exact monitor and generation stay eligible.
-        for key in Array(muteMemory.keys) {
-            guard let display = displays.first(where: { $0.monitorID == key.monitorID && $0.generation == key.generation }),
-                  !display.isBuiltin else { muteMemory.removeValue(forKey: key); continue }
-            let state = display.state(for: key.feature)
-            if !(state.supported && state.awake && !state.failed && (state.value?.isFinite ?? false)) {
-                muteMemory.removeValue(forKey: key)
-            }
-        }
-        for key in Array(intents.keys) {
-            guard let display = displays.first(where: { $0.monitorID == key.monitorID && $0.generation == key.generation }),
-                  !display.isBuiltin else { intents.removeValue(forKey: key); forgetRebaseStateLocked(key); continue }
-            let state = display.state(for: key.feature)
-            guard state.supported, state.awake, !state.failed, let observed = state.value, observed.isFinite else {
-                intents.removeValue(forKey: key)
-                forgetRebaseStateLocked(key)
-                continue
-            }
-            guard var intent = intents[key], !intent.scheduled, !state.pending else { continue }
-            // While our own write is outstanding or settling, the readback is not an external change: leave the intent and lastObserved alone.
-            let outstanding = outstandingActions[key]?.count ?? 0
-            let blockedUntil = rebaseBlockedUntil[key] ?? 0
-            if outstanding > 0 || now < blockedUntil {
-                continue
-            }
-            if let previous = intent.lastObserved, observed != previous,
-               abs(intent.target - observed) > state.tolerance {
-                intentRevision &+= 1
-                intents[key] = HardwareKeyIntent(target: observed, revision: intentRevision,
-                                                authorizationEpoch: intentRevision, manualRevision: nil,
-                                                lastObserved: observed)
-            } else {
-                intent.lastObserved = observed
-                intents[key] = intent
-            }
-        }
-    }
-
-    private func currentIntentValue(display: HardwareKeyDisplay, feature: HardwareKeyFeature) -> Double? {
-        guard let monitorID = display.monitorID, let generation = display.generation else { return nil }
-        let key = HardwareKeyIntentKey(monitorID: monitorID, generation: generation, feature: feature)
-        if let intent = intents[key] { return intent.target }
-        return display.state(for: feature).value
-    }
-
-    private func reserveStep(display: HardwareKeyDisplay, feature: HardwareKeyFeature,
-                             direction: HardwareKeyEvent.Direction, fine: Bool, value: Double) -> Bool {
-        guard let monitorID = display.monitorID, let generation = display.generation else { return false }
-        let key = HardwareKeyIntentKey(monitorID: monitorID, generation: generation, feature: feature)
-        // Read directly: the tap callback already holds stateLock here.
-        let step = feature == .volume ? volumeStep : brightnessStep
-        if feature == .volume, let remembered = muteMemory[key] {
-            if value != 0 {
-                muteMemory.removeValue(forKey: key) // Changed elsewhere since the mute.
-            } else if direction == .decrease {
-                return true // Still muted: consume without a write and keep the level.
-            } else {
-                // Restore the remembered level, then step up from it, as one coalesced write.
-                let next = HardwareKeyPolicy.stepped(remembered, direction: direction, fine: fine, step: step)
-                guard reserveWrite(display: display, feature: feature, value: value, next: next) else { return false }
-                muteMemory.removeValue(forKey: key)
-                return true
-            }
-        }
-        return reserveWrite(display: display, feature: feature, value: value,
-                            next: HardwareKeyPolicy.stepped(value, direction: direction, fine: fine, step: step))
-    }
-
-    /// Initial mute press: mute remembers the level and writes 0; the next press restores it.
-    private func reserveMute(display: HardwareKeyDisplay, value: Double) -> Bool {
-        guard let monitorID = display.monitorID, let generation = display.generation else { return false }
-        let key = HardwareKeyIntentKey(monitorID: monitorID, generation: generation, feature: .volume)
-        if value != 0 { muteMemory.removeValue(forKey: key) } // Stale memory when the level changed elsewhere.
-        if value > 0 {
-            guard muteMemory.count < 128,
-                  reserveWrite(display: display, feature: .volume, value: value, next: 0) else { return false }
-            muteMemory[key] = value
-            return true
-        }
-        guard let remembered = muteMemory[key] else { return true } // At 0 with nothing to restore.
-        guard reserveWrite(display: display, feature: .volume, value: value, next: remembered) else { return false }
-        muteMemory.removeValue(forKey: key)
-        return true
-    }
-
-    private func reserveWrite(display: HardwareKeyDisplay, feature: HardwareKeyFeature,
-                              value: Double, next: Double) -> Bool {
-        guard let monitorID = display.monitorID, let generation = display.generation else { return false }
-        let key = HardwareKeyIntentKey(monitorID: monitorID, generation: generation, feature: feature)
-        guard intents[key] != nil || intents.count < 128 else { return false }
-        guard inFlightKeys.contains(key) || inFlightKeys.count < 128 else { return false }
-        guard next != value else { return true }
-        intentRevision &+= 1
-        var intent = intents[key] ?? HardwareKeyIntent(target: value, revision: intentRevision,
-                                                      authorizationEpoch: intentRevision, manualRevision: nil,
-                                                      lastObserved: display.state(for: feature).value)
-        intent.target = next
-        intent.revision = intentRevision
-        let needsWorker = !intent.scheduled && !inFlightKeys.contains(key)
-        intent.scheduled = true
-        intents[key] = intent
-        let reserved = HardwareKeyCommand(monitorID: monitorID, generation: generation, feature: feature,
-                                          target: next, intentRevision: intent.revision,
-                                          authorizationEpoch: intent.authorizationEpoch)
-        workerQueue.async { [weak self] in self?.onReservedTarget?(reserved) }
-        if needsWorker { workerQueue.async { [weak self] in self?.flush(key) } }
-        return true
-    }
-
-    private func flush(_ key: HardwareKeyIntentKey) {
+        let consume = controls.key(event.controlsKey, down: event.phase == .down, isRepeat: event.isRepeat,
+                                   fine: event.isFineStep, owner: owner)
         stateLock.lock()
-        guard enabled, let intent = intents[key],
-              let display = displays.first(where: { $0.monitorID == key.monitorID && $0.generation == key.generation }),
-              !display.isBuiltin, display.state(for: key.feature).supported, display.state(for: key.feature).awake else {
-            intents.removeValue(forKey: key)
-            stateLock.unlock()
-            return
-        }
-        guard !inFlightKeys.contains(key), inFlightKeys.count < 128 else { stateLock.unlock(); return }
-        inFlightKeys.insert(key)
-        let command = HardwareKeyCommand(monitorID: key.monitorID, generation: key.generation,
-                                         feature: key.feature, target: intent.target,
-                                         intentRevision: intent.revision,
-                                         authorizationEpoch: intent.authorizationEpoch)
+        resolver.record(event, owner: owner, consumed: consume)
         stateLock.unlock()
-        submit(command) { [weak self] accepted in self?.workerQueue.async { self?.complete(key, revision: command.intentRevision, epoch: command.authorizationEpoch, accepted: accepted) } }
-    }
-
-    private func complete(_ key: HardwareKeyIntentKey, revision: UInt64, epoch: UInt64, accepted: Bool) {
-        stateLock.lock()
-        inFlightKeys.remove(key)
-        guard var intent = intents[key] else { stateLock.unlock(); return }
-        if intent.authorizationEpoch != epoch {
-            let shouldFlush = enabled && !stopped && intent.scheduled
-            stateLock.unlock()
-            if shouldFlush { flush(key) }
-            return
-        }
-        guard accepted || intent.revision != revision else {
-            // The consumed event stays consumed; a later key starts from the latest published snapshot.
-            intents.removeValue(forKey: key)
-            stateLock.unlock()
-            return
-        }
-        if intent.revision != revision {
-            intent.scheduled = true
-            intents[key] = intent
-            stateLock.unlock()
-            flush(key)
-        } else {
-            intent.scheduled = false
-            intents[key] = intent
-            stateLock.unlock()
-        }
+        return consume
     }
 
     private static let eventTapCallback: CGEventTapCallBack = { _, type, event, userInfo in

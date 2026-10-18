@@ -80,7 +80,7 @@ Machine used so far: Windows 11 Pro build 26300, desktop, AMD Ryzen 7 9800X3D, A
 
 ## Controls handle
 
-Cases for the controls-handle change (`specs/core-command-queue/plan.md`, T048). Every row starts as **Not run**; none of them is verified until someone runs it on the hardware.
+Cases for the controls-handle change (`specs/archived/core-command-queue/plan.md`, T048). Every row starts as **Not run**; none of them is verified until someone runs it on the hardware.
 
 The macOS adapter cases will be added when the macOS shell moves to the handle. No macOS case is listed here.
 

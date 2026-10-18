@@ -1,6 +1,6 @@
 # ADR-0008: Core-owned ambient follow and per-monitor OLED protection
 
-**Status:** Accepted
+**Status:** Accepted; the per-write DDC retry described in Consequences is now the core's dispatch policy under [ADR 0029](0029-core-owned-manual-control-queue-and-ddc-dispatch.md)
 **Date:** 2026-10-16
 **Feature:** macbook-brightness-follow
 **Spec:** [spec](../specs/archived/macbook-brightness-follow/spec.md)
@@ -57,3 +57,7 @@ The core owns the follow policy.
 - Follow is paused (`calibrating: true`) while calibration uses `set_brightness` on the monitor.
 - The private display APIs used for the built-in display (`DisplayServices`, `CoreBrightness`) are recorded in [ADR 0007](0007-private-display-apis-for-built-in-brightness.md).
 - Hardware behavior is pending acceptance on a MacBook with a DDC monitor. The `DisplayServicesSetBrightness` write, the automatic-brightness setter and ID stability across ports are Phase 0 checks, and none of them is verified yet.
+
+## Amendment 2026-10-18: Controls handle
+
+[ADR 0029](0029-core-owned-manual-control-queue-and-ddc-dispatch.md) moves the DDC retry policy into the core. The "up to three attempts in the native layer" in Consequences is now three attempts per DDC primitive (write, duplicate write and read), counted by the core's dispatch, and the macOS shell runs one attempt at a time. Follow, protection, the built-in display path and the pass-through of brightness keys for followed monitors are unchanged.

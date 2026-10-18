@@ -21,7 +21,7 @@ A new opaque, clock-injected handle in `telaviva-core` (`TvControls`) owns every
 
 ### Decision 1: One new opaque handle, not `tv_submit`
 **What**: `TvControls` with `tv_controls_create`, `tv_controls_step`, `tv_controls_destroy`. One JSON event in, one JSON result out, `now` (monotonic seconds) on every event.
-**Why**: Slider ticks and key repeats arrive at input rate. Every accepted `tv_submit` bumps the revision and builds a snapshot (ADR 0014, `specs/snapshot-publish-amplification.md`). The camera handle already proved the shape, the header and DLL checks, and both shell wrappers.
+**Why**: Slider ticks and key repeats arrive at input rate. Every accepted `tv_submit` bumps the revision and builds a snapshot (ADR 0014, `specs/archived/snapshot-publish-amplification/plan.md`). The camera handle already proved the shape, the header and DLL checks, and both shell wrappers.
 **Alternatives Considered**: Extend `Core` and `tv_submit` (rejected: snapshot amplification, and it couples draft state to the snapshot revision). Generate bindings (rejected, same reasoning as ADR 0014).
 **Trade-offs**: Two handles per process; the shell must call `observe` after each snapshot so the handle sees the same world as the core.
 
@@ -87,7 +87,7 @@ The `StepError` type now lives in `strict_json.rs`; `camera_lifecycle.rs` and `c
 - **Normalized observation.** `observe.observed` is the normalized percentage (the snapshot field `normalized`). The Windows shell previously read the raw `observed` as a percentage, which is correct only for 0 to 100 ranges.
 - **One execution slot.** The dispatcher holds one execution slot across monitors. A monitor that is only waiting (settle, backoff, grace) does not hold it.
 - **Bounded result resubmission.** A rejected `hardware_result` is resubmitted after 0.2 s, then 1.0 s, then 1.0 s. A fourth rejection drops the action locally.
-- **macOS adapter deferred.** The owner deferred the macOS adapter to be implemented on a Mac (2026-10-18).
+- **macOS adapter.** The owner deferred the macOS adapter to a Mac session (2026-10-18); it is now implemented (see the macOS bullets under Architecture Overview). The local macOS test scripts pass on a Mac; the macOS CI run and the hardware checks are pending (plan T045).
 
 ## Architecture Overview
 
@@ -126,8 +126,9 @@ The core (`Core`, `tv_submit`, `tv_snapshot`) is unchanged and remains the only 
 - `native/windows/Platform/ControlsApi.h/.cpp`: `IControlsApi` seam (implemented by `CoreControlsApi`) over the three exports, serialized by one mutex, plus JSON encode and decode through the existing `JsonCodec` (`Windows.Data.Json`), not the `rawField` text search the camera driver uses, because effects are arrays.
 - `native/windows/Platform/ControlsDriver.h/.cpp`: pure adapter. Turns UI, key-consumer, snapshot and executor callbacks into events, runs effects after unlocking, owns the one timer through `IScheduler`.
 - `native/windows/Platform/ControlsTypes.h` and `IAttemptRunner.h`: shared control types and the seam that runs one DDC primitive.
-- `native/macos/TelaViva/ControlsBridge.swift` (planned, not written yet): the Swift equivalent over `JSONSerialization` and `Codable`, fault handling as in `CameraLifecycle.swift` (a non-OK status stops the handle).
-- `tools/tests/test-controls-bridge.sh` (planned, not written yet) and a CI step, mirroring `test-core-bridge.sh`.
+- `native/macos/TelaViva/ControlsBridge.swift` (implemented 2026-10-18; tests in `native/macos/Tests/ControlsBridgeTests.swift`): the Swift equivalent over `JSONSerialization` and `Codable`, fault handling as in `CameraLifecycle.swift` (a non-OK status stops the handle).
+- `native/macos/TelaViva/ControlsDriver.swift` (implemented 2026-10-18): the macOS effect executor and the one timer armed from `next_deadline`. It is split from `ControlsBridge.swift` as the Windows `ControlsApi` and `ControlsDriver` are; the plan named only `ControlsBridge.swift`.
+- `tools/tests/test-controls-bridge.sh` (implemented 2026-10-18) and a `Test controls bridge` step in `.github/workflows/macos.yml`, mirroring `test-core-bridge.sh`.
 
 **Modified Files**
 - `crates/telaviva-core/src/lib.rs`: `pub mod controls; mod strict_json;`.
@@ -137,7 +138,7 @@ The core (`Core`, `tv_submit`, `tv_snapshot`) is unchanged and remains the only 
 - Windows: `AppController.cpp` (wire the driver, delete `ManualCompletionGate`, `CoreManualSink`, the volume tracker plumbing, `runKeyConsumer` policy calls), `DdcController.cpp` (reduced to discovery, display state, the port and "run one primitive"). Drafts reach the flyout through the flyout state built in `AppController.cpp`, so `MonitorCard.xaml.cpp` does not change. `DdcTransaction.cpp` and `DdcTimingProfile.cpp` are not reduced to one primitive: they stay for device discovery reads and the `--probe-ddc` diagnostic, so discovery retry timing stays duplicated until it moves to the core.
 - macOS: `ManualMonitorControls.swift`, `HardwareKeyRouter.swift` (decode, tap, permissions only), `CoreBridge.swift`, `MacDDCController.swift`, `DDCTransaction.swift` (framing, checksum seed fallback and `writeTwice` stay inside one primitive), `MenuBarController.swift`, `MonitorPopup.swift`.
 
-**Deleted after equivalence is proven**: `Platform/ManualControls.*`, `Platform/KeyIntentRouter.*`, `Platform/VolumeActionTracker.*`, the Swift `ManualCommandAuthorization`, receipts and early-completion buffers, `HardwareKeyPolicy`, `HardwareKeySequence`, and the router's intent and rebase code. `Platform/DdcTransaction.*` and `Platform/DdcTimingProfile.*` are excluded (see Modified Files). The Windows files listed above were removed with `git rm` (their cases were ported to the Rust tests); the Swift code is removed when the macOS adapter lands.
+**Deleted after equivalence is proven**: `Platform/ManualControls.*`, `Platform/KeyIntentRouter.*`, `Platform/VolumeActionTracker.*`, the Swift `ManualCommandAuthorization`, receipts and early-completion buffers, `HardwareKeyPolicy`, `HardwareKeySequence`, and the router's intent and rebase code. `Platform/DdcTransaction.*` and `Platform/DdcTimingProfile.*` are excluded (see Modified Files). The Windows files listed above were removed with `git rm` (their cases were ported to the Rust tests); the Swift code listed above was removed with the macOS adapter on 2026-10-18, and its cases live in the Rust contract and unit tests.
 
 ### Component Relationships
 
@@ -204,7 +205,7 @@ The core (`Core`, `tv_submit`, `tv_snapshot`) is unchanged and remains the only 
 | Overlap with uncommitted `inference-device-selection` work | Merge conflicts in `core.rs`, `Platform/` | Spec Decision 6: finish and commit that branch first; this design keeps `core.rs` changes to one visibility edit (`map_normalized`, now `pub(crate)`) |
 | Handle and core disagree on world state (late `observe`) | Stale decisions | Revision-ordered `observe` (stale ones ignored, equal accepted, as `ManualControls::apply` does); safety release covers lost commands |
 | JSON string inside JSON (`command_json`) mangled by a shell | Rejected commands | Contract test on each shell passes the string through the real library; document "pass verbatim" in `api.md` |
-| macOS adapter pending | The repository carries the handle and the Windows adapter while macOS still runs its own Swift queue; AGENTS.md requires both platforms in one change | Owner scoped the macOS work to a Mac session; finalize and release after it |
+| macOS adapter pending (closed 2026-10-18) | Was: the repository carried the handle and the Windows adapter while macOS still ran its own Swift queue; AGENTS.md requires both platforms in one change | Closed: the macOS adapter is implemented in the same change (`ControlsBridge.swift`, `ControlsDriver.swift`). The local macOS test scripts pass; the macOS CI run and the hardware checks remain open in plan T045 |
 
 ## Open Questions
 

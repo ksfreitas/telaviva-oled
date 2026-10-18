@@ -1,7 +1,7 @@
 //! Contract tests for `telaviva_core::controls`.
 //!
 //! Every test drives the machine through `Controls::step` with JSON events, following the
-//! envelope and error rules in `specs/core-command-queue/contracts.md`.
+//! envelope and error rules in `specs/archived/core-command-queue/contracts.md`.
 
 use serde_json::{json, Value};
 use telaviva_core::controls::{Controls, StepError, MAX_EVENT_BYTES};

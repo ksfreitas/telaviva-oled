@@ -17,6 +17,6 @@ The decision record is the 2026-10-16 amendment of [ADR 0003](../../../adr/0003-
 
 - Hardware baseline and after measurements (plan tasks 1 and 9): CPU of the TelaViva process and the camera daemons, energy, wakeups, and the `.background` versus `.utility` comparison of the camera queue (`cameraQueueQoS`). Nothing was measured; no CPU or energy claim is made.
 - A real capture session with the VGA preset on every camera in use. The chosen frame durations were exercised only on the pre-start format and without a session, and the LED behavior of the one-time rate change after start is unconfirmed.
-- Snapshot amplification (plan task 5) was deferred because it touches `core.rs`, `ffi.rs` and `CoreBridge.swift`, which the macbook-brightness-follow work is rewriting. It continues in [specs/snapshot-publish-amplification.md](../../snapshot-publish-amplification.md).
+- Snapshot amplification (plan task 5) was deferred because it touches `core.rs`, `ffi.rs` and `CoreBridge.swift`, which the macbook-brightness-follow work is rewriting. It continues in [specs/archived/snapshot-publish-amplification/plan.md](../snapshot-publish-amplification/plan.md).
 
 Two defects found on hardware during this work are described in the plan: an uncaught Objective-C exception from an out-of-range frame duration (startup crash), and LED blinking caused by changing the rate of a running camera.

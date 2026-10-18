@@ -1,6 +1,6 @@
 # ADR-0005: Configure the hardware-key step per feature and wait for our own writes before rebasing key intent
 
-**Status:** Accepted
+**Status:** Accepted; the macOS rebase guard and the router's step handling are moved into the core by [ADR 0029](0029-core-owned-manual-control-queue-and-ddc-dispatch.md)
 **Date:** 2026-10-16
 **Feature:** hardware-key-step-settings
 **Spec:** [Archived hardware-key-step settings spec](../specs/archived/hardware-key-step-settings/spec.md)
@@ -46,3 +46,7 @@ For the rebase guard, external changes made during a write or within 1 s after i
 - The DDC layer rounds to raw monitor units. On a monitor whose raw maximum is not 100, an actual change can differ by one raw unit; read-back verification already covers this.
 - The rebase guard depends on `MenuBarController` reporting every accepted hardware key write and its completion with the same action generation. A completion that arrives before its acceptance is remembered (bounded to 64 entries), so the late acceptance registers nothing.
 - The Shift+Option fine step is fixed at 1 point and does not scale with the configured step.
+
+## Amendment 2026-10-18: Controls handle
+
+[ADR 0029](0029-core-owned-manual-control-queue-and-ddc-dispatch.md) moves the rebase guard and the step handling out of the macOS router into the core controls handle. The step settings (integers from 1 to 15, default 5) and the fixed 1-point fine step keep their values, and the 1 s settle window after our own writes is now the core's. The shell sends `brightness_step` and `volume_step` through `configure`. The router no longer receives steps through `setSteps`, and `MenuBarController` no longer reports hardware acceptance or completion, so the constraint above about reporting every accepted write no longer applies.

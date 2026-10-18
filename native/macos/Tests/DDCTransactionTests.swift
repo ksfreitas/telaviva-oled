@@ -21,6 +21,13 @@ private struct DDCTransactionTests {
         staleReplyThenCorrectReplyOnOuterRetry()
         writeFramesWideValuesAndRetriesTransportErrors()
         ignoredFirstWriteIsAppliedBySecondTransmission()
+        oneShotReadReturnsReadingOnFirstSeed()
+        oneShotReadFallsBackToLegacyChecksumWithoutRetrySleep()
+        oneShotReadReturnsNilAfterBothSeedsWithoutRetrySleep()
+        oneShotWriteReportsSuccessOnlyWhenBothSendsSucceed()
+        retryingReadAndWriteKeepBackoffSchedule()
+        edidManufacturerDecodesThreeLetterCodes()
+        edidManufacturerRejectsOutOfRangeNumbers()
         print("DDC transaction tests passed")
     }
 
@@ -129,5 +136,97 @@ private struct DDCTransactionTests {
         expect(transaction.writeVCP(code: 0x10, value: 40), "duplicate write transaction is submitted")
         expect(writes == 2 && brightness == 40, "device ignores first transmission and applies second")
         expect(transaction.readVCP(code: 0x10) == .init(current: 40, maximum: 100), "readback observes applied target")
+    }
+
+    private static func oneShotReadReturnsReadingOnFirstSeed() {
+        var writes: [[UInt8]] = []
+        var readCounts: [Int] = []
+        var delays: [TimeInterval] = []
+        let transaction = DDCTransaction(write: { writes.append($0); return true }, read: { count in
+            readCounts.append(count); return reply(code: 0x10)
+        }, sleep: { delays.append($0) })
+        expect(transaction.readVCPOnce(code: 0x10) == .init(current: 41, maximum: 100), "one-shot read parses on first seed")
+        expect(writes.count == 2 && writes[0] == [0x82, 0x01, 0x10, 0xac] && writes[1] == writes[0],
+               "one-shot read sends the standard-checksum request twice")
+        expect(readCounts == [11], "one-shot read requests eleven bytes once")
+        expect(delays == [0.01, 0.01, 0.06], "one-shot read waits only for sends and reply")
+    }
+
+    private static func oneShotReadFallsBackToLegacyChecksumWithoutRetrySleep() {
+        var writes: [[UInt8]] = []
+        var reads = 0
+        var delays: [TimeInterval] = []
+        let transaction = DDCTransaction(write: { writes.append($0); return true }, read: { _ in
+            reads += 1
+            if reads == 1 { return Array(reply(code: 0x10).dropLast()) }
+            return reply(code: 0x10)
+        }, sleep: { delays.append($0) })
+        expect(transaction.readVCPOnce(code: 0x10) == .init(current: 41, maximum: 100), "one-shot read recovers on legacy seed")
+        expect(writes.count == 4 && writes[2][3] == 0xfd, "one-shot read sends the legacy-checksum request second")
+        expect(delays == [0.01, 0.01, 0.06, 0.01, 0.01, 0.06], "one-shot fallback waits only for sends and replies")
+    }
+
+    private static func oneShotReadReturnsNilAfterBothSeedsWithoutRetrySleep() {
+        var writes = 0
+        var reads = 0
+        var delays: [TimeInterval] = []
+        let transaction = DDCTransaction(write: { _ in writes += 1; return true }, read: { _ in
+            reads += 1; return [UInt8](repeating: 0, count: 11)
+        }, sleep: { delays.append($0) })
+        expect(transaction.readVCPOnce(code: 0x62) == nil, "one-shot read fails after both seeds")
+        expect(reads == 2 && writes == 4, "one-shot read tries exactly two seeds")
+        expect(delays == [0.01, 0.01, 0.06, 0.01, 0.01, 0.06], "one-shot failure records no 0.2 s or 1.0 s backoff")
+    }
+
+    private static func oneShotWriteReportsSuccessOnlyWhenBothSendsSucceed() {
+        var writes: [[UInt8]] = []
+        var delays: [TimeInterval] = []
+        let succeeding = DDCTransaction(write: { writes.append($0); return true }, read: { _ in nil }, sleep: { delays.append($0) })
+        expect(succeeding.writeVCPOnce(code: 0x10, value: 0x1234), "one-shot write succeeds when both sends succeed")
+        expect(writes == [[0x84, 0x03, 0x10, 0x12, 0x34, 0x8e], [0x84, 0x03, 0x10, 0x12, 0x34, 0x8e]],
+               "one-shot write sends the framed packet twice")
+        expect(delays == [0.01, 0.01], "one-shot write waits only between sends")
+
+        for failingSend in [1, 2] {
+            var calls = 0
+            var failingDelays: [TimeInterval] = []
+            let failing = DDCTransaction(write: { _ in calls += 1; return calls != failingSend }, read: { _ in nil },
+                                         sleep: { failingDelays.append($0) })
+            expect(!failing.writeVCPOnce(code: 0x10, value: 0x1234), "one-shot write fails when send \(failingSend) fails")
+            expect(calls == 2, "one-shot write always attempts exactly two sends")
+            expect(failingDelays == [0.01, 0.01], "one-shot write records no retry backoff")
+        }
+    }
+
+    private static func retryingReadAndWriteKeepBackoffSchedule() {
+        let oneAttempt: [TimeInterval] = [0.01, 0.01, 0.06, 0.01, 0.01, 0.06]
+        let readSchedule: [TimeInterval] = oneAttempt + [0.2] + oneAttempt + [1.0] + oneAttempt
+        var reads = 0
+        var readDelays: [TimeInterval] = []
+        let reader = DDCTransaction(write: { _ in true }, read: { _ in reads += 1; return nil }, sleep: { readDelays.append($0) })
+        expect(reader.readVCP(code: 0x10) == nil, "retrying read gives up after three attempts")
+        expect(reads == 6, "retrying read makes two reads per attempt")
+        expect(readDelays == readSchedule, "retrying read backs off 0.2 s then 1.0 s")
+
+        var writes = 0
+        var writeDelays: [TimeInterval] = []
+        let writer = DDCTransaction(write: { _ in writes += 1; return false }, read: { _ in nil }, sleep: { writeDelays.append($0) })
+        expect(!writer.writeVCP(code: 0x10, value: 40), "retrying write gives up after three attempts")
+        expect(writes == 6, "retrying write makes two sends per attempt")
+        expect(writeDelays == [0.01, 0.01, 0.2, 0.01, 0.01, 1.0, 0.01, 0.01], "retrying write backs off 0.2 s then 1.0 s")
+    }
+
+    private static func edidManufacturerDecodesThreeLetterCodes() {
+        expect(EDIDManufacturer.code(vendor: 7789) == "GSM", "0x1E6D decodes to GSM")
+        expect(EDIDManufacturer.code(vendor: 0x0610) == "APP", "0x0610 decodes to APP")
+    }
+
+    private static func edidManufacturerRejectsOutOfRangeNumbers() {
+        expect(EDIDManufacturer.code(vendor: 0) == "", "zero vendor has no code")
+        expect(EDIDManufacturer.code(vendor: 0x10000) == "", "vendor wider than 16 bits has no code")
+        expect(EDIDManufacturer.code(vendor: 0x0021) == "", "first letter group 0 has no code")
+        expect(EDIDManufacturer.code(vendor: 0x0401) == "", "middle letter group 0 has no code")
+        expect(EDIDManufacturer.code(vendor: 0x001B) == "", "last letter group 27 has no code")
+        expect(EDIDManufacturer.code(vendor: 0x6C41) == "", "first letter group 27 has no code")
     }
 }

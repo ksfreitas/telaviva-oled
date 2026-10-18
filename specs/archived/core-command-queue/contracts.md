@@ -200,4 +200,4 @@ Intents rebase to the readback only when the intent is not scheduled, no action 
 | `key` whose `owner` is null or unknown | Accepted; `value` is `{"consume": false}` |
 | `submitted` or `attempt_done` with an unknown token | Accepted, ignored |
 | Event after `shutdown` | Accepted, ignored |
-| Panic inside a step | `TV_INTERNAL`; the shell stops using the handle, as the camera wrapper does. The current Windows wrapper instead returns an empty reply on any non-OK status and ignores the event. The macOS wrapper (not yet written) is expected to follow the camera wrapper |
+| Panic inside a step | `TV_INTERNAL`; the shell stops using the handle, as the camera wrapper does. The current Windows wrapper instead returns an empty reply on any non-OK status and ignores the event. The macOS wrapper (`ControlsBridge.swift`) follows the camera wrapper: a failed step stops the handle. |
