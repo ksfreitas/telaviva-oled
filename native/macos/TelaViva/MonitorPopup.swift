@@ -4,7 +4,6 @@ struct MonitorPopup: View {
     @ObservedObject var core: CoreBridge
     @ObservedObject var controls: ManualMonitorControls
     let openSettings: () -> Void
-    let openAbout: () -> Void
     let refreshDisplays: () -> Void
     @State private var cardHeights: [String: CGFloat] = [:]
 
@@ -41,7 +40,6 @@ struct MonitorPopup: View {
                 Text(cameraStatus).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 Spacer()
                 Button(AppText.string("settings", locale: core.snapshot.settings?.locale), action: openSettings)
-                Button(AppText.string("menu.about", locale: core.snapshot.settings?.locale), action: openAbout)
                 Button(AppText.string("quit", locale: core.snapshot.settings?.locale)) { NSApp.terminate(nil) }.keyboardShortcut("q")
             }
         }

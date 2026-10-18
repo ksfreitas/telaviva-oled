@@ -25,7 +25,7 @@ Click the menu bar icon (macOS) or the tray icon (Windows) to open it.
   - a filled dot when a face is detected;
   - no dot when no face is detected, or when presence is off, suspended or unavailable;
   - a dot outline when light is insufficient.
-- **About TelaViva OLED** is in the menu bar popup (macOS) or the tray right-click menu (Windows), and in Settings. It shows the installed version, the project's GitHub page and whether a newer release is available. **Check now** asks GitHub again. The app only informs you; it never downloads or installs an update.
+- **About TelaViva OLED** is in Settings on macOS. On Windows, it is in Settings and the tray right-click menu. It shows the installed version, the project's GitHub page and whether a newer release is available. **Check now** asks GitHub again. The app only informs you; it never downloads or installs an update.
 
 ## Settings
 

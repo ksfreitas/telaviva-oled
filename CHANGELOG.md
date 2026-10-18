@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fixed
+
+- Widen the macOS Settings window to 760 points by default and at minimum so all tabs fit.
+
+### Changed
+
+- Remove the About button from the macOS menu-bar popup; About remains available in Settings.
+
 ## 0.1.1 - 2026-10-18
 
 ### Added

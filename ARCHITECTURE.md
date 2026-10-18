@@ -265,7 +265,7 @@ Status: the Windows code is in the repository and covered by automated tests. Wi
 
 ## About screen and update check — 2026-10-17
 
-The About page is implemented on both shells: a macOS tab in the Settings window and a Windows NavigationView page. Both are reached from Settings and from an "About TelaViva OLED" menu entry (the menu bar popover and the tray flyout). The page shows the app icon, name and installed version, the project's GitHub link, the two credits, and an update status (checking, up to date, update available with the remote version, or could not check). Strings are localized per shell in en-US and pt-BR.
+The About page is implemented on both shells: a macOS tab in the Settings window and a Windows NavigationView page. On macOS, About is reached through Settings > About. On Windows, it is reached from Settings and the tray right-click menu. The page shows the app icon, name and installed version, the project's GitHub link, the two credits, and an update status (checking, up to date, update available with the remote version, or could not check). Strings are localized per shell in en-US and pt-BR.
 
 The Rust core exports `tv_core_version` and `tv_update_evaluate`. Both are pure and additive to ABI version 1: `tv_core_version` returns the core's version, and `tv_update_evaluate` compares the installed version with a GitHub `releases/latest` answer and returns a status. The core builds the release URL itself and never opens a URL from the server's answer.
 
@@ -292,3 +292,8 @@ A new `inference_device` setting lets the user choose where face detection runs,
 [ADR 0027](adr/0027-selectable-inference-device-and-igpu-offload.md) amends the inference policy of ADR 0001 and ADR 0019. Both shells now offer a native Advanced page and persist the same device preference while owning their own runtime reports. macOS uses ONNX Runtime 1.23.0 through the existing Rust bindings and CoreML compute-unit string options; it retains validated decisions and CPU fallbacks across the existing idle detector release, with same-frame CPU retry after accelerator errors. Windows keeps its existing 1.20.1 runtime and iGPU policy.
 
 CoreML Automatic was enabled after the Apple M4 Pro host validation: the first self-test detections for ALL, Neural Engine and GPU returned the same presence outcome as CPU within 125 ms. Every session still validates locally. The [archived feature](specs/archived/inference-device-selection/) preserves the specification, runtime-spike diagnosis, provider and host measurements, and remaining acceptance limits. Physical per-operator placement, energy, live-camera timing and idle-resource improvements are not established. Existing Windows UI acceptance remains pending and was outside this macOS completion.
+
+
+## macOS Settings and popup layout — 2026-10-18
+
+The macOS Settings window opens at 760 points wide, with the same minimum width in both the SwiftUI Settings scene and the window opened from the menu-bar popup. It remains resizable. The popup footer exposes Settings and Quit; the About page is reached through Settings > About. This entry-point change amends [ADR 0026](adr/0026-about-screen-and-github-update-check.md). The width is fixed rather than adapted to the available screen area; these dimensions do not establish compatibility with every display scaling setting.

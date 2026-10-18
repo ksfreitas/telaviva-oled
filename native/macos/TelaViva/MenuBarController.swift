@@ -100,10 +100,9 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         popover = NSPopover()
         popover.behavior = .transient
         let openSettingsAction: () -> Void = { [weak self] in self?.openSettings() }
-        let openAboutAction: () -> Void = { [weak self] in self?.openSettings(tab: .about) }
         let refreshDisplaysAction: () -> Void = ddc.refresh
         let popupView = MonitorPopup(core: core, controls: manualControls, openSettings: openSettingsAction,
-                                     openAbout: openAboutAction, refreshDisplays: refreshDisplaysAction)
+                                     refreshDisplays: refreshDisplaysAction)
         // The popover now follows the SwiftUI content size; a hardware check of the resize is pending.
         let host = NSHostingController(rootView: popupView)
         host.sizingOptions = [.preferredContentSize]
@@ -330,11 +329,11 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                                             installedVersion: installedVersion, requestHardwareKeyPermission: { [weak self] in
                 self?.requestHardwareKeyPermission()
             }, ambientAvailability: ambientAvailability, inferenceReport: camera.inferenceReport, calibration: calibration)
-                .frame(minWidth: 560, minHeight: 560)
-            let created = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 720),
+                .frame(minWidth: 760, minHeight: 560)
+            let created = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 720),
                                    styleMask: [.titled, .closable, .miniaturizable, .resizable],
                                    backing: .buffered, defer: false)
-            created.contentMinSize = NSSize(width: 560, height: 560)
+            created.contentMinSize = NSSize(width: 760, height: 560)
             created.title = "TelaViva OLED"
             created.contentViewController = NSHostingController(rootView: settingsView)
             created.isReleasedWhenClosed = false

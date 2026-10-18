@@ -85,7 +85,7 @@ The local build is ad-hoc signed. Distribution signing and notarization are sepa
 3. Open **Settings** to choose the language, the camera, the sampling intervals, battery behavior, launch at login and the keyboard steps.
 4. Turn on **presence protection** and grant camera access. Two valid no-face checks dim the monitor, and a returning face restores it.
 5. Optionally turn on **screensaver protection** and pick a **Protection brightness** for each monitor. Each monitor also has a switch that includes it in or excludes it from OLED protection.
-6. Open **About** to see the version and whether a newer release exists. The app only informs you; it never downloads or installs an update.
+6. Open **Settings > About** to see the version and whether a newer release exists. The app only informs you; it never downloads or installs an update.
 
 The [user guide](docs/user-guide.md) covers presence timing, protection reasons, Laptop follow and calibration, keyboard routing, Windows specifics and limits.
 
