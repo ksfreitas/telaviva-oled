@@ -92,6 +92,7 @@ struct ManualSubmission {
     double value;
     uint64_t generation;
     uint64_t token;
+    std::optional<uint64_t> revision;  // empty for a key target
 };
 
 }  // namespace
@@ -234,11 +235,29 @@ void ManualControls::apply(const Snapshot& snapshot)
 
 void ManualControls::setTarget(const std::string& monitorId, ManualFeature feature, double value)
 {
+    setTargetFrom(monitorId, feature, value, true);
+}
+
+void ManualControls::setKeyTarget(const std::string& monitorId, ManualFeature feature, double value)
+{
+    setTargetFrom(monitorId, feature, value, false);
+}
+
+void ManualControls::setObserver(IManualObserver* observer)
+{
+    observer_ = observer;
+}
+
+void ManualControls::setTargetFrom(const std::string& monitorId, ManualFeature feature, double value, bool fromSlider)
+{
     if (!std::isfinite(value)) {
         return;
     }
     const double target = value < 0.0 ? 0.0 : (value > 100.0 ? 100.0 : value);
 
+    std::optional<uint64_t> changedRevision;
+    uint64_t changedGeneration = 0;
+    {
     std::lock_guard<std::mutex> lock(mutex_);
     if (stopped_) {
         emitTrace(trace_, [&] { return "manual: " + slotTag(monitorId, feature) + " target ignored reason=stopped"; });
@@ -282,8 +301,20 @@ void ManualControls::setTarget(const std::string& monitorId, ManualFeature featu
         return;
     }
     slot.queued = target;
+    if (fromSlider) {
+        slot.queuedRevision = ++targetRevision_;
+        changedRevision = slot.queuedRevision;
+        changedGeneration = monitor->second.generation;
+    } else {
+        slot.queuedRevision.reset();
+    }
     emitTrace(trace_, [&] { return "manual: " + slotTag(monitorId, feature) + " target accepted value=" + traceNumber(target) + " raw=" + std::to_string(raw); });
     scheduleDrain(kDrainDelay);
+    }
+    // Outside the lock: the observer may call back into the key router, which has its own lock.
+    if (changedRevision.has_value() && observer_ != nullptr) {
+        observer_->onTargetChanged(monitorId, changedGeneration, feature, target, *changedRevision);
+    }
 }
 
 void ManualControls::onHardwareCompleted(const std::string& monitorId, ManualFeature feature, bool ok,
@@ -474,7 +505,9 @@ void ManualControls::drain()
             }
 
             const double value = *slot.queued;
+            const std::optional<uint64_t> revision = slot.queuedRevision;
             slot.queued.reset();
+            slot.queuedRevision.reset();
             slot.draft = value;
             slot.inFlight = true;
             slot.inFlightRaw = rawFor(channel.min, channel.max, value);
@@ -482,7 +515,8 @@ void ManualControls::drain()
             slot.submittedAt = clock_.steadySeconds();
             slot.submitToken = ++submitCounter_;
             emitTrace(trace_, [&] { return "manual: " + slotTag(monitorId, feature) + " submitted value=" + traceNumber(value) + " raw=" + std::to_string(slot.inFlightRaw) + " generation=" + std::to_string(monitor->second.generation) + " token=" + std::to_string(slot.submitToken) + " revision=" + std::to_string(slot.submittedRevision); });
-            batch.push_back(ManualSubmission{monitorId, feature, value, monitor->second.generation, slot.submitToken});
+            batch.push_back(ManualSubmission{monitorId, feature, value, monitor->second.generation, slot.submitToken,
+                                             revision});
         }
     }
 
@@ -490,6 +524,10 @@ void ManualControls::drain()
     for (const ManualSubmission& item : batch) {
         const int status = sink_.submit(item.monitorId, item.feature, item.value, item.generation);
         if (status == 0) {
+            // Outside the lock, like the sink call. Only slider targets carry a revision.
+            if (item.revision.has_value() && observer_ != nullptr) {
+                observer_->onTargetSubmitted(item.monitorId, item.generation, item.feature, item.value, *item.revision);
+            }
             continue;
         }
 

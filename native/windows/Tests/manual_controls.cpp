@@ -767,5 +767,120 @@ TEST(manual_completion_and_pending_match_by_monitor_not_action_generation)
     CHECK(waitingSink.calls.size() == 1 && waitingSink.calls[0].value == 50.0);
 }
 
+class FakeObserver final : public IManualObserver {
+public:
+    struct Event {
+        bool submitted;
+        std::string monitorId;
+        uint64_t generation;
+        ManualFeature feature;
+        double value;
+        uint64_t revision;
+    };
+
+    void onTargetChanged(const std::string& monitorId, uint64_t connectionGeneration, ManualFeature feature,
+                         double value, uint64_t revision) override
+    {
+        events.push_back(Event{false, monitorId, connectionGeneration, feature, value, revision});
+    }
+
+    void onTargetSubmitted(const std::string& monitorId, uint64_t connectionGeneration, ManualFeature feature,
+                           double value, uint64_t revision) override
+    {
+        events.push_back(Event{true, monitorId, connectionGeneration, feature, value, revision});
+    }
+
+    std::vector<Event> events;
+};
+
+TEST(manual_observer_reports_slider_change_then_submission_with_same_revision)
+{
+    FakeSink sink;
+    FakeScheduler scheduler;
+    FakeClock clock;
+    FakeObserver observer;
+    ManualControls controls(sink, scheduler, clock);
+    controls.setObserver(&observer);
+    controls.apply(makeSnapshot(1, {makeMonitor(kA, 3)}));
+    controls.setTarget(kA, ManualFeature::Volume, 60.0);
+    CHECK_EQ(observer.events.size(), std::size_t{1});
+    CHECK(observer.events.size() == 1 && !observer.events[0].submitted && observer.events[0].monitorId == kA &&
+          observer.events[0].generation == 3 && observer.events[0].feature == ManualFeature::Volume &&
+          observer.events[0].value == 60.0 && observer.events[0].revision == 1);
+    scheduler.advance(kSettle);
+    CHECK_EQ(observer.events.size(), std::size_t{2});
+    CHECK(observer.events.size() == 2 && observer.events[1].submitted && observer.events[1].revision == 1 &&
+          observer.events[1].value == 60.0);
+}
+
+TEST(manual_observer_sees_no_submission_when_sink_rejects)
+{
+    FakeSink sink;
+    FakeScheduler scheduler;
+    FakeClock clock;
+    FakeObserver observer;
+    ManualControls controls(sink, scheduler, clock);
+    controls.setObserver(&observer);
+    controls.apply(makeSnapshot(1, {makeMonitor(kA)}));
+    sink.status = -1;
+    controls.setTarget(kA, ManualFeature::Volume, 60.0);
+    scheduler.advance(kSettle);
+    CHECK_EQ(observer.events.size(), std::size_t{1});
+    CHECK(observer.events.size() == 1 && !observer.events[0].submitted);
+}
+
+TEST(manual_observer_coalesced_targets_submit_latest_revision_only)
+{
+    FakeSink sink;
+    FakeScheduler scheduler;
+    FakeClock clock;
+    FakeObserver observer;
+    ManualControls controls(sink, scheduler, clock);
+    controls.setObserver(&observer);
+    controls.apply(makeSnapshot(1, {makeMonitor(kA)}));
+    controls.setTarget(kA, ManualFeature::Volume, 10.0);
+    controls.setTarget(kA, ManualFeature::Volume, 20.0);
+    scheduler.advance(kSettle);
+    CHECK_EQ(sink.calls.size(), std::size_t{1});
+    CHECK(sink.calls.size() == 1 && sink.calls[0].value == 20.0);
+    CHECK_EQ(observer.events.size(), std::size_t{3});
+    CHECK(observer.events.size() == 3 && observer.events[0].revision == 1 && observer.events[1].revision == 2 &&
+          observer.events[2].submitted && observer.events[2].revision == 2 && observer.events[2].value == 20.0);
+}
+
+TEST(manual_observer_silent_for_same_raw_as_in_flight)
+{
+    FakeSink sink;
+    FakeScheduler scheduler;
+    FakeClock clock;
+    FakeObserver observer;
+    ManualControls controls(sink, scheduler, clock);
+    controls.setObserver(&observer);
+    controls.apply(makeSnapshot(1, {makeMonitor(kA)}));
+    controls.setTarget(kA, ManualFeature::Volume, 20.0);
+    scheduler.advance(kSettle);
+    CHECK_EQ(observer.events.size(), std::size_t{2});
+    controls.setTarget(kA, ManualFeature::Volume, 20.0);
+    scheduler.advance(kSettle);
+    CHECK_EQ(observer.events.size(), std::size_t{2});
+    CHECK_EQ(sink.calls.size(), std::size_t{1});
+}
+
+TEST(manual_key_target_uses_queue_without_observer)
+{
+    FakeSink sink;
+    FakeScheduler scheduler;
+    FakeClock clock;
+    FakeObserver observer;
+    ManualControls controls(sink, scheduler, clock);
+    controls.setObserver(&observer);
+    controls.apply(makeSnapshot(1, {makeMonitor(kA)}));
+    controls.setKeyTarget(kA, ManualFeature::Volume, 40.0);
+    scheduler.advance(kSettle);
+    CHECK_EQ(sink.calls.size(), std::size_t{1});
+    CHECK(sink.calls.size() == 1 && sink.calls[0].feature == ManualFeature::Volume && sink.calls[0].value == 40.0);
+    CHECK_EQ(observer.events.size(), std::size_t{0});
+}
+
 }  // namespace
 }  // namespace telaviva

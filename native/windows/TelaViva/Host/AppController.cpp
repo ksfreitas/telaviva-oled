@@ -41,6 +41,7 @@
 #include "Platform/SettingsModel.h"
 #include "Platform/SystemClock.h"
 #include "Platform/SystemSleeper.h"
+#include "Platform/VolumeActionTracker.h"
 #include "Platform/Win32Efficiency.h"
 
 #include <algorithm>
@@ -223,15 +224,48 @@ public:
         if (!feature) {
             return;
         }
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (manual_ != nullptr) {
-            manual_->onHardwareCompleted(completion.monitorId, *feature, completion.ok, completion.observedPercent);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (manual_ != nullptr) {
+                manual_->onHardwareCompleted(completion.monitorId, *feature, completion.ok, completion.observedPercent);
+            }
+        }
+        // Outside the gate's lock: the volume hook takes the key lock.
+        if (*feature == ManualFeature::Volume && volumeHook_) {
+            volumeHook_(completion);
         }
     }
+
+    // Set once in the constructor, before the DDC controller can complete anything.
+    void setVolumeHook(std::function<void(const HardwareCompletion&)> hook) { volumeHook_ = std::move(hook); }
 
 private:
     std::mutex mutex_;
     ManualControls* manual_ = nullptr;
+    std::function<void(const HardwareCompletion&)> volumeHook_;
+};
+
+// Forwards the slider targets of the manual controls to the key router. Other features are not routed.
+class ManualKeyBridge final : public IManualObserver {
+public:
+    std::function<void(const std::string&, uint64_t, double, uint64_t)> changed;
+    std::function<void(const std::string&, uint64_t, double, uint64_t)> submitted;
+
+    void onTargetChanged(const std::string& monitorId, uint64_t connectionGeneration, ManualFeature feature,
+        double value, uint64_t revision) override
+    {
+        if (feature == ManualFeature::Volume && changed) {
+            changed(monitorId, connectionGeneration, value, revision);
+        }
+    }
+
+    void onTargetSubmitted(const std::string& monitorId, uint64_t connectionGeneration, ManualFeature feature,
+        double value, uint64_t revision) override
+    {
+        if (feature == ManualFeature::Volume && submitted) {
+            submitted(monitorId, connectionGeneration, value, revision);
+        }
+    }
 };
 
 // A channel with a hardware error reports a status outside this list. Only supported
@@ -550,6 +584,11 @@ struct AppController::Services {
     // Declared before ddc, so it outlives the controller that calls it. Closed by shutdown().
     ManualCompletionGate manualGate;
     std::unique_ptr<DdcController> ddc;
+    // Feeds slider targets and set_volume acceptances to the key router. The tracker and the connection
+    // generation map are used under keyMutex, on the snapshot thread.
+    ManualKeyBridge manualKeyBridge;
+    VolumeActionTracker volumeActions;
+    std::map<std::string, uint64_t> keyConnectionGenerations;
     std::unique_ptr<ManualControls> manual;
 
     // ---- Protection brightness slider. Ticks only store the newest value per monitor; one trailing
@@ -737,6 +776,20 @@ struct AppController::Services {
                     keyMonitorIds = monitorIds;
                     keyMonitorsDirty = true;
                 }
+                // Connection generations for the completion path. Our set_volume acceptances hold back
+                // the router's rebase on readbacks until the matching completion arrives.
+                keyConnectionGenerations.clear();
+                for (const auto& monitor : snapshot.monitors) {
+                    keyConnectionGenerations[monitor.id] = monitor.generation;
+                }
+                for (const AcceptedAction& accepted : volumeActions.onSnapshot(snapshot)) {
+                    keyRouter->actionAccepted(accepted.monitorId, accepted.connectionGeneration,
+                        accepted.actionGeneration);
+                    if (trace) {
+                        trace("keys: action accepted monitor=" + traceMonitor(accepted.monitorId) +
+                            " actionGeneration=" + std::to_string(accepted.actionGeneration));
+                    }
+                }
                 owner = keyOwner;
             }
         }
@@ -821,6 +874,47 @@ struct AppController::Services {
             keyOwner = owner;
         }
         routeKeys(snapshot, owner);
+    }
+
+    // ---- Key router and manual controls. Each takes keyMutex and does nothing once keys are stopped.
+    // Called from the manual controls without their lock held.
+
+    void onManualTargetChanged(const std::string& monitorId, uint64_t generation, double value, uint64_t revision)
+    {
+        std::lock_guard<std::mutex> lock(keyMutex);
+        if (!keyAccepting) {
+            return;
+        }
+        keyRouter->manualControlChanged(monitorId, generation, value, revision);
+    }
+
+    void onManualTargetSubmitted(const std::string& monitorId, uint64_t generation, double value, uint64_t revision)
+    {
+        std::lock_guard<std::mutex> lock(keyMutex);
+        if (!keyAccepting) {
+            return;
+        }
+        keyRouter->manualControlAccepted(monitorId, generation, value, revision);
+    }
+
+    // DDC completion of a set_volume action, on the executor thread. Its generation is the action's,
+    // so the connection generation comes from the latest snapshot.
+    void onVolumeCompleted(const HardwareCompletion& completion)
+    {
+        std::lock_guard<std::mutex> lock(keyMutex);
+        if (!keyAccepting) {
+            return;
+        }
+        const auto found = keyConnectionGenerations.find(completion.monitorId);
+        if (found == keyConnectionGenerations.end()) {
+            return;
+        }
+        keyRouter->actionCompleted(completion.monitorId, found->second, completion.generation);
+        if (trace) {
+            trace("keys: action completed monitor=" + traceMonitor(completion.monitorId) +
+                " actionGeneration=" + std::to_string(completion.generation) +
+                " ok=" + (completion.ok ? "1" : "0"));
+        }
     }
 
     // Device interface path for the audio owner. The snapshot carries the DisplayConfig
@@ -916,7 +1010,8 @@ struct AppController::Services {
                         trace("keys: intent monitor=" + traceMonitor(intent.monitorId) + " target=" +
                             formatPercent(intent.targetVolume) + " generation=" + std::to_string(intent.generation));
                     }
-                    manual->setTarget(intent.monitorId, ManualFeature::Volume, intent.targetVolume);
+                    // A key write is not reported to the router as a slider change, which would replace its own intent.
+                    manual->setKeyTarget(intent.monitorId, ManualFeature::Volume, intent.targetVolume);
                     if (trace) {
                         trace("keys: setTarget returned, intent finished accepted");
                     }
@@ -1085,6 +1180,14 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
     s.manual = std::make_unique<ManualControls>(*s.manualSink, s.scheduler, s.clock);
     // Completions can arrive only after start(), which is after this line.
     s.manualGate.open(s.manual.get());
+    // Slider targets reach the key router, and volume completions reach the router's acceptance tracking.
+    // Both are wired before the key consumer thread starts.
+    s.manual->setObserver(&s.manualKeyBridge);
+    s.manualKeyBridge.changed = [&s](const std::string& monitorId, uint64_t generation, double value,
+                                    uint64_t revision) { s.onManualTargetChanged(monitorId, generation, value, revision); };
+    s.manualKeyBridge.submitted = [&s](const std::string& monitorId, uint64_t generation, double value,
+                                      uint64_t revision) { s.onManualTargetSubmitted(monitorId, generation, value, revision); };
+    s.manualGate.setVolumeHook([&s](const HardwareCompletion& completion) { s.onVolumeCompleted(completion); });
     // Trace lines reach the log only at Debug level. Otherwise the sinks stay empty and nothing is formatted.
     // Set before any traffic: nothing calls into these controllers until start() or the bridge sink below.
     if (traceDebug) {

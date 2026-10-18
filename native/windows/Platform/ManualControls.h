@@ -39,6 +39,19 @@ inline constexpr double kManualReadbackTolerance = 0.51;
 // may release it. A completion normally releases it first; this only covers a lost completion.
 inline constexpr double kManualInFlightSafetySeconds = 3.0;
 
+// Observes slider targets for the key router, as the macOS coordinator does. Calls are made outside
+// ManualControls' lock. Target changes are reported in setTarget, and the order against a drain
+// that is already pending is not guaranteed; the router then ignores that acceptance.
+struct IManualObserver {
+    virtual ~IManualObserver() = default;
+    // A slider target was stored with this revision, before its submission.
+    virtual void onTargetChanged(const std::string& monitorId, uint64_t connectionGeneration, ManualFeature feature,
+                                 double value, uint64_t revision) = 0;
+    // The sink accepted the slider target with this revision.
+    virtual void onTargetSubmitted(const std::string& monitorId, uint64_t connectionGeneration, ManualFeature feature,
+                                   double value, uint64_t revision) = 0;
+};
+
 // Receives one submission at a time per monitor and feature.
 struct IManualSink {
     virtual ~IManualSink() = default;
@@ -78,6 +91,12 @@ public:
     // again. Ignored for non-finite values, unknown, asleep or unstable monitors, and
     // when the cap is reached for a new draft.
     void setTarget(const std::string& monitorId, ManualFeature feature, double value);
+
+    // The same queue for a hardware-key write. Not reported to the observer: the key router owns that write.
+    void setKeyTarget(const std::string& monitorId, ManualFeature feature, double value);
+
+    // Optional observer, set once before the first target. Null means none.
+    void setObserver(IManualObserver* observer);
 
     // Completion of a set_brightness or set_volume hardware action that this controller
     // submitted, reported after the core accepted its hardware_result. Thread-safe.
@@ -131,6 +150,7 @@ private:
         double draft = 0.0;
         ManualStatus status = ManualStatus::Ready;
         std::optional<double> queued;  // newest target not yet submitted
+        std::optional<uint64_t> queuedRevision;  // revision of the queued slider target; empty for a key target
         bool inFlight = false;         // accepted by the sink, released by a completion or the safety window
         int64_t inFlightRaw = 0;       // raw value of the in-flight target, for deduplication
         uint64_t submittedRevision = 0;  // snapshot revision current when it was submitted
@@ -142,10 +162,13 @@ private:
 
     void scheduleDrain(std::chrono::milliseconds delay);
     void drain();
+    void setTargetFrom(const std::string& monitorId, ManualFeature feature, double value, bool fromSlider);
 
     IManualSink& sink_;
     IScheduler& scheduler_;
     IClock& clock_;
+    IManualObserver* observer_ = nullptr;
+    uint64_t targetRevision_ = 0;  // numbers slider targets, as the macOS coordinator does
     TraceSink trace_;
     std::map<std::string, MonitorState> monitors_;
     std::map<std::pair<std::string, ManualFeature>, Slot> slots_;
