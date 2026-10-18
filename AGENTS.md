@@ -10,6 +10,7 @@ Implementation is in progress. The repository contains a Cargo workspace, shared
 
 - `ARCHITECTURE.md`: intended architecture, requirements, unresolved design questions, and CodeAdvisor conventions.
 - `CHANGELOG.md`: release history, starting with Unreleased.
+- `docs/`: user guide with the detailed behavior of each feature; the README is the short entry point.
 - `adr/`: permanent architecture decision records.
 - `specs/oled-monitor-protection/`: holds only navigation pointers to archived records for the initial application's requirements, technical architecture, and runtime contracts.
 - `crates/telaviva-core/`: shared policy, settings and native-shell C ABI.

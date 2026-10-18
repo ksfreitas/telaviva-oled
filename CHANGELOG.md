@@ -6,6 +6,10 @@
 
 - The Windows Settings toggles now sit flush with the right edge of their cards instead of floating about 100 px to the left, in line with the sliders, number boxes and combo boxes.
 
+### Changed
+
+- The README is now a short entry point (highlights, platform support, status, install, getting started, privacy, build and contributing). The detailed behavior of each feature moved to the new `docs/user-guide.md`, and the README no longer lists the hardware of the maintainer's test machines; those results remain in the validation reports.
+
 ## 0.1.0 - 2026-10-17
 
 First release.
