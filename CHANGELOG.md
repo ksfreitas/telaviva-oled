@@ -6,9 +6,10 @@
 
 ### Added
 
-- Inference device setting on Windows, on the new Advanced page of Settings: Automatic (the default), CPU, or a specific GPU listed by name and kind. Automatic runs face detection on the integrated GPU when it passes a check (it starts, returns the same presence result as the CPU on a test frame, and answers within 125 ms) and on the CPU otherwise, so the main CPU and graphics card stay free; a discrete GPU is only ever chosen by hand. Any failure falls back to the CPU without losing a frame. The page shows the device in use and a notice when a chosen device is missing or failed. Changes apply without restarting the app. No energy benefit is claimed. The macOS shell does not have this setting yet and keeps running on the CPU.
+- Inference device setting on the new Advanced page of Settings on Windows and macOS. Windows offers Automatic (the default), CPU, or a specific GPU listed by name and kind. Automatic uses an integrated GPU when it passes a check (session creation, matching presence classification on the bundled self-test frame, and a response within 125 ms), and CPU otherwise; a discrete GPU is only selected by hand. macOS offers Automatic, Neural Engine preference, GPU preference and CPU. Automatic requests all CoreML compute units after hardware validation; each session validates locally, and failures fall back to CPU with a same-frame retry after runtime errors. CoreML choices are preferences, not guarantees of physical operator placement. Both pages show the active route and explicit-choice fallback notices in English and Portuguese. Changes apply without restarting. No energy benefit is claimed.
 - Settings schema 1 gains the optional `inference_device` string (default `auto`), accepted as `auto`, `cpu`, `ane`, `gpu` or `gpu:<vendor>:<device>:<ordinal>`; the core ABI version stays 1. A build without this field treats a settings file that contains it as corrupt, as with earlier additive fields.
 - Windows adapter classification through DXCore (`IsIntegrated` matched to DXGI by LUID), which does not create a device and so does not wake a discrete GPU.
+- The app bundles the inference self-test frame and its attribution.
 
 ### Fixed
 
@@ -17,6 +18,7 @@
 ### Changed
 
 - The Windows package now ships the DirectML build of ONNX Runtime 1.20.1 as its only `onnxruntime.dll` (about 3 MB larger than the CPU build). It loads and runs the CPU provider even where DirectML is missing, and `DirectML.dll` is still not redistributed. The inference-device change no longer needs a restart because there is one runtime.
+- The macOS app bundles official ONNX Runtime 1.23.0, retaining the Rust bindings and Windows 1.20.1 runtime. This supports CoreML compute-unit string options and avoids the 1.22.0 process-exit mutex abort reproduced during the integration spike. Local builds verify cached runtime hashes and refresh outdated copies.
 - The `specs/oled-monitor-protection/` folder is removed. It held only three short pointers to the archived record of the initial application, which stays in `specs/archived/external-monitor-control-and-oled-presence-protection/`; the project map in `AGENTS.md` now points at `specs/archived/`.
 - The Windows acceleration profile allowlist (`acceleration-profiles.toml`, its parser and its tests) is removed. DirectML is no longer gated by a recorded energy measurement and the "accelerated must be faster than the CPU" rule is replaced by the 125 ms latency check above. Failure markers remain, for Automatic only.
 - The README is now a short entry point (highlights, platform support, status, install, getting started, privacy, build and contributing). The detailed behavior of each feature moved to the new `docs/user-guide.md`, and the README no longer lists the hardware of the maintainer's test machines; those results remain in the validation reports.

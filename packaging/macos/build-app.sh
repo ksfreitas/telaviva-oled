@@ -31,14 +31,17 @@ python3 "$ROOT/tools/inference/prepare.py" \
   --resources-dir "$APP/Contents/Resources" \
   --frameworks-dir "$APP/Contents/Frameworks"
 
+python3 "$ROOT/tools/inference/make-selftest-frame.py" "$APP/Contents/Resources/selftest-face.bgra"
+
 LICENSES="$APP/Contents/Resources/ThirdPartyLicenses"
 mkdir -p "$LICENSES"
 ditto "$ROOT/licenses" "$LICENSES/licenses"
 cp "$ROOT/native/macos/DDC-LICENSE" "$LICENSES/DDC-LICENSE"
+cp "$ROOT/crates/telaviva-inference/tests/fixtures/LICENSE.txt" "$LICENSES/SELFTEST-FRAME-LICENSE.txt"
 cp "$ROOT/LICENSE" "$APP/Contents/Resources/LICENSE"
 
 SDK="$(xcrun --sdk macosx --show-sdk-path)"
-SOURCES=("$SRC/App.swift" "$SRC/CoreBridge.swift" "$SRC/CameraLifecycle.swift" "$SRC/CameraFrameRate.swift" "$SRC/CameraSelection.swift" "$SRC/HardwareKeyRouter.swift" "$SRC/MenuBarController.swift" "$SRC/MonitorPopup.swift" "$SRC/SettingsView.swift" "$SRC/PresenceCamera.swift" "$SRC/Localization.swift" "$SRC/MacDDCController.swift" "$SRC/DDCTransaction.swift" "$SRC/ManualMonitorControls.swift" "$SRC/DefaultAudioOutputMonitor.swift" "$SRC/MediaKeyProbe.swift" "$SRC/BuiltInDisplayBackend.swift" "$SRC/PopupLayout.swift" "$SRC/BuiltInBrightnessMonitor.swift" "$SRC/AmbientBrightnessView.swift" "$SRC/AmbientCalibrationController.swift" "$SRC/StatusItemIcon.swift" "$SRC/UpdateChecker.swift" "$SRC/AboutView.swift" "$SRC/SettingsNavigation.swift")
+SOURCES=("$SRC/App.swift" "$SRC/CoreBridge.swift" "$SRC/CameraLifecycle.swift" "$SRC/CameraFrameRate.swift" "$SRC/CameraSelection.swift" "$SRC/HardwareKeyRouter.swift" "$SRC/MenuBarController.swift" "$SRC/MonitorPopup.swift" "$SRC/SettingsView.swift" "$SRC/PresenceCamera.swift" "$SRC/InferenceDeviceSelection.swift" "$SRC/Localization.swift" "$SRC/MacDDCController.swift" "$SRC/DDCTransaction.swift" "$SRC/ManualMonitorControls.swift" "$SRC/DefaultAudioOutputMonitor.swift" "$SRC/MediaKeyProbe.swift" "$SRC/BuiltInDisplayBackend.swift" "$SRC/PopupLayout.swift" "$SRC/BuiltInBrightnessMonitor.swift" "$SRC/AmbientBrightnessView.swift" "$SRC/AmbientCalibrationController.swift" "$SRC/StatusItemIcon.swift" "$SRC/UpdateChecker.swift" "$SRC/AboutView.swift" "$SRC/SettingsNavigation.swift")
 swiftc -sdk "$SDK" -target arm64-apple-macos14.0 -module-cache-path "$OUT/module-cache" \
   -O \
   -import-objc-header "$SRC/TelaViva-Bridging-Header.h" -I "$ROOT/include" -Xcc -I -Xcc "$ROOT/include" \

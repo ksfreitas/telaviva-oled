@@ -24,7 +24,7 @@
 - **Battery aware.** Presence checks pause on battery by default and while every eligible monitor is asleep.
 - **Follow your laptop (optional).** On a MacBook or a Windows laptop, external monitors can follow the built-in panel's brightness, including its automatic brightness, through calibration points you manage.
 - **Hardware keys (optional).** Volume, mute and (on macOS) brightness keys can drive the external monitor.
-- **Light on resources.** Low-frame-rate camera capture, a selectable inference device (on Windows, Automatic uses the integrated GPU when it works and the CPU otherwise, so your main CPU and graphics card stay free), and Efficiency mode on Windows.
+- **Selectable inference device.** Automatic uses a validated integrated GPU on Windows or validated CoreML on Apple Silicon, with CPU fallback on both platforms. Neural Engine and GPU selections on macOS are preferences; CoreML may run unsupported operations on the CPU.
 - **Private by design.** Everything runs on your device, with no telemetry and no stored camera images. See [Privacy](#privacy).
 - **English and Portuguese.** The interface is available in English (US) and Portuguese (Brazil).
 
@@ -42,7 +42,7 @@ Both apps are native shells over one shared Rust core, with face detection by th
 
 ## Status
 
-TelaViva OLED is at version 0.1.0, its first release, and is under active development. Rust tests, native builds and the platform test suites pass in CI, but hardware validation is still partial on both platforms:
+This checkout reports application version 0.1.1 and remains under active development. The CI badges above show workflow status; hardware validation is still partial on both platforms:
 
 - DDC support depends on the monitor, the port, the cable, any adapter or dock, and the graphics hardware. It is not uniform, and a passing check on one setup says nothing about another.
 - Only a small number of monitors and computers have been used for physical checks. Many checks are still pending, among them camera sharing with video calls, multi-monitor and dock setups, monitor sleep and wake, Laptop follow on real laptops, and keyboard routing on other keyboards.

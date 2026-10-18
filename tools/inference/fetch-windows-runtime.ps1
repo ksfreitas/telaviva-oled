@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Fetches and verifies the ONNX Runtime 1.20.1 build for Windows x64.
 
@@ -14,7 +14,7 @@
     -Variant directml: tools/inference/runtime/windows-x64-directml/ from the
     Microsoft.ML.OnnxRuntime.DirectML NuGet package (same ONNX Runtime version as
     the CPU pin). This is the only runtime that build-app.ps1 ships, as
-    onnxruntime.dll (specs/inference-device-selection, architecture Decision 2).
+    onnxruntime.dll (specs/archived/inference-device-selection, architecture Decision 2).
     DirectML.dll is never extracted (the in-box System32 copy is used). Requires
     the [runtime.windows-x64.directml] pins.
 

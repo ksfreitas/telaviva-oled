@@ -14,6 +14,7 @@ struct SettingsView: View {
         (NSApp.delegate as? MenuBarController)?.requestHardwareKeyPermission()
     }
     @ObservedObject var ambientAvailability: AmbientAvailability = AmbientAvailability()
+    @ObservedObject var inferenceReport: InferenceDeviceSelection.Report
     var calibration: AmbientCalibrationController? = nil
     @State private var locale = "auto"
     @State private var presence = false
@@ -27,6 +28,7 @@ struct SettingsView: View {
     @State private var presenceMinBrightness = 20.0
     @State private var presentInterval = 10.0
     @State private var returnInterval = 1.0
+    @State private var inferenceDevice = "auto"
     @State private var cameras: [AVCaptureDevice] = []
     @State private var didLoad = false
     @State private var showLoginItemError = false
@@ -46,7 +48,7 @@ struct SettingsView: View {
         cameras = AVCaptureDevice.DiscoverySession(deviceTypes: [.builtInWideAngleCamera, .external], mediaType: .video, position: .unspecified).devices
     }
 
-    var body: some View {
+    private var settingsTabs: some View {
         // Tabs read and write the drafts owned here; save() and load() stay in this view.
         TabView(selection: $navigation.tab) {
             generalTab
@@ -58,14 +60,25 @@ struct SettingsView: View {
             AmbientBrightnessView(core: core, availability: ambientAvailability, calibration: calibration)
                 .tabItem { Text(AppText.string("settings.tab.ambient", locale: locale)) }
                 .tag(SettingsTab.ambient)
+            advancedTab
+                .tabItem { Text(AppText.string("settings.tab.advanced", locale: locale)) }
+                .tag(SettingsTab.advanced)
             AboutView(installedVersion: installedVersion, locale: locale, checker: updateChecker)
                 .tabItem { Text(AppText.string("settings.tab.about", locale: locale)) }
                 .tag(SettingsTab.about)
         }
+    }
+
+    private var settingsLifecycle: some View {
+        settingsTabs
         .onAppear { refreshCameras(); load() }
         .onReceive(NotificationCenter.default.publisher(for: .cameraDeviceConnected)) { _ in refreshCameras() }
         .onReceive(NotificationCenter.default.publisher(for: .cameraDeviceDisconnected)) { _ in refreshCameras() }
         .onChange(of: core.snapshot.revision) { _, _ in if !didLoad { load() } }
+    }
+
+    private var settingUpdates: some View {
+        settingsLifecycle
         .onChange(of: locale) { _, _ in save() }
         .onChange(of: presence) { _, _ in save() }
         .onChange(of: hardwareKeys) { _, _ in save() }
@@ -77,6 +90,11 @@ struct SettingsView: View {
         .onChange(of: brightnessKeyStep) { _, _ in save() }
         .onChange(of: volumeKeyStep) { _, _ in save() }
         .onChange(of: presenceMinBrightness) { _, _ in save() }
+        .onChange(of: inferenceDevice) { _, _ in save() }
+    }
+
+    var body: some View {
+        settingUpdates
         .alert(AppText.string("loginItemFailureTitle", locale: locale), isPresented: $showLoginItemError) {
             Button(AppText.string("ok", locale: locale), role: .cancel) { }
         } message: {
@@ -162,6 +180,11 @@ struct SettingsView: View {
         .padding(20)
     }
 
+    /// Advanced tab: CoreML compute-unit preference and the current inference route.
+    private var advancedTab: some View {
+        InferenceSettingsView(selection: $inferenceDevice, report: inferenceReport, locale: locale)
+    }
+
     /// Keyboard tab: hardware keys, step sizes, and the permissions they need.
     private var keyboardTab: some View {
         Form {
@@ -240,6 +263,7 @@ struct SettingsView: View {
         volumeKeyStep = Double(value.volume_key_step ?? 5)
         presenceMinBrightness = value.presence_min_brightness_percent ?? 20
         returnInterval = Double(value.return_sampling_interval_s)
+        inferenceDevice = value.inference_device ?? "auto"
     }
 
     private func save() {
@@ -254,6 +278,7 @@ struct SettingsView: View {
         settings.brightness_key_step = Int(brightnessKeyStep.rounded())
         settings.volume_key_step = Int(volumeKeyStep.rounded())
         settings.presence_min_brightness_percent = presenceMinBrightness
+        settings.inference_device = inferenceDevice
         core.updateSettings(settings)
     }
 
@@ -264,6 +289,54 @@ struct SettingsView: View {
         if enabled { disabled.remove(monitorID) } else { disabled.insert(monitorID) }
         next.protectionDisabled = disabled.sorted()
         core.updateSettings(next)
+    }
+}
+
+private struct InferenceSettingsView: View {
+    @Binding var selection: String
+    @ObservedObject var report: InferenceDeviceSelection.Report
+    let locale: String
+
+    var body: some View {
+        Form {
+            Section(AppText.string("inference.title", locale: locale)) {
+                Picker(AppText.string("inference.title", locale: locale), selection: $selection) {
+                    ForEach(InferenceDeviceSelection.options) { option in
+                        Text(AppText.string(option.labelKey, locale: locale)).tag(option.id)
+                    }
+                    if !InferenceDeviceSelection.options.contains(where: { $0.id == selection }) {
+                        Text(AppText.inferenceUnavailableLabel(id: selection, locale: locale))
+                            .tag(selection)
+                    }
+                }
+                Text(AppText.string("inference.help", locale: locale))
+                    .font(.caption).foregroundStyle(.secondary)
+                Text(AppText.string("inference.discreteHelp", locale: locale))
+                    .font(.caption).foregroundStyle(.secondary)
+                if report.decided {
+                    let active = AppText.inferenceActiveLabel(id: report.value.activeId,
+                                                             fallback: report.value.activeLabel, locale: locale)
+                    Text(AppText.string("inference.inUse", locale: locale)
+                        .replacingOccurrences(of: "{0}", with: active))
+                } else {
+                    Text(AppText.string("inference.notDecided", locale: locale))
+                }
+                if let noticeKey = inferenceNoticeKey {
+                    Label(AppText.string(noticeKey, locale: locale), systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+    }
+
+    private var inferenceNoticeKey: String? {
+        switch report.value.state {
+        case .unavailable: return "inference.notice.unavailable"
+        case .failed: return "inference.notice.failed"
+        case .ok, .autoCPU: return nil
+        }
     }
 }
 

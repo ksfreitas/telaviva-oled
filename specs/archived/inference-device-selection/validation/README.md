@@ -27,10 +27,12 @@ Evidence for the inference device selection feature. Each record is one markdown
 
 | File | Plan task | Status |
 |---|---|---|
-| `windows-adapter-probe.md` | T002 | pending |
-| `windows-device-mapping.md` | T003 | pending |
-| `windows-auto-igpu.md` | T023 | pending |
-| `macos-ort-spike.md` | T004 | pending (needs a Mac) |
-| `macos-coreml.md` | T043 | pending (needs a Mac) |
+| `windows-adapter-probe.md` | T002 | passed on recorded desktop |
+| `windows-device-mapping.md` | T003 | passed on recorded desktop |
+| `windows-auto-igpu.md` | T023 | partial; remaining acceptance limits recorded |
+| `macos-ort-spike.md` | T004/T005 | passed with ORT 1.23.0 after diagnosing 1.22.0 shutdown abort |
+| `macos-coreml.md` | T043 | passed on M4 Pro; Automatic enabled |
+| `macos-coreml-device-probe.md` | T035/T043 | production C ABI correctness/latency passed |
+| `macos-validation.md` | T042/T050 | integrated check results and acceptance limits |
 
 No record claims an energy saving (spec FR-013); the justification for Automatic is offloading.
