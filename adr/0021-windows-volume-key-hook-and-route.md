@@ -1,6 +1,6 @@
 # ADR-0021: Windows volume and mute keys through a low-level hook, a lock-free route and container-id ownership
 
-**Status:** Accepted
+**Status:** Accepted; the router decisions (step, rebase guard and latch as a C++ port, duplicated router logic, unwired outstanding-action inputs) are superseded for Windows by [ADR 0029](0029-core-owned-manual-control-queue-and-ddc-dispatch.md). The hook, the lock-free route and the container-id ownership stand.
 **Date:** 2026-10-17
 **Feature:** windows-version
 **Spec:** [Archived spec](../specs/archived/windows-version/spec.md)

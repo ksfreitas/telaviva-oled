@@ -2,13 +2,22 @@
 
 ## Unreleased
 
-### Fixed
+### Added
 
-- Widen the macOS Settings window to 760 points by default and at minimum so all tabs fit.
+- Core controls handle ABI: `tv_controls_create`, `tv_controls_step` and `tv_controls_destroy` own manual-control drafts, key policy and DDC dispatch for brightness and volume. The change is additive to ABI version 1, which stays `1`.
 
 ### Changed
 
 - Remove the About button from the macOS menu-bar popup; About remains available in Settings.
+- The Windows popup no longer shows the face-detection status line and its camera icon, so it matches the macOS popup. The footer camera status line ("Camera: <status>") is unchanged.
+- Windows manual controls and hardware keys now run on the core controls handle. Hardware checks are pending.
+- DDC writes on Windows are now retried (up to three attempts), and a rejected result submission is resubmitted at most three times instead of re-running the write on every snapshot.
+- The macOS shell is unchanged for now; it keeps its own manual-control and hardware-key queue until its adapter for the controls handle lands.
+
+### Fixed
+
+- Widen the macOS Settings window to 760 points by default and at minimum so all tabs fit.
+- On Windows the manual controls compared the raw monitor value with the slider percentage; they now use the normalized percentage, which differs on monitors whose DDC range is not 0 to 100.
 
 ## 0.1.1 - 2026-10-18
 

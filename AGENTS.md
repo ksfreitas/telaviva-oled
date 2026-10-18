@@ -13,7 +13,7 @@ Implementation is in progress. The repository contains a Cargo workspace, shared
 - `docs/`: user guide with the detailed behavior of each feature; the README is the short entry point.
 - `adr/`: permanent architecture decision records.
 - `specs/archived/`: the archived record of each completed feature (specification, design, plan and validation reports). Use `ARCHITECTURE.md`, `api.md` and `adr/` for the current design; the initial application's records are in `specs/archived/external-monitor-control-and-oled-presence-protection/`.
-- `crates/telaviva-core/`: shared policy, settings and native-shell C ABI.
+- `crates/telaviva-core/`: shared policy, settings and native-shell C ABI; the camera lifecycle and controls handles (`src/controls/`: manual-control queue, key policy and DDC dispatch driven by the shells through `tv_controls_*`).
 - `crates/telaviva-inference/`: image quality assessment and local YuNet/ONNX detection.
 - `native/macos/`: native SwiftUI/AppKit shell and macOS device adapters.
 - `native/windows/`: native WinUI 3 / C++/WinRT shell (`TelaViva/`), the UI-free `Platform/` static library, and `Tests/`.

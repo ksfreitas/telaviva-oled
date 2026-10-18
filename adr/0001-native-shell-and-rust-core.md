@@ -1,6 +1,6 @@
 # ADR 0001: Native shells with a shared Rust policy core
 
-- Status: Accepted; inference acceleration policy amended by [ADR 0027](0027-selectable-inference-device-and-igpu-offload.md)
+- Status: Accepted; inference acceleration policy amended by [ADR 0027](0027-selectable-inference-device-and-igpu-offload.md); the manual-control queue, key policy and DDC retry policy moved into the core by [ADR 0029](0029-core-owned-manual-control-queue-and-ddc-dispatch.md) (native adapters keep device access, discovery and the execution of single DDC primitives)
 - Date: 2026-10-16
 
 ## Context

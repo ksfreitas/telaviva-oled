@@ -35,7 +35,7 @@ This document records agreed intent with implementation in progress. The reposit
 
 See [the archived feature architecture](specs/archived/external-monitor-control-and-oled-presence-protection/architecture.md) and [archived runtime contracts](specs/archived/external-monitor-control-and-oled-presence-protection/contracts.md) for decisions, alternatives, planned structure, acceptance budgets, and compatibility gates, and [api.md](api.md) for the implemented native consumer interfaces. These selections are design intent; hardware behavior is not yet verified.
 
-A Cargo workspace now contains `telaviva-core` and `telaviva-inference`. The current Rust implementation groups policy in `crates/telaviva-core/src/core.rs`, settings in `settings.rs`, the ABI in `ffi.rs`, and image inference in `crates/telaviva-inference/src/lib.rs`. The planned module table in the feature architecture describes responsibility boundaries; further file splitting can follow complexity without changing the contracts.
+A Cargo workspace now contains `telaviva-core` and `telaviva-inference`. The current Rust implementation groups policy in `crates/telaviva-core/src/core.rs`, settings in `settings.rs`, the ABI in `ffi.rs`, the camera lifecycle in `camera_lifecycle.rs`, the controls handle in `controls/`, the strict JSON parser in `strict_json.rs`, and image inference in `crates/telaviva-inference/src/lib.rs`. The planned module table in the feature architecture describes responsibility boundaries; further file splitting can follow complexity without changing the contracts.
 
 ## Modules
 
@@ -51,7 +51,7 @@ The following are intended responsibility boundaries within one application, not
 
 ### Manual monitor controls
 
-The user selects an external monitor and adjusts its brightness or volume. The application uses the corresponding DDC capability when available. Discovery, unsupported-capability reporting, retry limits, and connection behavior require design and hardware validation.
+The user selects an external monitor and adjusts its brightness or volume. The application uses the corresponding DDC capability when available. Discovery, unsupported-capability reporting, retry limits, and connection behavior require design and hardware validation. The Windows retry budget is decided (3 attempts per primitive, 0.2 s then 1.0 s); hardware validation is pending. On Windows, drafts, coalescing and the DDC retry for these controls run on the core controls handle (see [Controls handle](#controls-handle)); on macOS they remain in the Swift shell.
 
 ### Presence protection
 
@@ -102,7 +102,7 @@ The current macOS application consists of a native SwiftUI/AppKit shell, a share
 
 The policy combines presence and screensaver reasons per external monitor, preserves raw brightness baselines, and checks current hardware state before restoring values the app owns. It requires two valid absences before presence dimming; low light and camera errors suspend presence. Battery suspension stops camera acquisition. The native macOS implementation and source/test evidence are recorded in the feature validation reports. A single Dell on one Apple Silicon host has read-only brightness and volume evidence; no physical write or restoration is verified.
 
-The design selects YuNet through ONNX Runtime with CPU fallback. CoreML is a candidate, and no acceleration energy benefit has been established. Windows native implementation and validation are deferred. Remaining gates include camera capture/sharing and permissions, screensaver startup behavior, monitor writes/restoration and broader connection coverage, active resource/energy measurements, UI acceptance, signing/notarization, and clean-account installation. Therefore this architecture record describes an implementation in progress and local testing bundle, not release readiness.
+The design selects YuNet through ONNX Runtime with CPU fallback. CoreML is a candidate, and no acceleration energy benefit has been established. The Windows native shell is in the repository, and its hardware verification is pending (see the checklist in [specs/archived/windows-version/validation/hardware-checklist.md](specs/archived/windows-version/validation/hardware-checklist.md)). Remaining gates include camera capture/sharing and permissions, screensaver startup behavior, monitor writes/restoration and broader connection coverage, active resource/energy measurements, UI acceptance, signing/notarization, and clean-account installation. Therefore this architecture record describes an implementation in progress and local testing bundle, not release readiness.
 
 ### Permanent documentation and archive
 
@@ -110,7 +110,7 @@ The original [feature specification](specs/archived/external-monitor-control-and
 
 ### Current implementation details
 
-- Policy/settings/ABI live in the core crate; native Swift device queues replace the originally proposed separate Rust adapter and worker modules. The inference crate contains YuNet preprocessing and execution.
+- Policy/settings/ABI live in the core crate. The originally proposed separate Rust adapter and worker modules were not built, except the controls handle in `crates/telaviva-core/src/controls/` (see the [Controls handle](#controls-handle) section): on macOS, manual controls and hardware keys still run in native Swift device queues (`ManualMonitorControls`, `HardwareKeyRouter`, and the DDC retry in `DDCTransaction`), while on Windows they run on that handle. The inference crate contains YuNet preprocessing and execution.
 - Presence sampling accepts 5–300 seconds (default 10); return sampling accepts 0.25–5 seconds (default 1). Older valid schema-1 interval values are clamped on load without discarding other preferences.
 - Normal checks capture a single frame. Return checks retain the camera session across deadlines, including the 5-second return interval; unused frames are discarded and inference remains limited to the chosen cadence. Disabled, suspended and shutdown states stop acquisition. Low-light recovery samples light every 10 seconds.
 - The camera snapshot separates operational status from presentation status: `display_status` carries language-neutral codes such as `checking`, `ready`, `insufficient_light`, `error` and the `suspended_*` reasons, and each native shell maps them to its own localized text ([ADR 0015](adr/0015-native-shells-own-ui-strings.md)). Successful fresh observations update operational readiness.
@@ -129,7 +129,7 @@ Low-light recovery uses the existing 10-second retry delay, then a five-second m
 
 ## camera-lifecycle-and-display-suspension — 2026-10-16
 
-This macOS extension adds opt-in continuous camera capture, per-display sleep policy, and exposure-settling behavior for low-light recovery, while retaining existing eligibility and brightness-ownership rules. The accepted decision is in [ADR 0003](adr/0003-camera-lifecycle-and-display-suspension.md); the standalone plan and unrun physical acceptance checklist are preserved in the [feature archive](specs/archived/camera-lifecycle-and-display-suspension/). Hardware behavior remains unverified, and Windows remains deferred.
+This macOS extension adds opt-in continuous camera capture, per-display sleep policy, and exposure-settling behavior for low-light recovery, while retaining existing eligibility and brightness-ownership rules. The accepted decision is in [ADR 0003](adr/0003-camera-lifecycle-and-display-suspension.md); the standalone plan and unrun physical acceptance checklist are preserved in the [feature archive](specs/archived/camera-lifecycle-and-display-suspension/). Hardware behavior remains unverified, and Windows hardware verification is pending.
 
 ## camera-brightness-activation-threshold — 2026-10-17
 
@@ -141,11 +141,11 @@ The decision is recorded in [ADR 0011](adr/0011-camera-brightness-activation-thr
 
 ## External monitor hardware keys and fluid controls — 2026-10-16
 
-Opt-in macOS keyboard routing adjusts an external monitor's brightness by pointer (key codes 144 and 145), and its volume and mute only while that monitor is the Mac's default sound output, matched by CoreAudio device UID against the display EDID UUID; other targets pass through to macOS. Menu bar sliders use bounded draft coalescing, and DDC writes are serialized through a transaction that verifies readback. The accepted decision is in [ADR 0004](adr/0004-external-monitor-hardware-keys-and-fluid-controls.md), and the feature records are in the [archive](specs/archived/external-monitor-hardware-keys-and-fluid-controls/).
+Opt-in macOS keyboard routing adjusts an external monitor's brightness by pointer (key codes 144 and 145), and its volume and mute only while that monitor is the Mac's default sound output, matched by CoreAudio device UID against the display EDID UUID; other targets pass through to macOS. Menu bar sliders use bounded draft coalescing, and DDC writes are serialized through a transaction that verifies readback. On Windows, the key step, intent, rebase and mute policy run on the core controls handle instead; the macOS router keeps its own policy until its adapter moves, and Windows hardware checks are pending. The accepted decision is in [ADR 0004](adr/0004-external-monitor-hardware-keys-and-fluid-controls.md), and the feature records are in the [archive](specs/archived/external-monitor-hardware-keys-and-fluid-controls/).
 
 The key step is configurable separately for brightness and volume, from 1 to 15 percentage points per press (default 5), and is stored in the core settings. Shift+Option is a fixed 1-point fine step. The native router receives plain values through `setSteps(brightness:volume:)`, which clamps them and stores them under its state lock. Popup brightness and volume sliders are continuous and are unaffected by the key step.
 
-Behavior is verified only on one LG ULTRAFINE over DisplayPort and one keyboard, and the individual macOS acceptance checklist rows remain not run. Other monitors, docks, HDMI, USB audio and keyboards are unverified, and Windows remains deferred.
+Behavior is verified only on one LG ULTRAFINE over DisplayPort and one keyboard, and the individual macOS acceptance checklist rows remain not run. Other monitors, docks, HDMI, USB audio and keyboards are unverified, and Windows hardware verification is pending.
 
 ## hardware-key-step-settings — 2026-10-16
 
@@ -242,7 +242,7 @@ The Windows version adds a second native shell over the same Rust policy core an
 - Rust DLLs: `telaviva_core.dll` and `telaviva_inference.dll`, each built as a cdylib and linked by the shell through its import library, rather than two static libraries in one binary.
 - Inference ABI: additive only. Provider value `2` is the DirectML candidate, with `tv_inference_create_with_provider_device` and `tv_inference_directml_available`. Value `3` is reserved and rejected (NPU is out of scope). The core ABI stays at version 1, and CoreML code is compiled only for macOS. See [api.md](api.md).
 - Runtime: the package ships one ONNX Runtime 1.20.1, the DirectML build, as `onnxruntime.dll`. Its DirectX and DirectML dependencies are delay-loaded, so it also runs the CPU provider where DirectML is missing, and the device can change while the app runs. `DirectML.dll` is the OS copy and is never redistributed.
-- Key hook (`KeyHook`, `KeyIntentRouter`): volume and mute keys only, with the route logic ported from macOS; see the architecture, Decision 9.
+- Key hook (`KeyHook`): volume and mute keys only, with the route logic ported from macOS; the key policy after the hook (step, intent, rebase, mute memory) runs on the core controls handle (see [Controls handle](#controls-handle)); see the architecture, Decision 9.
 - Audio owner (`AudioOwner`): default output matched to a monitor by container ID, with no name fallback; see the architecture, Decision 9.
 - Efficiency (`EfficiencyController`, `Scheduler`): EcoQoS while idle, with a user-forced Efficiency mode left in place; see the architecture, Decision 11.
 - Provider selection (`InferenceHost`, `DeviceSelection`): the device is decided per stored preference (`auto`, `cpu` or a `gpu:<vendor>:<device>:<ordinal>` id), with one runtime for every session. Automatic picks the first integrated GPU without a failure marker (classified by DXCore `IsIntegrated` matched to DXGI by LUID), validated by a self-test against a CPU reference, and falls back to the CPU; see the section "Inference device selection" below.
@@ -262,7 +262,9 @@ Status: the Windows code is in the repository and covered by automated tests. Wi
 - [ADR-0024](adr/0024-windows-zip-distribution-and-hkcu-run.md): Windows distribution: unpackaged zip with a per-user PowerShell installer and HKCU Run for launch at login
 - [ADR-0025](adr/0025-windows-app-sdk-license-versus-open-source-rule.md): Windows App SDK license versus the open-source-only rule (Proposed; owner decision open)
 - [ADR-0026](adr/0026-about-screen-and-github-update-check.md): About screen and an informational update check against GitHub releases (Accepted)
-- [ADR-0027](adr/0027-align-windows-toggles-right.md): Windows Settings toggles right-aligned by resetting the ToggleSwitch `MinWidth` in the shared row builder (Accepted)
+- [ADR-0027](adr/0027-selectable-inference-device-and-igpu-offload.md): Selectable inference device and iGPU offload (Accepted)
+- [ADR-0028](adr/0028-align-windows-toggles-right.md): Windows Settings toggles right-aligned by resetting the ToggleSwitch `MinWidth` in the shared row builder (Accepted)
+- [ADR-0029](adr/0029-core-owned-manual-control-queue-and-ddc-dispatch.md): Core-owned manual-control queue, key policy and DDC dispatch behind a clock-injected handle (Accepted for the core and Windows; macOS adapter pending)
 
 ## About screen and update check — 2026-10-17
 
@@ -298,3 +300,17 @@ CoreML Automatic was enabled after the Apple M4 Pro host validation: the first s
 ## macOS Settings and popup layout — 2026-10-18
 
 The macOS Settings window opens at 760 points wide, with the same minimum width in both the SwiftUI Settings scene and the window opened from the menu-bar popup. It remains resizable. The popup footer exposes Settings and Quit; the About page is reached through Settings > About. This entry-point change amends [ADR 0026](adr/0026-about-screen-and-github-update-check.md). The width is fixed rather than adapted to the available screen area; these dimensions do not establish compatibility with every display scaling setting.
+
+## core-command-queue — 2026-10-18
+
+The feature design is in `specs/core-command-queue/` and is not yet archived. This section records what is implemented.
+
+### Controls handle
+
+The core crate exposes an opaque, clock-injected controls handle, `TvControls`, through `tv_controls_create`, `tv_controls_step` and `tv_controls_destroy`; the change is additive to ABI version 1, which stays `1`. Its code is in `crates/telaviva-core/src/controls/` (`model.rs`, `manual.rs`, `keys.rs`, `dispatch.rs` and `retry.rs`), with the strict JSON parser shared with the camera lifecycle in `crates/telaviva-core/src/strict_json.rs`. The handle owns the manual-control draft and coalescing queue for brightness and volume, the key step, intent, rebase and mute policy, dispatch of the core's pending actions, and the DDC retry and pacing policy: three attempts per primitive with 0.2 s and then 1.0 s backoff, a 60 ms settle, a duplicate write only for the GSM manufacturer profile, a 2 s wake grace, and at most three resubmissions of a rejected result.
+
+The handle takes one JSON event and returns one JSON result, and every event carries the shell's monotonic `now`. The result lists effects (`submit_command`, `run_attempt`, `submit_result` and `draft_changed`) that the shell executes, plus one `next_deadline` for the shell's single timer; the shell keeps the key hook or event tap and its swallow decision, device discovery, running one DDC primitive at a time on its worker, and that timer. The contract is in [api.md](api.md).
+
+On Windows, `ControlsDriver` in `native/windows/Platform` drives the handle and `DdcController` runs one primitive per effect. The core's dispatcher keeps one DDC primitive executing at a time across all monitors. The earlier `ManualControls`, `KeyIntentRouter` and `VolumeActionTracker` are no longer used by `AppController`; their files and their tests are removed, and the ported cases live in the Rust contract and unit tests. `DdcTransaction` and `DdcTimingProfile` remain for discovery and the `--probe-ddc` diagnostic. Two Windows behaviors change: DDC writes are now retried (three attempts), and a rejected result submission is resubmitted at most three times instead of re-running the write on every snapshot. `observe` carries each monitor's normalized percentage. Windows native tests pass (614 tests, 0 failed, 2026-10-18); hardware verification is pending, and no Windows hardware support is claimed here.
+
+The macOS shell has not moved to the handle. It still runs its own Swift queue (`ManualMonitorControls`, `HardwareKeyRouter`, and the DDC retry in `DDCTransaction`). The owner decided on 2026-10-18 that the macOS adapter will be implemented by the owner on a Mac, so macOS keeps its own queue until then. The decision is recorded in [ADR 0029](adr/0029-core-owned-manual-control-queue-and-ddc-dispatch.md), which amends ADR 0001 and supersedes the router decisions of ADR 0021 for Windows.

@@ -1,4 +1,4 @@
-# ADR-0027: Right-align Windows Settings toggles by shrinking the ToggleSwitch box
+# ADR-0028: Right-align Windows Settings toggles by shrinking the ToggleSwitch box
 
 **Status:** Accepted
 **Date:** 2026-10-18

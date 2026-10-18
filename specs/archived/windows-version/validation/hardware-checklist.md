@@ -77,3 +77,22 @@ Machine used so far: Windows 11 Pro build 26300, desktop, AMD Ryzen 7 9800X3D, A
 | I1 | Launch at login on a real sign-in | Not run | |
 | I2 | Install and uninstall scripts in a clean profile | Partial (2026-10-17) | zip built (32.7 MB); installed into an isolated folder with this user profile: 282 files, uninstall key with icon, Start menu shortcut `IconLocation` = `TelaViva.exe,0`, installed `--smoke-test` exit 0, uninstall removes folder, key and shortcut and leaves user data and the Run value untouched, also when the process working directory is the install folder; not run in a clean profile or VM; the icon as drawn in Start, taskbar and Settings > Apps is not checked |
 | I3 | SmartScreen behavior of the unsigned build | Not run | |
+
+## Controls handle
+
+Cases for the controls-handle change (`specs/core-command-queue/plan.md`, T048). Every row starts as **Not run**; none of them is verified until someone runs it on the hardware.
+
+The macOS adapter cases will be added when the macOS shell moves to the handle. No macOS case is listed here.
+
+| # | Row | Status | Notes |
+|---|-----|--------|-------|
+| C1 | Slider drag on an external monitor: the control follows the pointer, only the final value is written, no jump back | Not run | |
+| C2 | Hold the volume key: the value accumulates and does not bounce back on a lagging readback | Not run | |
+| C3 | Volume mute and restore returns the remembered level | Not run | |
+| C4 | Change brightness with the monitor's own buttons while idle, then press a key: the step starts from the new value | Not run | |
+| C5 | Put the monitor to sleep and wake it: no pending write replays, and a new drag works after the 2 s grace | Not run | |
+| C6 | Unplug and replug the monitor mid-drag: the draft is dropped and a new drag works | Not run | |
+| C7 | Slow-waking monitor (DDC not ready after wake): the restore is retried and the total retry time stays within about 7 s | Not run | |
+| C8 | One non-GSM monitor and one GSM monitor (LG UltraFine reports `GSM`): the duplicate write is sent only for GSM | Not run | needs the LG UltraFine |
+| C9 | Two monitors dragged at the same time: both reach their final values and neither is starved | Not run | needs two monitors |
+| C10 | Quit while a write is in flight: the app exits without hanging | Not run | |

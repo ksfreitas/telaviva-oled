@@ -21,7 +21,7 @@ Click the menu bar icon (macOS) or the tray icon (Windows) to open it.
 - The popup fits one to three monitors and scrolls beyond three.
 - Each monitor has a switch that includes it in or excludes it from OLED protection (on by default). The same switches are listed in Settings.
 - With screensaver protection on, each monitor also has a **Protection brightness** slider. It cannot exceed that monitor's current brightness.
-- The icon shows presence:
+- Presence is shown by the menu bar icon (macOS) or the tray icon (Windows), not by a line in the popup. On Windows the popup footer shows only the camera status, as `Camera: <status>`. The icon shows:
   - a filled dot when a face is detected;
   - no dot when no face is detected, or when presence is off, suspended or unavailable;
   - a dot outline when light is insufficient.
@@ -127,6 +127,8 @@ Physical keyboard capture and device compatibility still require hardware accept
 ### Windows hardware keys
 
 The Windows volume and mute keys are opt-in. They adjust an external monitor only while it is the default sound output. Brightness keys are not intercepted and keep their normal Windows behavior.
+
+- Each press changes the volume by the step set in Settings as **Volume key step** (5 points by default, from 1 to 15). Holding Shift uses a fine step of 1 point.
 
 ## Inference device
 
