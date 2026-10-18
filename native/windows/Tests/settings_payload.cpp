@@ -175,6 +175,7 @@ const std::set<std::string> kSettingsKeys = {
     "screensaver_targets",
     "ambient_follow_enabled",
     "protection_disabled",
+    "inference_device",
 };
 
 }  // namespace
@@ -188,7 +189,7 @@ TEST(settings_payload_has_exactly_the_core_keys)
     CHECK_EQ(root.size(), std::size_t{2});
 
     const std::vector<std::string> keys = keysAtDepth(json, 2);
-    CHECK_EQ(keys.size(), std::size_t{15});
+    CHECK_EQ(keys.size(), std::size_t{16});
     const std::set<std::string> actual(keys.begin(), keys.end());
     CHECK(actual == kSettingsKeys);
 
@@ -215,6 +216,7 @@ TEST(settings_payload_default_values)
     CHECK_EQ(scalarFor(draft, "brightness_key_step"), std::string("5"));
     CHECK_EQ(scalarFor(draft, "volume_key_step"), std::string("5"));
     CHECK_EQ(scalarFor(draft, "ambient_follow_enabled"), std::string("false"));
+    CHECK_EQ(scalarFor(draft, "inference_device"), std::string(R"("auto")"));
 
     const std::string json = telaviva::buildSettingsPayload(draft);
     CHECK(contains(json, R"("screensaver_targets":{})"));
@@ -297,6 +299,44 @@ TEST(settings_payload_locale_fallback)
         draft.locale = locale;
         CHECK_EQ(scalarFor(draft, "locale"), std::string(R"("auto")"));
     }
+}
+
+TEST(settings_payload_inference_device_clamps_to_core_grammar)
+{
+    const std::vector<std::string> kept = {
+        "auto", "cpu", "ane", "gpu", "gpu:1002:164e:0", "gpu:10de:2684:12",
+    };
+    for (const std::string& device : kept) {
+        telaviva::SettingsDraft draft;
+        draft.inferenceDevice = device;
+        CHECK_EQ(scalarFor(draft, "inference_device"), "\"" + device + "\"");
+    }
+
+    const std::vector<std::string> replaced = {
+        "", "AUTO", "gpu:1:2:0", "gpu:1002:164E:0", "gpu:1002:164e:", "gpu:1002:164e:1234", "npu",
+        std::string(33, 'a'),
+    };
+    for (const std::string& device : replaced) {
+        telaviva::SettingsDraft draft;
+        draft.inferenceDevice = device;
+        CHECK_EQ(scalarFor(draft, "inference_device"), std::string(R"("auto")"));
+    }
+}
+
+TEST(settings_payload_inference_device_written_as_string)
+{
+    telaviva::SettingsDraft draft;
+    draft.inferenceDevice = "gpu:10de:2684:0";
+    CHECK_EQ(scalarFor(draft, "inference_device"), std::string(R"("gpu:10de:2684:0")"));
+}
+
+TEST(settings_payload_inference_device_copied_from_snapshot)
+{
+    const telaviva::Snapshot s = telaviva::parseSnapshot(
+        R"({"settings":{"inference_device":"gpu:10de:2684:0"}})");
+    const telaviva::SettingsDraft draft = telaviva::draftFromSnapshotSettings(s.settings);
+    CHECK_EQ(draft.inferenceDevice, std::string("gpu:10de:2684:0"));
+    CHECK_EQ(scalarFor(draft, "inference_device"), std::string(R"("gpu:10de:2684:0")"));
 }
 
 TEST(settings_payload_protection_disabled_sorted_unique_and_valid)
@@ -402,6 +442,7 @@ TEST(settings_payload_round_trip_non_default_values)
                          R"("presence_min_brightness_percent":35,"always_on_camera":true,)"
                          R"("screensaver_protection_enabled":true,"launch_at_login":true,)"
                          R"("hardware_keys_enabled":true,"brightness_key_step":3,"volume_key_step":7,)"
+                         R"("inference_device":"auto",)"
                          R"("screensaver_targets":{"win-a":25},"ambient_follow_enabled":true,)"
                          R"("protection_disabled":["win-b"]}})"));
 }

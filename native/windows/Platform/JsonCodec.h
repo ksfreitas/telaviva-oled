@@ -53,6 +53,8 @@ struct SettingsSnapshot {
     int brightness_key_step = 5;
     std::map<std::string, double> screensaver_targets;
     std::set<std::string> protection_disabled;
+    // Inference device selector: auto, cpu, ane, gpu or gpu:vvvv:dddd:n.
+    std::string inference_device = "auto";
     AmbientCurvesSnapshot ambientCurves;
 };
 

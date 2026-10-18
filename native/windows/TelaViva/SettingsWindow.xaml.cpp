@@ -4,6 +4,7 @@
 #include "pch.h"
 #include "SettingsWindow.xaml.h"
 #include "AboutPage.xaml.h"
+#include "AdvancedPage.xaml.h"
 #include "AutomaticBrightnessPage.xaml.h"
 #include "GeneralPage.xaml.h"
 #include "KeyboardPage.xaml.h"
@@ -96,7 +97,8 @@ namespace winrt::TelaViva::implementation
         general_ = winrt::make<winrt::TelaViva::implementation::GeneralPage>();
         keyboard_ = winrt::make<winrt::TelaViva::implementation::KeyboardPage>();
         ambient_ = winrt::make<winrt::TelaViva::implementation::AutomaticBrightnessPage>();
-        about_ = winrt::make<winrt::TelaViva::implementation::AboutPage>();
+        advanced_ = winrt::make<winrt::TelaViva::implementation::AdvancedPage>();
+        about_ =winrt::make<winrt::TelaViva::implementation::AboutPage>();
 
         Nav().SelectionChanged([this](auto const&, auto const& args)
             {
@@ -116,6 +118,10 @@ namespace winrt::TelaViva::implementation
                 else if (item == AmbientItem())
                 {
                     Nav().Content(ambient_);
+                }
+                else if (item == AdvancedItem())
+                {
+                    Nav().Content(advanced_);
                 }
                 else if (item == AboutItem())
                 {
@@ -138,6 +144,7 @@ namespace winrt::TelaViva::implementation
         winrt::get_self<implementation::GeneralPage>(general_)->SetHost(host);
         winrt::get_self<implementation::KeyboardPage>(keyboard_)->SetHost(host);
         winrt::get_self<implementation::AutomaticBrightnessPage>(ambient_)->SetHost(host);
+        winrt::get_self<implementation::AdvancedPage>(advanced_)->SetHost(host);
         winrt::get_self<implementation::AboutPage>(about_)->SetHost(host);
     }
 
@@ -156,11 +163,13 @@ namespace winrt::TelaViva::implementation
         GeneralItem().Content(winrt::box_value(localized("settings.tab.general")));
         KeyboardItem().Content(winrt::box_value(localized("settings.tab.keyboard")));
         AmbientItem().Content(winrt::box_value(localized("settings.tab.ambient")));
+        AdvancedItem().Content(winrt::box_value(localized("settings.tab.advanced")));
         AboutItem().Content(winrt::box_value(localized("settings.tab.about")));
 
         winrt::get_self<implementation::GeneralPage>(general_)->RefreshStrings();
         winrt::get_self<implementation::KeyboardPage>(keyboard_)->RefreshStrings();
         winrt::get_self<implementation::AutomaticBrightnessPage>(ambient_)->RefreshStrings();
+        winrt::get_self<implementation::AdvancedPage>(advanced_)->RefreshStrings();
         winrt::get_self<implementation::AboutPage>(about_)->RefreshStrings();
     }
 
@@ -172,6 +181,7 @@ namespace winrt::TelaViva::implementation
         case SettingsPage::General: target = GeneralItem(); break;
         case SettingsPage::Keyboard: target = KeyboardItem(); break;
         case SettingsPage::Ambient: target = AmbientItem(); break;
+        case SettingsPage::Advanced: target = AdvancedItem(); break;
         case SettingsPage::About: target = AboutItem(); break;
         }
 

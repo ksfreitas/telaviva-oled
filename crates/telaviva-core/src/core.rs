@@ -546,6 +546,12 @@ impl Core {
                     let n = val.as_u64().ok_or("key step must be integer")?;
                     next.volume_key_step = u8::try_from(n).map_err(|_| "key step out of range")?;
                 }
+                "inference_device" => {
+                    next.inference_device = val
+                        .as_str()
+                        .ok_or("inference_device must be string")?
+                        .to_owned()
+                }
                 "selected_camera_id" => {
                     if val.is_null() {
                         next.selected_camera_id = None;
@@ -1305,7 +1311,7 @@ impl Core {
         let monitors:Vec<Value>=self.monitors.values().map(|m|json!({"id":m.id,"name":m.name,"identity_status":m.identity,"connection_path":m.path,"generation":m.generation,"display_state":m.display_state,
             "presence_dimmed":m.presence_dimmed,"brightness":feature_json(&m.brightness),"volume":feature_json(&m.volume),
             "follow":self.follow_eligibility(m),"protected":!self.settings.protection_disabled.contains(&m.id)})).collect();
-        let mut scheduled_monitors = std::collections::BTreeSet::new();
+        let mut scheduled_monitors = BTreeSet::new();
         let actions: Vec<Value> = self.actions.iter()
             .filter(|a| scheduled_monitors.insert(a.monitor_id.as_str()))
             .take(8)

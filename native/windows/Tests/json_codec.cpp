@@ -331,6 +331,21 @@ TEST(json_codec_parses_snapshot_with_action)
     CHECK_EQ(s.settings.locale, std::string("auto"));
 }
 
+TEST(json_codec_inference_device_defaults_to_auto_when_missing)
+{
+    CHECK_EQ(telaviva::parseSnapshot(R"({"settings":{"locale":"auto"}})").settings.inference_device,
+             std::string("auto"));
+}
+
+TEST(json_codec_parses_inference_device_values)
+{
+    CHECK_EQ(telaviva::parseSnapshot(R"({"settings":{"inference_device":"gpu:1002:164e:0"}})")
+                 .settings.inference_device,
+             std::string("gpu:1002:164e:0"));
+    CHECK_EQ(telaviva::parseSnapshot(R"({"settings":{"inference_device":"cpu"}})").settings.inference_device,
+             std::string("cpu"));
+}
+
 TEST(json_codec_rejects_malformed_json)
 {
     bool threw = false;

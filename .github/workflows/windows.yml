@@ -1,8 +1,8 @@
-# Windows checks: Rust workspace, pinned CPU runtime, native build, packaging and an installer round trip.
+# Windows checks: Rust workspace, pinned DirectML runtime, native build, packaging and an installer round trip.
 #
 # What this job covers:
 # - cargo fmt --check, clippy (workspace, and telaviva-inference with the directml feature), workspace tests
-# - fetch and SHA-256 verification of the pinned CPU ONNX Runtime, then the Rust YuNet smoke test
+# - fetch and SHA-256 verification of the pinned DirectML ONNX Runtime, which the package ships, then the Rust YuNet smoke test
 # - Rust DLL build, export check against the C headers, MSBuild of the native solution
 # - tests.exe, the packaged TelaViva.exe --smoke-test, the release zip and its SHA-256
 # - extraction of the zip, install into a temporary directory without a Start menu entry,
@@ -13,7 +13,7 @@
 # - No hardware: DDC brightness and volume, camera presence, hardware keys, laptop rows,
 #   launch at login and the Start menu shortcut stay manual.
 #   See specs/archived/windows-version/validation/hardware-checklist.md.
-# - No DirectML run: the runner has no acceleration profile; directml code is compiled by clippy only.
+# - No DirectML execution: the smoke test runs on CPU; directml code is compiled by clippy only.
 # - No code signing and no SmartScreen check of the unsigned build.
 # - No telemetry and no secrets: the job uses only the repository contents and public downloads.
 
@@ -157,15 +157,15 @@ jobs:
           cargo test --workspace --all-targets --locked
           if ($LASTEXITCODE -ne 0) { throw "cargo test failed with exit code $LASTEXITCODE" }
 
-      # Downloads the pinned CPU runtime and checks the archive and DLL SHA-256 against assets/model/manifest.toml.
-      # The script installs nothing on a mismatch and exits non-zero.
-      - name: Fetch and verify the CPU ONNX Runtime
+      # Downloads the pinned DirectML runtime, the one the package ships, and checks the NuGet package and DLL SHA-256
+      # against assets/model/manifest.toml. The script installs nothing on a mismatch and exits non-zero.
+      - name: Fetch and verify the DirectML ONNX Runtime
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools\inference\fetch-windows-runtime.ps1 -Variant cpu
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools\inference\fetch-windows-runtime.ps1 -Variant directml
           if ($LASTEXITCODE -ne 0) { throw "fetch-windows-runtime.ps1 failed with exit code $LASTEXITCODE" }
-          $dll = Join-Path $env:GITHUB_WORKSPACE 'tools\inference\runtime\windows-x64\onnxruntime.dll'
+          $dll = Join-Path $env:GITHUB_WORKSPACE 'tools\inference\runtime\windows-x64-directml\onnxruntime.dll'
           if (-not (Test-Path -LiteralPath $dll -PathType Leaf)) { throw "ONNX Runtime was not installed at $dll" }
 
       # The smoke test skips silently when the runtime is absent, so the fetch step above must have passed first.

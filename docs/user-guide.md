@@ -8,6 +8,7 @@ This guide describes how each feature of TelaViva OLED behaves on macOS and Wind
 - [Screensaver protection](#screensaver-protection)
 - [Following the laptop brightness](#following-the-laptop-brightness)
 - [Keyboard and hardware keys](#keyboard-and-hardware-keys)
+- [Inference device](#inference-device)
 - [Windows specifics](#windows-specifics)
 - [Limits and compatibility](#limits-and-compatibility)
 - [Privacy](#privacy)
@@ -28,7 +29,7 @@ Click the menu bar icon (macOS) or the tray icon (Windows) to open it.
 
 ## Settings
 
-Settings has General, Keyboard and Automatic brightness pages.
+Settings has General, Keyboard, Automatic brightness and About pages, and on Windows an Advanced page.
 
 - **Language:** English (US) or Portuguese (Brazil).
 - **Camera:** the app remembers the cameras you select, up to eight, most recent first, and uses the first one that is connected, so reconnecting a camera or plugging in a preferred one is picked up without changing settings. When none is connected, it falls back to the system default camera. On Windows, infrared cameras are hidden from selection.
@@ -38,6 +39,7 @@ Settings has General, Keyboard and Automatic brightness pages.
 - **Presence brightness threshold:** a slider from 10 to 90% (20% by default).
 - **Launch at login:** off by default.
 - **Hardware-key steps:** see [Keyboard and hardware keys](#keyboard-and-hardware-keys).
+- **Inference device** (Windows, Advanced page): where face detection runs. See [Inference device](#inference-device).
 
 ## Presence protection
 
@@ -126,6 +128,24 @@ Physical keyboard capture and device compatibility still require hardware accept
 
 The Windows volume and mute keys are opt-in. They adjust an external monitor only while it is the default sound output. Brightness keys are not intercepted and keep their normal Windows behavior.
 
+## Inference device
+
+Face detection runs on one device at a time. The **Inference device** setting, on the Advanced page of Settings, chooses it. This is available on Windows. On macOS detection always runs on the CPU for now; the macOS choices (Automatic, Neural Engine, GPU and CPU) are not implemented yet.
+
+- **Automatic** (the default): uses the integrated GPU when the computer has one and it passes a check, and the CPU otherwise. The reason is to free your main CPU and graphics card for other work; it is not a promise of lower energy use, and energy has not been measured.
+- **CPU:** always runs on the CPU.
+- **A specific graphics card:** each detected card is listed by name and marked integrated or discrete. A discrete GPU is never chosen by Automatic, because it can use more power than the CPU; choose it by hand if you want it.
+
+Before it relies on a graphics card, the app checks that the card starts, finds the face in a test image as the CPU does, and answers within 125 ms. Speed compared with the CPU does not matter. If the check fails, or the card fails later, detection continues on the CPU without losing a frame.
+
+- With **Automatic**, a failing card is skipped quietly until the graphics driver or the app version changes.
+- With a card you chose, the page shows a notice that the CPU took over. Choosing the card again tries it again.
+- If the card you chose is no longer present (for example after a driver change or a removed card), the app behaves as Automatic for that run, keeps your choice stored, and shows a notice.
+
+The page shows the device actually in use. The device is chosen when detection starts, so before the first detection the page says so. A change takes effect without restarting the app.
+
+The detection result is the same on every device that passes the check. Windows uses the DirectML component that comes with Windows; the app does not ship it. If it is missing or too old for a card, that card fails the check and the CPU is used.
+
 ## Windows specifics
 
 - **Tray icon:** Windows 11 may place a new tray icon in the overflow area. Select the overflow arrow in the taskbar and drag TelaViva OLED onto the taskbar, or open Settings > Personalization > Taskbar > Other system tray icons and turn it on.
@@ -133,7 +153,7 @@ The Windows volume and mute keys are opt-in. They adjust an external monitor onl
 - **Launch at login:** off by default, through the per-user `Run` registry value.
 - **Install, uninstall and data locations:** see the [Windows packaging guide](../packaging/windows/README.md). Settings, calibration and logs stay in `%LOCALAPPDATA%\TelaVivaOLED` unless you remove them on uninstall.
 - **SmartScreen:** release builds are not code-signed yet, so Windows may show "Windows protected your PC" the first time you run `TelaViva.exe`. Only continue for a zip you downloaded from the project and checked against its SHA-256.
-- **Acceleration:** face detection runs on the CPU by default. DirectML is off by default because the acceleration allowlist `assets/inference/acceleration-profiles.toml` is empty, so no device uses an accelerator. A device gets DirectML only after a recorded measurement shows lower energy than the CPU with the same detection result. NPU support is out of the first release.
+- **Acceleration:** see [Inference device](#inference-device). The package ships one ONNX Runtime, the DirectML build, and uses the DirectML that comes with Windows. NPUs are not supported.
 
 ## Limits and compatibility
 

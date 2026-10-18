@@ -27,6 +27,7 @@ struct SettingsDraft {
     bool ambientFollowEnabled = false;
     std::map<std::string, double> screensaverTargets;
     std::set<std::string> protectionDisabled;
+    std::string inferenceDevice = "auto";
 };
 
 SettingsDraft draftFromSnapshotSettings(const SettingsSnapshot& settings);
@@ -35,6 +36,8 @@ SettingsDraft draftFromSnapshotSettings(const SettingsSnapshot& settings);
 // field default; NaN screensaver targets are dropped because no default is meaningful.
 // Locales other than auto, en-US and pt-BR become auto. Empty or over-512-byte keys
 // are dropped. protection_disabled keeps at most 128 entries, the core's limit.
+// An inference device other than auto, cpu, ane, gpu or a gpu:vvvv:dddd:n selector
+// (lowercase hex, 1-3 digit ordinal, at most 32 bytes) becomes auto.
 SettingsDraft clampToCoreRanges(SettingsDraft draft);
 
 // Returns the complete update_settings message. Never includes selected_camera_id,

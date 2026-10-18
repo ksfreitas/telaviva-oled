@@ -3,17 +3,20 @@
     Fetches and verifies the ONNX Runtime 1.20.1 build for Windows x64.
 
 .DESCRIPTION
-    Purpose: recreates tools/inference/runtime/windows-x64/ (onnxruntime.dll,
-    onnxruntime_providers_shared.dll when the archive has it, and the license
-    files) from Microsoft's official release, as fetch-macos-runtime.sh does for
-    macOS. The Rust crate loads the DLL dynamically (ort load-dynamic).
+    Purpose: recreates the ONNX Runtime 1.20.1 folders from Microsoft's official
+    releases, as fetch-macos-runtime.sh does for macOS. The Rust crate loads the
+    DLL dynamically (ort load-dynamic).
 
-    -Variant cpu (default): onnxruntime-win-x64-1.20.1.zip from the GitHub release.
-    -Variant directml: Microsoft.ML.OnnxRuntime.DirectML NuGet package (same
-    ONNX Runtime version as the CPU pin), installed to runtime\windows-x64-directml.
-    DirectML.dll is never extracted (the in-box System32 copy is used). The app
-    selects this variant only through an acceleration profile (specs/archived/windows-version,
-    architecture Decision 3). Requires the [runtime.windows-x64.directml] pins.
+    -Variant cpu (default): tools/inference/runtime/windows-x64/ (onnxruntime.dll,
+    onnxruntime_providers_shared.dll when the archive has it, and the license
+    files) from onnxruntime-win-x64-1.20.1.zip on the GitHub release. The Rust CPU
+    smoke tests read this folder.
+    -Variant directml: tools/inference/runtime/windows-x64-directml/ from the
+    Microsoft.ML.OnnxRuntime.DirectML NuGet package (same ONNX Runtime version as
+    the CPU pin). This is the only runtime that build-app.ps1 ships, as
+    onnxruntime.dll (specs/inference-device-selection, architecture Decision 2).
+    DirectML.dll is never extracted (the in-box System32 copy is used). Requires
+    the [runtime.windows-x64.directml] pins.
 
     -ComputeOnly: downloads into a new temporary folder, prints the SHA-256 values
     and archive size for the manifest pins, and exits without touching the repo.

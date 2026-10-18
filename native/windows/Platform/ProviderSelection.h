@@ -1,24 +1,15 @@
 #pragma once
-// Pure decisions for DirectML provider selection: which adapter matches a profile,
-// and whether a self-test pair passes. No ABI, clock or file access happens here.
-#include "AccelerationProfiles.h"
+// Pure decision for DirectML self-tests: whether a pair of detect calls on the same
+// frame passes. No ABI, clock or file access happens here.
 #include "AdapterCatalog.h"
 #include "InferenceFailureStore.h"
 
 #include <optional>
-#include <vector>
 
 namespace telaviva {
 
-struct AccelerationMatch {
-    AccelerationProfile profile;
-    AdapterInfo adapter;
-};
-
-// First hardware adapter, in catalog order, that matches a profile in file order.
-// Software adapters never match.
-std::optional<AccelerationMatch> findAccelerationMatch(const std::vector<AccelerationProfile>& profiles,
-                                                       const std::vector<AdapterInfo>& adapters);
+// Longest accelerated detect call that still fits the detection cadence (seconds).
+inline constexpr double kMaxAcceleratedLatencySeconds = 0.125;   // half of the 0.25 s minimum return interval
 
 // One self-test detect call: the status it returned and the seconds it took.
 struct SelfTestSample {
@@ -27,9 +18,9 @@ struct SelfTestSample {
 };
 
 // The accelerated session passes only when both sessions report present for the
-// same frame (any error or other result is a mismatch) and the accelerated call is
-// strictly faster than the CPU call. A tie or a slower call is a slow result.
-// Returns the reason to record, or nullopt when the accelerated session may be used.
+// same frame (any error or other result is a mismatch) and the accelerated call
+// takes at most kMaxAcceleratedLatencySeconds. Speed relative to the CPU is not
+// checked. Returns the reason to record, or nullopt when the accelerated session may be used.
 std::optional<FailureReason> judgeSelfTest(const SelfTestSample& accelerated, const SelfTestSample& cpu);
 
 }  // namespace telaviva

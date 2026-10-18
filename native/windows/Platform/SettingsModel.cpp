@@ -23,6 +23,7 @@ constexpr double kTargetMin = 0.0;
 constexpr double kTargetMax = 100.0;
 constexpr std::size_t kMaxIdBytes = 512;
 constexpr std::size_t kMaxProtectionEntries = 128;
+constexpr std::size_t kMaxInferenceDeviceBytes = 32;
 
 // Clamps a finite or infinite value into the range. NaN has no ordering, so it takes the default.
 double clampNumber(double value, double min, double max, double fallback)
@@ -54,6 +55,63 @@ int clampStep(int step)
 bool validId(std::string_view id)
 {
     return !id.empty() && id.size() <= kMaxIdBytes;
+}
+
+// Lowercase hex digits only, as the core's grammar requires.
+bool lowerHexDigit(char c)
+{
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+}
+
+bool lowerHex4(std::string_view text)
+{
+    if (text.size() != 4) {
+        return false;
+    }
+    for (const char c : text) {
+        if (!lowerHexDigit(c)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// One to three decimal digits for the adapter ordinal.
+bool ordinalText(std::string_view text)
+{
+    if (text.empty() || text.size() > 3) {
+        return false;
+    }
+    for (const char c : text) {
+        if (c < '0' || c > '9') {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Accepts auto, cpu, ane, gpu, or gpu:vvvv:dddd:n with lowercase hex ids and a 1-3 digit ordinal.
+bool validInferenceDevice(std::string_view device)
+{
+    if (device.size() > kMaxInferenceDeviceBytes) {
+        return false;
+    }
+    if (device == "auto" || device == "cpu" || device == "ane" || device == "gpu") {
+        return true;
+    }
+    constexpr std::string_view prefix = "gpu:";
+    if (device.substr(0, prefix.size()) != prefix) {
+        return false;
+    }
+    // The part after "gpu:" is vvvv:dddd:n, which is 11 to 13 bytes long.
+    const std::string_view rest = device.substr(prefix.size());
+    if (rest.size() < 11 || rest.size() > 13) {
+        return false;
+    }
+    if (rest[4] != ':' || rest[9] != ':') {
+        return false;
+    }
+    return lowerHex4(rest.substr(0, 4)) && lowerHex4(rest.substr(5, 4)) && ordinalText(rest.substr(10));
 }
 
 // Shortest round-trip form, so 10.0 is written as 10. Callers pass finite values only.
@@ -116,6 +174,7 @@ SettingsDraft draftFromSnapshotSettings(const SettingsSnapshot& settings)
     draft.ambientFollowEnabled = settings.ambient_follow_enabled;
     draft.screensaverTargets = settings.screensaver_targets;
     draft.protectionDisabled = settings.protection_disabled;
+    draft.inferenceDevice = settings.inference_device;
     return draft;
 }
 
@@ -148,6 +207,10 @@ SettingsDraft clampToCoreRanges(SettingsDraft draft)
         }
     }
     draft.protectionDisabled = std::move(disabled);
+
+    if (!validInferenceDevice(draft.inferenceDevice)) {
+        draft.inferenceDevice = "auto";
+    }
     return draft;
 }
 
@@ -193,6 +256,7 @@ std::string buildSettingsPayload(const SettingsDraft& input)
     settings.add("hardware_keys_enabled", boolText(draft.hardwareKeysEnabled));
     settings.add("brightness_key_step", std::to_string(draft.brightnessKeyStep));
     settings.add("volume_key_step", std::to_string(draft.volumeKeyStep));
+    settings.add("inference_device", jsonQuote(draft.inferenceDevice));
     settings.add("screensaver_targets", targets);
     settings.add("ambient_follow_enabled", boolText(draft.ambientFollowEnabled));
     settings.add("protection_disabled", disabled);

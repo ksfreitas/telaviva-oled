@@ -2,13 +2,21 @@
 
 ## Unreleased
 
+### Added
+
+- Inference device setting on Windows, on the new Advanced page of Settings: Automatic (the default), CPU, or a specific GPU listed by name and kind. Automatic runs face detection on the integrated GPU when it passes a check (it starts, returns the same presence result as the CPU on a test frame, and answers within 125 ms) and on the CPU otherwise, so the main CPU and graphics card stay free; a discrete GPU is only ever chosen by hand. Any failure falls back to the CPU without losing a frame. The page shows the device in use and a notice when a chosen device is missing or failed. Changes apply without restarting the app. No energy benefit is claimed. The macOS shell does not have this setting yet and keeps running on the CPU.
+- Settings schema 1 gains the optional `inference_device` string (default `auto`), accepted as `auto`, `cpu`, `ane`, `gpu` or `gpu:<vendor>:<device>:<ordinal>`; the core ABI version stays 1. A build without this field treats a settings file that contains it as corrupt, as with earlier additive fields.
+- Windows adapter classification through DXCore (`IsIntegrated` matched to DXGI by LUID), which does not create a device and so does not wake a discrete GPU.
+
 ### Fixed
 
 - The Windows Settings toggles now sit flush with the right edge of their cards instead of floating about 100 px to the left, in line with the sliders, number boxes and combo boxes.
 
 ### Changed
 
+- The Windows package now ships the DirectML build of ONNX Runtime 1.20.1 as its only `onnxruntime.dll` (about 3 MB larger than the CPU build). It loads and runs the CPU provider even where DirectML is missing, and `DirectML.dll` is still not redistributed. The inference-device change no longer needs a restart because there is one runtime.
 - The `specs/oled-monitor-protection/` folder is removed. It held only three short pointers to the archived record of the initial application, which stays in `specs/archived/external-monitor-control-and-oled-presence-protection/`; the project map in `AGENTS.md` now points at `specs/archived/`.
+- The Windows acceleration profile allowlist (`acceleration-profiles.toml`, its parser and its tests) is removed. DirectML is no longer gated by a recorded energy measurement and the "accelerated must be faster than the CPU" rule is replaced by the 125 ms latency check above. Failure markers remain, for Automatic only.
 - The README is now a short entry point (highlights, platform support, status, install, getting started, privacy, build and contributing). The detailed behavior of each feature moved to the new `docs/user-guide.md`, and the README no longer lists the hardware of the maintainer's test machines; those results remain in the validation reports.
 
 ## 0.1.0 - 2026-10-17

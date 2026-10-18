@@ -3,6 +3,7 @@
 // core submit path, the camera list and launch at login. AppController implements it.
 #include "Platform/AmbientCalibrationController.h"
 #include "Platform/CameraSelection.h"
+#include "Platform/DeviceSelection.h"
 #include "Platform/JsonCodec.h"
 #include "Platform/LaunchAtLogin.h"
 #include "Platform/UpdateChecker.h"
@@ -78,6 +79,12 @@ struct ISettingsHost {
     virtual telaviva::UpdateChecker& updateChecker() = 0;
     // The installed version from the core. Safe from any thread.
     virtual const std::string& appVersion() const = 0;
+
+    // Inference device, for the Advanced page. Defaults keep existing implementations compiling.
+    // inferenceDevices builds the option list from the live adapter catalog, without creating a device.
+    virtual std::vector<DeviceOption> inferenceDevices() { return {}; }
+    // What the inference host is using or was refused, from InferenceHost::report().
+    virtual InferenceReport inferenceReport() { return {}; }
 };
 
 }  // namespace telaviva::host

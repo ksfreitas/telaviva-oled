@@ -40,6 +40,8 @@ pub struct Settings {
     pub brightness_key_step: u8,
     #[serde(default = "default_key_step")]
     pub volume_key_step: u8,
+    #[serde(default = "default_inference_device")]
+    pub inference_device: String,
     #[serde(default)]
     pub selected_camera_id: Option<String>,
     // Most recent first. The front entry is always selected_camera_id; clients cannot set it.
@@ -191,6 +193,39 @@ fn default_key_step() -> u8 {
 fn default_presence_min_brightness() -> f64 {
     20.0
 }
+fn default_inference_device() -> String {
+    "auto".into()
+}
+
+fn valid_inference_device(value: &str) -> bool {
+    if value.len() > 32 {
+        return false;
+    }
+    if matches!(value, "auto" | "cpu" | "ane" | "gpu") {
+        return true;
+    }
+    let Some(rest) = value.strip_prefix("gpu:") else {
+        return false;
+    };
+    let mut parts = rest.split(':');
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some(vendor), Some(device), Some(ordinal), None) => {
+            is_hex4(vendor) && is_hex4(device) && is_ordinal(ordinal)
+        }
+        _ => false,
+    }
+}
+
+fn is_hex4(value: &str) -> bool {
+    value.len() == 4
+        && value
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+fn is_ordinal(value: &str) -> bool {
+    (1..=3).contains(&value.len()) && value.bytes().all(|b| b.is_ascii_digit())
+}
 
 impl Default for Settings {
     fn default() -> Self {
@@ -208,6 +243,7 @@ impl Default for Settings {
             hardware_keys_enabled: false,
             brightness_key_step: 5,
             volume_key_step: 5,
+            inference_device: "auto".into(),
             selected_camera_id: None,
             camera_history: Vec::new(),
             screensaver_targets: Default::default(),
@@ -231,6 +267,12 @@ impl Settings {
         }
         if !["auto", "en-US", "pt-BR"].contains(&self.locale.as_str()) {
             return Err("unsupported locale".into());
+        }
+        if !valid_inference_device(&self.inference_device) {
+            return Err(
+                "inference_device must be auto, cpu, ane, gpu or gpu:<vendor>:<device>:<ordinal>"
+                    .into(),
+            );
         }
         if self
             .selected_camera_id

@@ -1,15 +1,22 @@
 #include "TestHarness.h"
 
 #include "Fakes.h"
+#include "Platform/AdapterCatalog.h"
+#include "Platform/DeviceSelection.h"
 #include "Platform/FrameAnalyzer.h"
 #include "Platform/ICameraBackend.h"
+#include "Platform/IClock.h"
+#include "Platform/InferenceFailureStore.h"
 #include "Platform/InferenceHost.h"
 #include "Platform/Scheduler.h"
 
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <limits>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -25,14 +32,20 @@ namespace {
 const wchar_t* const kRuntimePath = L"C:\\TelaViva\\onnxruntime.dll";
 const wchar_t* const kModelPath = L"C:\\TelaViva\\face_detection_yunet_2023mar.onnx";
 
+constexpr int kCpuProvider = 0;
+constexpr int kDirectMlProvider = 2;
+
 // Records every call and returns scripted statuses. Handles are small integers
-// so the tests can tell detectors apart.
+// so the tests can tell detectors apart. Each session reports the provider it was
+// created with; DirectML sessions answer with acceleratedDetectStatus, the rest with detectStatus.
 class FakeDetectorApi final : public IDetectorApi {
 public:
     int createFailures = 0;  // number of upcoming create() calls that return nullptr
-    int detectStatus = 0;
+    int detectStatus = 0;    // detect result on CPU sessions
+    int acceleratedDetectStatus = 0;  // detect result on DirectML sessions
     int assessStatus = 0;
-    int provider = 0;
+    telaviva::FakeClock* clock = nullptr;  // when set, every detect advances it by stepSeconds
+    double stepSeconds = 0.0;
 
     int creates = 0;
     int destroys = 0;
@@ -40,10 +53,14 @@ public:
     int assessCalls = 0;
     std::vector<void*> detectHandles;
     std::vector<void*> destroyed;
+    std::vector<int> createdProviders;  // one per create() call, failed ones included
+    std::vector<uint32_t> createdDeviceIndexes;
 
-    void* create(const std::wstring&, const std::wstring&, int, uint32_t) override
+    void* create(const std::wstring&, const std::wstring&, int provider, uint32_t deviceIndex) override
     {
         ++creates;
+        createdProviders.push_back(provider);
+        createdDeviceIndexes.push_back(deviceIndex);
         if (createFailures > 0) {
             --createFailures;
             return nullptr;
@@ -55,7 +72,10 @@ public:
     {
         ++detectCalls;
         detectHandles.push_back(handle);
-        return detectStatus;
+        if (clock != nullptr) {
+            clock->advance(stepSeconds);
+        }
+        return providerOf(handle) == kDirectMlProvider ? acceleratedDetectStatus : detectStatus;
     }
 
     int assessLight(const uint8_t*, size_t, int, int, int) override
@@ -64,7 +84,7 @@ public:
         return assessStatus;
     }
 
-    int selectedProvider(void*) override { return provider; }
+    int selectedProvider(void* handle) override { return providerOf(handle); }
 
     int directmlAvailable() override { return 0; }
 
@@ -74,8 +94,28 @@ public:
         destroyed.push_back(handle);
     }
 
+    // Device index of the most recent DirectML session, or the maximum value when there was none.
+    uint32_t lastDirectMlDeviceIndex() const
+    {
+        for (std::size_t i = createdProviders.size(); i > 0; --i) {
+            if (createdProviders[i - 1] == kDirectMlProvider) {
+                return createdDeviceIndexes[i - 1];
+            }
+        }
+        return std::numeric_limits<uint32_t>::max();
+    }
+
 private:
     static void* handleFor(int n) { return reinterpret_cast<void*>(static_cast<std::uintptr_t>(n)); }
+
+    int providerOf(const void* handle) const
+    {
+        const std::size_t index = static_cast<std::size_t>(reinterpret_cast<std::uintptr_t>(handle));
+        if (index == 0 || index > createdProviders.size()) {
+            return -1;
+        }
+        return createdProviders[index - 1];
+    }
 };
 
 // Allocates bgra to exactly stride * height bytes, so the default frame is valid.
@@ -92,6 +132,86 @@ CameraFrame makeFrame(int width, int height, int stride)
 CameraFrame validFrame()
 {
     return makeFrame(4, 4, 16);
+}
+
+// Fresh directory under the temp folder, removed when the test ends.
+class ScratchDirectory {
+public:
+    explicit ScratchDirectory(const char* name) : path_(std::filesystem::temp_directory_path() / name)
+    {
+        std::error_code ec;
+        std::filesystem::remove_all(path_, ec);
+        std::filesystem::create_directories(path_, ec);
+    }
+
+    ~ScratchDirectory()
+    {
+        std::error_code ec;
+        std::filesystem::remove_all(path_, ec);
+    }
+
+    const std::filesystem::path& path() const { return path_; }
+
+private:
+    std::filesystem::path path_;
+};
+
+// Adapter list with a DXCore kind per adapter, as the Windows catalog reports it.
+class ScriptedCatalog final : public telaviva::IAdapterCatalog {
+public:
+    std::vector<telaviva::AdapterInfo> list;
+    std::vector<telaviva::AdapterInfo> adapters() override { return list; }
+};
+
+const char* const kDriver = "31.0.101.5186";
+const char* const kAppVersion = "0.1.0";
+const char* const kIntegratedId = "gpu:8086:9a49:0";
+const char* const kIntegratedLabel = "Intel Iris Xe Graphics";
+const char* const kDiscreteId = "gpu:10de:2684:0";
+const char* const kDiscreteLabel = "NVIDIA GeForce RTX 4090";
+
+telaviva::AdapterInfo testAdapter(uint32_t vendorId, uint32_t deviceId, const char* description, uint32_t index,
+                                  telaviva::AdapterKind kind)
+{
+    telaviva::AdapterInfo adapter;
+    adapter.vendorId = vendorId;
+    adapter.deviceId = deviceId;
+    adapter.description = description;
+    adapter.driverVersion = kDriver;
+    adapter.index = index;
+    adapter.kind = kind;
+    return adapter;
+}
+
+// One integrated GPU at DXGI index 0 and one discrete GPU at index 1.
+ScriptedCatalog twoGpuCatalog()
+{
+    ScriptedCatalog catalog;
+    catalog.list.push_back(testAdapter(0x8086, 0x9a49, kIntegratedLabel, 0, telaviva::AdapterKind::Integrated));
+    catalog.list.push_back(testAdapter(0x10de, 0x2684, kDiscreteLabel, 1, telaviva::AdapterKind::Discrete));
+    return catalog;
+}
+
+telaviva::AccelerationOptions acceleratedOptions(telaviva::IAdapterCatalog& catalog,
+                                                 telaviva::InferenceFailureStore* failures,
+                                                 telaviva::FakeClock& clock)
+{
+    telaviva::AccelerationOptions options;
+    options.adapters = &catalog;
+    options.failures = failures;
+    options.clock = &clock;
+    options.appVersion = kAppVersion;
+    options.selfTestFrame = validFrame();
+    return options;
+}
+
+// CPU reference and DirectML sessions both answer present; each detect takes 10 ms.
+void arrangeAccelerated(FakeDetectorApi& api, telaviva::FakeClock& clock)
+{
+    api.detectStatus = 1;
+    api.acceleratedDetectStatus = 1;
+    api.clock = &clock;
+    api.stepSeconds = 0.01;
 }
 
 }  // namespace
@@ -297,4 +417,234 @@ TEST(inference_host_active_provider_tracks_loaded_detector)
     CHECK_EQ(host.activeProvider(), 0);
     host.releaseIdle();
     CHECK_EQ(host.activeProvider(), -1);
+}
+
+TEST(inference_host_report_starts_undecided_then_reports_auto_cpu)
+{
+    FakeDetectorApi api;
+    FakeScheduler scheduler;
+    InferenceHost host(api, scheduler, kRuntimePath, kModelPath);
+    const telaviva::InferenceReport before = host.report();
+    CHECK(before.requestedId == "auto");
+    CHECK(!before.decided);
+
+    host.detect(validFrame());
+    const telaviva::InferenceReport after = host.report();
+    CHECK(after.requestedId == "auto");
+    CHECK(after.activeId == "cpu");
+    CHECK(after.activeLabel == "CPU");
+    CHECK(after.state == telaviva::DeviceState::AutoCpu);
+    CHECK(!after.reason.has_value());
+    CHECK(after.decided);
+}
+
+TEST(inference_host_cpu_preference_reports_ok_after_detect)
+{
+    FakeDetectorApi api;
+    FakeScheduler scheduler;
+    InferenceHost host(api, scheduler, kRuntimePath, kModelPath);
+    host.setPreference("cpu");
+    CHECK(host.report().requestedId == "cpu");
+    CHECK(!host.report().decided);
+
+    host.detect(validFrame());
+    const telaviva::InferenceReport report = host.report();
+    CHECK(report.requestedId == "cpu");
+    CHECK(report.activeId == "cpu");
+    CHECK(report.state == telaviva::DeviceState::Ok);
+    CHECK(report.decided);
+}
+
+TEST(inference_host_set_preference_change_releases_session_and_redecides)
+{
+    FakeDetectorApi api;
+    FakeScheduler scheduler;
+    InferenceHost host(api, scheduler, kRuntimePath, kModelPath);
+    host.detect(validFrame());
+    CHECK_EQ(scheduler.pendingCount(), std::size_t(1));
+    const int destroysBefore = api.destroys;
+    const int createsBefore = api.creates;
+
+    host.setPreference("cpu");
+    CHECK_EQ(api.destroys, destroysBefore + 1);
+    CHECK_EQ(scheduler.pendingCount(), std::size_t(0));
+    CHECK(!host.report().decided);
+    CHECK(host.report().requestedId == "cpu");
+    CHECK_EQ(host.activeProvider(), -1);
+
+    host.detect(validFrame());
+    CHECK_EQ(api.creates, createsBefore + 1);
+    CHECK(host.report().decided);
+    CHECK(host.report().requestedId == "cpu");
+}
+
+TEST(inference_host_set_preference_same_value_is_noop)
+{
+    FakeDetectorApi api;
+    FakeScheduler scheduler;
+    InferenceHost host(api, scheduler, kRuntimePath, kModelPath);
+    host.detect(validFrame());
+    const int destroysBefore = api.destroys;
+    const int createsBefore = api.creates;
+    const std::vector<void*> handlesBefore = api.detectHandles;
+
+    host.setPreference("auto");  // the default preference
+    CHECK_EQ(api.destroys, destroysBefore);
+    CHECK_EQ(scheduler.pendingCount(), std::size_t(1));
+    CHECK(host.report().decided);
+
+    host.detect(validFrame());
+    CHECK_EQ(api.creates, createsBefore);
+    CHECK(api.detectHandles.size() == handlesBefore.size() + 1 && api.detectHandles.back() == handlesBefore.back());
+}
+
+TEST(inference_host_gpu_preference_switches_between_auto_and_explicit)
+{
+    telaviva::FakeClock clock;
+    FakeDetectorApi api;
+    arrangeAccelerated(api, clock);
+    ScriptedCatalog catalog = twoGpuCatalog();
+    FakeScheduler scheduler;
+    InferenceHost host(api, scheduler, kRuntimePath, kModelPath, acceleratedOptions(catalog, nullptr, clock));
+
+    // Automatic picks the integrated GPU.
+    host.detect(validFrame());
+    telaviva::InferenceReport report = host.report();
+    CHECK(report.requestedId == "auto");
+    CHECK(report.activeId == kIntegratedId);
+    CHECK(report.activeLabel == kIntegratedLabel);
+    CHECK(report.state == telaviva::DeviceState::Ok);
+    CHECK(report.decided);
+    CHECK_EQ(api.lastDirectMlDeviceIndex(), 0u);
+
+    // An explicit discrete GPU replaces it.
+    host.setPreference(kDiscreteId);
+    CHECK(!host.report().decided);
+    host.detect(validFrame());
+    report = host.report();
+    CHECK(report.requestedId == kDiscreteId);
+    CHECK(report.activeId == kDiscreteId);
+    CHECK(report.activeLabel == kDiscreteLabel);
+    CHECK(report.state == telaviva::DeviceState::Ok);
+    CHECK(report.decided);
+    CHECK_EQ(api.lastDirectMlDeviceIndex(), 1u);
+
+    // Back to automatic.
+    host.setPreference("auto");
+    host.detect(validFrame());
+    report = host.report();
+    CHECK(report.requestedId == "auto");
+    CHECK(report.activeId == kIntegratedId);
+    CHECK(report.activeLabel == kIntegratedLabel);
+    CHECK(report.state == telaviva::DeviceState::Ok);
+    CHECK_EQ(api.lastDirectMlDeviceIndex(), 0u);
+}
+
+TEST(inference_host_active_provider_reports_accelerated_session)
+{
+    telaviva::FakeClock clock;
+    FakeDetectorApi api;
+    arrangeAccelerated(api, clock);
+    ScriptedCatalog catalog = twoGpuCatalog();
+    FakeScheduler scheduler;
+    InferenceHost host(api, scheduler, kRuntimePath, kModelPath, acceleratedOptions(catalog, nullptr, clock));
+    CHECK_EQ(host.activeProvider(), -1);
+    host.detect(validFrame());
+    CHECK_EQ(host.activeProvider(), kDirectMlProvider);
+    scheduler.advance(30s);
+    CHECK_EQ(host.activeProvider(), -1);
+}
+
+TEST(inference_host_idle_release_reopens_accelerated_without_self_test)
+{
+    telaviva::FakeClock clock;
+    FakeDetectorApi api;
+    arrangeAccelerated(api, clock);
+    ScriptedCatalog catalog = twoGpuCatalog();
+    FakeScheduler scheduler;
+    InferenceHost host(api, scheduler, kRuntimePath, kModelPath, acceleratedOptions(catalog, nullptr, clock));
+    host.detect(validFrame());
+    CHECK_EQ(host.activeProvider(), kDirectMlProvider);
+
+    scheduler.advance(30s);
+    CHECK_EQ(host.activeProvider(), -1);
+
+    // Only the accelerated session is created again: no CPU reference, and one frame detect.
+    const int createsBefore = api.creates;
+    const int detectsBefore = api.detectCalls;
+    host.detect(validFrame());
+    CHECK_EQ(api.creates, createsBefore + 1);
+    CHECK_EQ(api.detectCalls, detectsBefore + 1);
+    CHECK_EQ(host.activeProvider(), kDirectMlProvider);
+    CHECK(host.report().state == telaviva::DeviceState::Ok);
+    CHECK(host.report().activeId == kIntegratedId);
+}
+
+TEST(inference_host_runtime_error_on_automatic_gpu_retries_on_cpu_with_marker)
+{
+    ScratchDirectory dir("telaviva-inference-host-auto-runtime");
+    telaviva::InferenceFailureStore store(dir.path());
+    telaviva::FakeClock clock;
+    FakeDetectorApi api;
+    arrangeAccelerated(api, clock);
+    ScriptedCatalog catalog = twoGpuCatalog();
+    FakeScheduler scheduler;
+    InferenceHost host(api, scheduler, kRuntimePath, kModelPath, acceleratedOptions(catalog, &store, clock));
+    host.detect(validFrame());
+    CHECK_EQ(host.activeProvider(), kDirectMlProvider);
+
+    api.acceleratedDetectStatus = -1;
+    // The frame is retried on the CPU session, so the caller gets that result, not an error.
+    CHECK(host.detect(validFrame()).status == AnalysisStatus::Present);
+    CHECK_EQ(host.activeProvider(), kCpuProvider);
+
+    const telaviva::InferenceReport report = host.report();
+    CHECK(report.activeId == "cpu");
+    CHECK(report.state == telaviva::DeviceState::AutoCpu);
+    CHECK(report.reason.has_value() && *report.reason == telaviva::FailureReason::RuntimeError);
+    CHECK(report.decided);
+    CHECK(store.hasMarker({kIntegratedId, kDriver, kAppVersion}));
+}
+
+TEST(inference_host_runtime_error_on_explicit_gpu_fails_without_marker)
+{
+    ScratchDirectory dir("telaviva-inference-host-explicit-runtime");
+    telaviva::InferenceFailureStore store(dir.path());
+    telaviva::FakeClock clock;
+    FakeDetectorApi api;
+    arrangeAccelerated(api, clock);
+    ScriptedCatalog catalog = twoGpuCatalog();
+    FakeScheduler scheduler;
+    InferenceHost host(api, scheduler, kRuntimePath, kModelPath, acceleratedOptions(catalog, &store, clock));
+    host.setPreference(kIntegratedId);
+    host.detect(validFrame());
+    CHECK_EQ(host.activeProvider(), kDirectMlProvider);
+
+    api.acceleratedDetectStatus = -1;
+    CHECK(host.detect(validFrame()).status == AnalysisStatus::Present);
+    CHECK_EQ(host.activeProvider(), kCpuProvider);
+
+    const telaviva::InferenceReport report = host.report();
+    CHECK(report.activeId == "cpu");
+    CHECK(report.state == telaviva::DeviceState::Failed);
+    CHECK(report.reason.has_value() && *report.reason == telaviva::FailureReason::RuntimeError);
+    CHECK(store.records().empty());
+}
+
+TEST(inference_host_report_is_readable_between_detects)
+{
+    FakeDetectorApi api;
+    FakeScheduler scheduler;
+    InferenceHost host(api, scheduler, kRuntimePath, kModelPath);
+    // report() never creates or destroys a session.
+    CHECK(!host.report().decided);
+    CHECK_EQ(api.creates, 0);
+    for (int i = 0; i < 3; ++i) {
+        host.detect(validFrame());
+        CHECK(host.report().decided);
+        CHECK(host.report().activeId == "cpu");
+        CHECK_EQ(host.activeProvider(), kCpuProvider);
+    }
+    CHECK_EQ(api.creates, 1);
+    CHECK_EQ(api.destroys, 0);
 }

@@ -83,6 +83,10 @@ public:
     // The Settings pages reach the controller through this interface.
     ISettingsHost* settingsHost();
 
+    // ISettingsHost, Advanced page. Run on the UI thread only.
+    std::vector<DeviceOption> inferenceDevices() override;
+    InferenceReport inferenceReport() override;
+
 private:
     struct Services;
     std::unique_ptr<Services> services_;

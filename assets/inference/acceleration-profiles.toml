@@ -1,5 +1,0 @@
-schema = 1
-
-# Empty in the first release. Each [[profile]] needs a measurement reference
-# (measurement = "specs/archived/windows-version/validation/measurements.md#<id>"); the
-# loader rejects the whole file otherwise and the app runs on CPU only.

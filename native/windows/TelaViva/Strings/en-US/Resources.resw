@@ -268,6 +268,45 @@
   <data name="settings.tab.about" xml:space="preserve">
     <value>About</value>
   </data>
+  <data name="settings.tab.advanced" xml:space="preserve">
+    <value>Advanced</value>
+  </data>
+  <data name="inference.title" xml:space="preserve">
+    <value>Inference device</value>
+  </data>
+  <data name="inference.help" xml:space="preserve">
+    <value>Where face detection runs. Automatic uses the integrated graphics when it works, and the CPU otherwise.</value>
+  </data>
+  <data name="inference.discreteHelp" xml:space="preserve">
+    <value>A discrete graphics card is never chosen automatically because it can use more power than the CPU.</value>
+  </data>
+  <data name="inference.auto" xml:space="preserve">
+    <value>Automatic</value>
+  </data>
+  <data name="inference.cpu" xml:space="preserve">
+    <value>CPU</value>
+  </data>
+  <data name="inference.kind.integrated" xml:space="preserve">
+    <value>integrated GPU</value>
+  </data>
+  <data name="inference.kind.discrete" xml:space="preserve">
+    <value>discrete GPU</value>
+  </data>
+  <data name="inference.missing" xml:space="preserve">
+    <value>Unavailable device</value>
+  </data>
+  <data name="inference.inUse" xml:space="preserve">
+    <value>In use: {0}</value>
+  </data>
+  <data name="inference.notDecided" xml:space="preserve">
+    <value>The device is chosen when detection starts.</value>
+  </data>
+  <data name="inference.notice.unavailable" xml:space="preserve">
+    <value>The chosen device is not available. Automatic is being used instead.</value>
+  </data>
+  <data name="inference.notice.failed" xml:space="preserve">
+    <value>The chosen device could not run detection. The CPU is being used instead.</value>
+  </data>
   <data name="about.version" xml:space="preserve">
     <value>Version</value>
   </data>

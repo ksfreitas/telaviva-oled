@@ -6,7 +6,6 @@
 #include "Host/Strings.h"
 #include "Host/ThreadExecutor.h"
 
-#include "Platform/AccelerationProfiles.h"
 #include "Platform/AdapterCatalog.h"
 #include "Platform/AdaptiveBrightness.h"
 #include "Platform/AmbientCalibrationController.h"
@@ -19,6 +18,7 @@
 #include "Platform/CoreLifecycleApi.h"
 #include "Platform/DdcController.h"
 #include "Platform/Diagnostics.h"
+#include "Platform/DeviceSelection.h"
 #include "Platform/DisplayCatalog.h"
 #include "Platform/EfficiencyController.h"
 #include "Platform/InferenceFailureStore.h"
@@ -647,6 +647,9 @@ struct AppController::Services {
     SystemPowerStatusReader powerReader;
     SystemScreensaverProbe screensaverProbe;
     std::unique_ptr<InferenceHost> analyzer;
+    // The inference_device value last given to the analyzer. Only applyInferenceDevice touches it:
+    // startup, before the snapshot sink is added, and then the snapshot thread alone.
+    std::string appliedInferenceDevice = "auto";
     std::unique_ptr<MediaCaptureBackend> camera;
     std::unique_ptr<CoreLifecycleApi> lifecycle;
     std::unique_ptr<CameraLifecycleDriver> driver;
@@ -705,14 +708,28 @@ struct AppController::Services {
 
     bool stopped = false;
 
+    // Gives the analyzer the stored device when it differs from the last one applied. The value is
+    // passed as a copy taken under settingsMutex, so setPreference runs without that lock held.
+    void applyInferenceDevice(const std::string& value)
+    {
+        if (!analyzer || value == appliedInferenceDevice) {
+            return;
+        }
+        appliedInferenceDevice = value;
+        analyzer->setPreference(value);
+    }
+
     // Runs on the core's snapshot thread after each accepted revision.
     void publish(const Snapshot& snapshot)
     {
+        std::string inferenceDevice;
         {
             std::lock_guard<std::mutex> lock(settingsMutex);
             latestSettings = snapshot.settings;
             latestSnapshot = snapshot;
+            inferenceDevice = latestSettings.inference_device;
         }
+        applyInferenceDevice(inferenceDevice);
         ddc->onSnapshot(snapshot);
         manual->apply(snapshot);
         driver->onSnapshot(snapshot);
@@ -1286,15 +1303,7 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
     if (appVersion_.empty()) {
         appVersion_ = "unknown";
     }
-    // Acceleration profiles ship next to the executable. A missing or invalid file is logged once and means CPU only.
     AccelerationOptions acceleration;
-    const ProfileLoadResult profiles = loadAccelerationProfiles(exeDir / L"acceleration-profiles.toml");
-    if (profiles.ok()) {
-        acceleration.profiles = profiles.profiles;
-    } else {
-        s.diagnostics.log(LogLevel::Error, "acceleration profiles are not usable, presence inference uses CPU only: " +
-                                               profiles.error);
-    }
     // The self-test frame ships next to the executable too. Absent means no frame, so acceleration stays off.
     // A present but invalid file is logged once and also means no frame.
     const std::filesystem::path selftestPath = exeDir / L"selftest-face.bgra";
@@ -1307,7 +1316,6 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
                                                    selftest.error);
         }
     }
-    acceleration.directmlRuntimePath = (exeDir / L"directml" / L"onnxruntime.dll").wstring();
     acceleration.adapters = &s.adapters;
     acceleration.failures = &s.failures;
     acceleration.clock = &s.clock;
@@ -1315,6 +1323,16 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
     acceleration.diagnostics = &s.diagnostics;
     s.analyzer = std::make_unique<InferenceHost>(s.inference, s.scheduler, runtimePath.wstring(),
         modelPath.wstring(), std::move(acceleration));
+    // Applies the stored device before the first frame. latestSettings is the last published value, or the
+    // default "auto" when nothing was published yet. Later changes come from publish().
+    {
+        std::string stored;
+        {
+            std::lock_guard<std::mutex> lock(s.settingsMutex);
+            stored = s.latestSettings.inference_device;
+        }
+        s.applyInferenceDevice(stored);
+    }
     s.camera = std::make_unique<MediaCaptureBackend>(s.clock);
     s.lifecycle = std::make_unique<CoreLifecycleApi>();
     s.driver = std::make_unique<CameraLifecycleDriver>(*s.camera, *s.analyzer, *s.submitter, *s.lifecycle,
@@ -1725,6 +1743,26 @@ const std::string& AppController::appVersion() const
 ISettingsHost* AppController::settingsHost()
 {
     return this;
+}
+
+// ---- Advanced page: inference device ----
+
+std::vector<DeviceOption> AppController::inferenceDevices()
+{
+    // The catalog is cheap and creates no device, so it is read each time the page is shown.
+    return buildDeviceOptions(services_->adapters.adapters());
+}
+
+InferenceReport AppController::inferenceReport()
+{
+    Services& s = *services_;
+    if (s.analyzer) {
+        return s.analyzer->report();
+    }
+    // No analyzer yet: report the stored choice as not decided.
+    InferenceReport report;
+    report.requestedId = currentSettings().inference_device;
+    return report;
 }
 
 }  // namespace telaviva::host

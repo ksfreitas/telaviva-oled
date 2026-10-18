@@ -1,6 +1,6 @@
 // Checks the Windows UI string tables. Both locales must define the same keys,
 // no value may be blank or use "Mac" wording, and keys must be plain identifiers.
-// Expected to fail until TelaViva/Strings/*/Resources.resw are created (T025).
+// Reads TelaViva/Strings/<locale>/Resources.resw; a missing file fails the tests that need it.
 #include <windows.h>
 
 #include "TestHarness.h"
@@ -296,4 +296,38 @@ TEST(strings_windows_overrides)
         CHECK_EQ(enValue, std::string(override.en));
         CHECK_EQ(ptValue, std::string(override.pt));
     }
+}
+
+TEST(strings_keys_advanced_page_keys_exist_in_both_locales)
+{
+    // Keys read by the Advanced page (inference device). Each must have a non-blank value in both locales.
+    static const char* const advancedKeys[] = {
+        "settings.tab.advanced",
+        "inference.title",
+        "inference.help",
+        "inference.discreteHelp",
+        "inference.auto",
+        "inference.cpu",
+        "inference.kind.integrated",
+        "inference.kind.discrete",
+        "inference.missing",
+        "inference.inUse",
+        "inference.notDecided",
+        "inference.notice.unavailable",
+        "inference.notice.failed",
+    };
+    std::string offenders;
+    for (const char* locale : {"en-US", "pt-BR"}) {
+        const Entries entries = loadLocale(locale);
+        for (const char* key : advancedKeys) {
+            const auto found = entries.find(key);
+            if (found == entries.end() || isBlank(found->second)) {
+                if (!offenders.empty()) {
+                    offenders += ", ";
+                }
+                offenders += std::string(locale) + ":" + key;
+            }
+        }
+    }
+    CHECK_EQ(offenders, std::string());
 }

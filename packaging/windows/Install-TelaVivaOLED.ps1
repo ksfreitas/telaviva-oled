@@ -96,8 +96,8 @@ try {
         $exeName,
         'telaviva_core.dll',
         'telaviva_inference.dll',
+        'onnxruntime.dll',
         'Uninstall-TelaVivaOLED.ps1',
-        'acceleration-profiles.toml',
         'selftest-face.bgra',
         'models\face_detection_yunet_2023mar.onnx'
     )

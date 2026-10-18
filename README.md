@@ -24,7 +24,7 @@
 - **Battery aware.** Presence checks pause on battery by default and while every eligible monitor is asleep.
 - **Follow your laptop (optional).** On a MacBook or a Windows laptop, external monitors can follow the built-in panel's brightness, including its automatic brightness, through calibration points you manage.
 - **Hardware keys (optional).** Volume, mute and (on macOS) brightness keys can drive the external monitor.
-- **Light on resources.** Low-frame-rate camera capture, CPU inference by default, and Efficiency mode on Windows.
+- **Light on resources.** Low-frame-rate camera capture, a selectable inference device (on Windows, Automatic uses the integrated GPU when it works and the CPU otherwise, so your main CPU and graphics card stay free), and Efficiency mode on Windows.
 - **Private by design.** Everything runs on your device, with no telemetry and no stored camera images. See [Privacy](#privacy).
 - **English and Portuguese.** The interface is available in English (US) and Portuguese (Brazil).
 
@@ -137,7 +137,7 @@ After fetching the runtime, run `cargo test --workspace --all-targets --locked` 
 - `native/macos/`: SwiftUI/AppKit shell and macOS device adapters.
 - `native/windows/`: WinUI 3 shell, the Windows platform layer and tests.
 - `include/`: C headers used by the native shells.
-- `assets/`: face model, inference acceleration profiles and branding sources.
+- `assets/`: face model and branding sources.
 - `packaging/` and `scripts/`: build and packaging for each platform.
 - `tools/`: test scripts, icon generation and the inference runtime fetcher.
 - `licenses/`: third-party license notices and provenance.

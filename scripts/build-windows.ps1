@@ -159,13 +159,14 @@ $distDir = Join-Path $repoRoot 'dist\TelaVivaOLED'
 $zipPath = Join-Path $repoRoot "dist\TelaVivaOLED-${version}-win-x64.zip"
 $testsExe = Join-Path $repoRoot "native\windows\build\x64\${Configuration}\tests.exe"
 
-# Fetch: the pin check lives in the fetch script, so a failed fetch stops the build here.
-$runtimeDll = Join-Path $repoRoot 'tools\inference\runtime\windows-x64\onnxruntime.dll'
+# Fetch: the package ships the DirectML build of ONNX Runtime only. The pin check lives in the fetch script,
+# so a failed fetch stops the build here.
+$runtimeDll = Join-Path $repoRoot 'tools\inference\runtime\windows-x64-directml\onnxruntime.dll'
 if (-not (Test-Path -LiteralPath $runtimeDll -PathType Leaf)) {
     $fetchScript = Join-Path $repoRoot 'tools\inference\fetch-windows-runtime.ps1'
     if (-not (Test-Path -LiteralPath $fetchScript -PathType Leaf)) { Fail "Fetch script is missing: ${fetchScript}." }
-    Write-Host '> fetch-windows-runtime.ps1'
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $fetchScript
+    Write-Host '> fetch-windows-runtime.ps1 -Variant directml'
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $fetchScript -Variant directml
     if ($LASTEXITCODE -ne 0) { Fail "fetch-windows-runtime.ps1 failed with exit code ${LASTEXITCODE}. The build was not started." }
 }
 
