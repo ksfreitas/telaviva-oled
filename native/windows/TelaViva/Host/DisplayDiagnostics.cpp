@@ -2,13 +2,20 @@
 
 #include "DisplayDiagnostics.h"
 
+#include "Platform/CameraSelection.h"
 #include "Platform/DdcTimingProfile.h"
 #include "Platform/DdcTransaction.h"
 #include "Platform/DisplayCatalog.h"
 #include "Platform/Dxva2DdcPort.h"
 #include "Platform/LaptopDetection.h"
 #include "Platform/LaptopPanel.h"
+#include "Platform/MediaCaptureBackend.h"
+#include "Platform/SystemClock.h"
 #include "Platform/SystemSleeper.h"
+
+#include <winrt/Windows.Devices.Enumeration.h>
+#include <winrt/Windows.Foundation.Collections.h>
+#include <winrt/Windows.Media.Capture.Frames.h>
 
 #include <chrono>
 #include <cmath>
@@ -126,6 +133,145 @@ std::string probeCode(DdcTransaction& transaction, uint8_t code)
     json += ",\"elapsedMs\":";
     json += std::to_string(elapsed.count());
     json += '}';
+    return json;
+}
+
+namespace WDE = winrt::Windows::Devices::Enumeration;
+namespace WMCF = winrt::Windows::Media::Capture::Frames;
+
+// The camera diagnostics below read device metadata only. No MediaCapture is created and no frame is requested.
+std::string jsonHString(const winrt::hstring& text)
+{
+    return jsonStringW(std::wstring_view{ text.c_str(), text.size() });
+}
+
+// "Front" or "Back" for internal panels; other locations keep their raw value.
+std::string jsonPanel(const WDE::DeviceInformation& device)
+{
+    if (!device) {
+        return "null";
+    }
+    const WDE::EnclosureLocation location = device.EnclosureLocation();
+    if (!location) {
+        return "null";
+    }
+    const WDE::Panel panel = location.Panel();
+    if (panel == WDE::Panel::Front) {
+        return "\"Front\"";
+    }
+    if (panel == WDE::Panel::Back) {
+        return "\"Back\"";
+    }
+    return jsonString("Other:" + std::to_string(static_cast<int>(panel)));
+}
+
+std::string sourceKindName(WMCF::MediaFrameSourceKind kind)
+{
+    if (kind == WMCF::MediaFrameSourceKind::Color) {
+        return "Color";
+    }
+    if (kind == WMCF::MediaFrameSourceKind::Infrared) {
+        return "Infrared";
+    }
+    if (kind == WMCF::MediaFrameSourceKind::Depth) {
+        return "Depth";
+    }
+    return "Other:" + std::to_string(static_cast<int>(kind));
+}
+
+// Each section is null when its WinRT call fails, so one failing source does not hide the others.
+std::string frameSourceGroupsJson()
+{
+    std::string json = "[";
+    try {
+        bool firstGroup = true;
+        for (const WMCF::MediaFrameSourceGroup& group : WMCF::MediaFrameSourceGroup::FindAllAsync().get()) {
+            if (!firstGroup) {
+                json += ',';
+            }
+            firstGroup = false;
+            json += "{\"displayName\":";
+            json += jsonHString(group.DisplayName());
+            json += ",\"id\":";
+            json += jsonHString(group.Id());
+            json += ",\"sources\":[";
+            bool firstSource = true;
+            for (const WMCF::MediaFrameSourceInfo& info : group.SourceInfos()) {
+                if (!firstSource) {
+                    json += ',';
+                }
+                firstSource = false;
+                const WDE::DeviceInformation device = info.DeviceInformation();
+                json += "{\"sourceKind\":";
+                json += jsonString(sourceKindName(info.SourceKind()));
+                json += ",\"deviceId\":";
+                json += device ? jsonHString(device.Id()) : std::string("null");
+                json += ",\"deviceName\":";
+                json += device ? jsonHString(device.Name()) : std::string("null");
+                json += ",\"panel\":";
+                json += jsonPanel(device);
+                json += '}';
+            }
+            json += "]}";
+        }
+    } catch (const winrt::hresult_error&) {
+        return "null";
+    }
+    json += ']';
+    return json;
+}
+
+std::string videoCaptureDevicesJson()
+{
+    std::string json = "[";
+    try {
+        bool first = true;
+        for (const WDE::DeviceInformation& device : WDE::DeviceInformation::FindAllAsync(WDE::DeviceClass::VideoCapture).get()) {
+            if (!first) {
+                json += ',';
+            }
+            first = false;
+            json += "{\"id\":";
+            json += jsonHString(device.Id());
+            json += ",\"name\":";
+            json += jsonHString(device.Name());
+            json += ",\"isEnabled\":";
+            json += jsonBool(device.IsEnabled());
+            json += ",\"panel\":";
+            json += jsonPanel(device);
+            json += '}';
+        }
+    } catch (const winrt::hresult_error&) {
+        return "null";
+    }
+    json += ']';
+    return json;
+}
+
+// What the app's backend lists today, with the same classification the page uses.
+std::string enumerateJson()
+{
+    telaviva::SystemClock clock;
+    telaviva::MediaCaptureBackend backend(clock);
+    const std::vector<telaviva::CameraInfo> cameras = backend.enumerate();
+
+    std::string json = "[";
+    for (std::size_t i = 0; i < cameras.size(); ++i) {
+        const telaviva::CameraInfo& camera = cameras[i];
+        if (i > 0) {
+            json += ',';
+        }
+        json += "{\"id\":";
+        json += jsonString(camera.id);
+        json += ",\"name\":";
+        json += jsonStringW(camera.name);
+        json += ",\"infrared\":";
+        json += jsonBool(camera.infrared);
+        json += ",\"builtIn\":";
+        json += jsonBool(camera.builtIn);
+        json += '}';
+    }
+    json += "]";
     return json;
 }
 
@@ -277,6 +423,19 @@ int runProbeLaptop(const std::wstring& outFile)
     json += ",\"wmi_read_percent\":";
     json += percentJson;
     json += ",\"wrote_to_panel\":false}\n";
+
+    return writeTextFile(outFile, json) ? 0 : 4;
+}
+
+int runListCameras(const std::wstring& outFile)
+{
+    std::string json = "{\"frameSourceGroups\":";
+    json += frameSourceGroupsJson();
+    json += ",\"videoCaptureDevices\":";
+    json += videoCaptureDevicesJson();
+    json += ",\"enumerate\":";
+    json += enumerateJson();
+    json += "}\n";
 
     return writeTextFile(outFile, json) ? 0 : 4;
 }

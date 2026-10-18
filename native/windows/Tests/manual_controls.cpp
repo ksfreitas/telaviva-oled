@@ -174,7 +174,7 @@ TEST(manual_rapid_targets_coalesce_behind_in_flight_submission)
     controls.apply(makeSnapshot(2, {withBrightness(makeMonitor(kA), 0.0)}));
     scheduler.advance(kSettle);
     CHECK_EQ(sink.calls.size(), std::size_t{1});
-    controls.onHardwareCompleted(kA, ManualFeature::Brightness, 1, true, 0.0);
+    controls.onHardwareCompleted(kA, ManualFeature::Brightness, true,0.0);
     scheduler.advance(kSettle);
     CHECK(sink.calls.size() == 2 && sink.calls[1].value == 37.0);
     CHECK_EQ(sink.calls.size(), std::size_t{2});
@@ -231,7 +231,7 @@ TEST(manual_accepted_command_stays_in_flight_until_completion)
     scheduler.advance(kSettle);
     CHECK_EQ(sink.calls.size(), std::size_t{1});
 
-    controls.onHardwareCompleted(kA, ManualFeature::Brightness, 1, true, 20.0);
+    controls.onHardwareCompleted(kA, ManualFeature::Brightness, true,20.0);
     scheduler.advance(kSettle);
     CHECK(sink.calls.size() == 2 && sink.calls[1].value == 37.0);
 }
@@ -266,7 +266,7 @@ TEST(manual_completion_without_readback_falls_back_to_observed)
     controls.apply(makeSnapshot(2, {withBrightness(makeMonitor(kA), 30.0)}));
     // Still in flight: a snapshot alone does not settle the draft.
     CHECK(controls.hasDraft(kA, ManualFeature::Brightness));
-    controls.onHardwareCompleted(kA, ManualFeature::Brightness, 1, true, std::nullopt);
+    controls.onHardwareCompleted(kA, ManualFeature::Brightness, true,std::nullopt);
     CHECK(!controls.hasDraft(kA, ManualFeature::Brightness));
     CHECK(controls.draft(kA, ManualFeature::Brightness) == 30.0);
 }
@@ -290,7 +290,7 @@ TEST(manual_stale_completion_cannot_replace_newer_draft)
     CHECK(controls.draft(kA, ManualFeature::Brightness) == 37.0);
     scheduler.advance(kSettle);
     CHECK_EQ(sink.calls.size(), std::size_t{1});
-    controls.onHardwareCompleted(kA, ManualFeature::Brightness, 1, true, 41.0);
+    controls.onHardwareCompleted(kA, ManualFeature::Brightness, true,41.0);
     scheduler.advance(kSettle);
     CHECK(sink.calls.size() == 2 && sink.calls[1].value == 37.0);
 }
@@ -310,7 +310,7 @@ TEST(manual_return_to_observed_value_is_still_submitted)
     CHECK(controls.draft(kA, ManualFeature::Brightness) == 41.0);
     controls.apply(makeSnapshot(2, {makeMonitor(kA)}));
     CHECK(controls.draft(kA, ManualFeature::Brightness) == 41.0);
-    controls.onHardwareCompleted(kA, ManualFeature::Brightness, 1, true, 20.0);
+    controls.onHardwareCompleted(kA, ManualFeature::Brightness, true,20.0);
     scheduler.advance(kSettle);
     CHECK(sink.calls.size() == 2 && sink.calls[1].value == 41.0);
 }
@@ -433,7 +433,7 @@ TEST(manual_volume_intent_does_not_cancel_brightness_in_flight)
     scheduler.advance(kSettle);
     CHECK_EQ(sink.calls.size(), std::size_t{1});
 
-    controls.onHardwareCompleted(kA, ManualFeature::Brightness, 1, true, 70.0);
+    controls.onHardwareCompleted(kA, ManualFeature::Brightness, true,70.0);
     controls.apply(makeSnapshot(3, {makeMonitor(kA)}));
     CHECK(controls.draft(kA, ManualFeature::Brightness) == 41.0);
     CHECK(controls.draft(kA, ManualFeature::Volume) == 60.0);
@@ -605,7 +605,7 @@ TEST(manual_snapshot_during_submission_does_not_release_slot)
     scheduler.advance(kSettle);
     CHECK_EQ(sink.calls.size(), std::size_t{1});
 
-    controls.onHardwareCompleted(kA, ManualFeature::Brightness, 1, true, 20.0);
+    controls.onHardwareCompleted(kA, ManualFeature::Brightness, true,20.0);
     scheduler.advance(kSettle);
     CHECK(sink.calls.size() == 2 && sink.calls[1].value == 37.0);
 }
@@ -645,7 +645,7 @@ TEST(manual_failed_completion_marks_draft_failed_at_observed_value)
     scheduler.advance(kSettle);
     CHECK_EQ(sink.calls.size(), std::size_t{1});
 
-    controls.onHardwareCompleted(kA, ManualFeature::Brightness, 1, false, std::nullopt);
+    controls.onHardwareCompleted(kA, ManualFeature::Brightness, false,std::nullopt);
     CHECK(controls.status(kA, ManualFeature::Brightness) == ManualStatus::Failed);
     CHECK(controls.hasDraft(kA, ManualFeature::Brightness));
     CHECK(controls.draft(kA, ManualFeature::Brightness) == 41.0);
@@ -671,7 +671,7 @@ TEST(manual_failed_completion_with_queued_target_sends_queued_target)
     scheduler.advance(kSettle);
     controls.setTarget(kA, ManualFeature::Brightness, 30.0);
 
-    controls.onHardwareCompleted(kA, ManualFeature::Brightness, 1, false, std::nullopt);
+    controls.onHardwareCompleted(kA, ManualFeature::Brightness, false,std::nullopt);
     scheduler.advance(kSettle);
     CHECK(sink.calls.size() == 2 && sink.calls[1].value == 30.0);
     CHECK(controls.status(kA, ManualFeature::Brightness) == ManualStatus::Pending);
@@ -690,12 +690,12 @@ TEST(manual_completion_sends_queued_target_without_debounce)
     scheduler.advance(kSettle);
     CHECK_EQ(sink.calls.size(), std::size_t{1});
 
-    controls.onHardwareCompleted(kA, ManualFeature::Brightness, 1, true, 0.0);
+    controls.onHardwareCompleted(kA, ManualFeature::Brightness, true,0.0);
     scheduler.advance(std::chrono::milliseconds{0});
     CHECK(sink.calls.size() == 2 && sink.calls[1].value == 37.0);
 }
 
-TEST(manual_completion_ignored_for_other_generation_or_idle_slot)
+TEST(manual_completion_ignored_for_unknown_monitor_or_idle_slot)
 {
     FakeSink sink;
     FakeScheduler scheduler;
@@ -706,22 +706,65 @@ TEST(manual_completion_ignored_for_other_generation_or_idle_slot)
     scheduler.advance(kSettle);
     controls.setTarget(kA, ManualFeature::Brightness, 30.0);
 
-    // Completion for generation 2 does not match the current generation 1.
-    controls.onHardwareCompleted(kA, ManualFeature::Brightness, 2, true, 20.0);
+    // A completion for a monitor that is not known cannot belong to this slot.
+    controls.onHardwareCompleted("monitor-missing", ManualFeature::Brightness, true, 20.0);
     scheduler.advance(kSettle);
     CHECK_EQ(sink.calls.size(), std::size_t{1});
     CHECK(controls.status(kA, ManualFeature::Brightness) == ManualStatus::Pending);
 
-    controls.onHardwareCompleted(kA, ManualFeature::Brightness, 1, true, 20.0);
+    controls.onHardwareCompleted(kA, ManualFeature::Brightness, true,20.0);
     scheduler.advance(kSettle);
     CHECK(sink.calls.size() == 2 && sink.calls[1].value == 30.0);
-    controls.onHardwareCompleted(kA, ManualFeature::Brightness, 1, true, 30.0);
+    controls.onHardwareCompleted(kA, ManualFeature::Brightness, true,30.0);
     CHECK(!controls.hasDraft(kA, ManualFeature::Brightness));
 
     // A completion with nothing in flight and nothing queued changes nothing.
-    controls.onHardwareCompleted(kA, ManualFeature::Brightness, 1, false, std::nullopt);
+    controls.onHardwareCompleted(kA, ManualFeature::Brightness, false,std::nullopt);
     CHECK(!controls.hasDraft(kA, ManualFeature::Brightness));
     CHECK(controls.status(kA, ManualFeature::Brightness) == ManualStatus::Ready);
+}
+
+// The core numbers action generations by snapshot revision, so a pending action and its
+// completion carry a generation that differs from the monitor's connection generation (1).
+TEST(manual_completion_and_pending_match_by_monitor_not_action_generation)
+{
+    FakeSink sink;
+    FakeScheduler scheduler;
+    FakeClock clock;
+    ManualControls controls(sink, scheduler, clock);
+    controls.apply(makeSnapshot(1, {makeMonitor(kA, 1)}));
+    controls.setTarget(kA, ManualFeature::Brightness, 20.0);
+    scheduler.advance(kSettle);
+    CHECK_EQ(sink.calls.size(), std::size_t{1});
+
+    // The core lists the command as action generation 8 on connection generation 1.
+    controls.apply(makeSnapshot(2, {makeMonitor(kA, 1)}, {makeAction(8, kA, 8, "set_brightness", 20.0)}));
+    controls.setTarget(kA, ManualFeature::Brightness, 37.0);
+    scheduler.advance(kSettle);
+    CHECK_EQ(sink.calls.size(), std::size_t{1});
+
+    // The completion releases the slot, but the snapshot still lists action 8, so the queued target waits for the core.
+    controls.onHardwareCompleted(kA, ManualFeature::Brightness, true, 20.0);
+    scheduler.advance(std::chrono::milliseconds{0});
+    CHECK_EQ(sink.calls.size(), std::size_t{1});
+
+    // The core stops listing the action in the next snapshot, and the queued target goes out.
+    controls.apply(makeSnapshot(3, {makeMonitor(kA, 1)}));
+    scheduler.advance(kSettle);
+    CHECK(sink.calls.size() == 2 && sink.calls[1].value == 37.0 && sink.calls[1].generation == 1);
+
+    // A pending action of the same kind marks the channel busy, so a new target waits for the core.
+    FakeSink waitingSink;
+    FakeScheduler waitingScheduler;
+    FakeClock waitingClock;
+    ManualControls waiting(waitingSink, waitingScheduler, waitingClock);
+    waiting.apply(makeSnapshot(1, {makeMonitor(kA, 1)}, {makeAction(8, kA, 8, "set_brightness", 41.0)}));
+    waiting.setTarget(kA, ManualFeature::Brightness, 50.0);
+    waitingScheduler.advance(kSettle);
+    CHECK_EQ(waitingSink.calls.size(), std::size_t{0});
+    waiting.apply(makeSnapshot(2, {makeMonitor(kA, 1)}));
+    waitingScheduler.advance(kSettle);
+    CHECK(waitingSink.calls.size() == 1 && waitingSink.calls[0].value == 50.0);
 }
 
 }  // namespace

@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <cstdint>
 #include <initializer_list>
 #include <map>
@@ -32,6 +33,38 @@ std::size_t channelIndex(ManualFeature feature)
 std::string_view actionKind(ManualFeature feature)
 {
     return feature == ManualFeature::Brightness ? "set_brightness" : "set_volume";
+}
+
+// Builds the line only when a sink is set, so an idle controller formats nothing.
+template <typename Build>
+void emitTrace(const ManualControls::TraceSink& sink, Build build)
+{
+    if (sink) {
+        sink(build());
+    }
+}
+
+// Short form of a monitor id for traces: its last eight characters.
+std::string traceId(const std::string& monitorId)
+{
+    return monitorId.size() > 8 ? monitorId.substr(monitorId.size() - 8) : monitorId;
+}
+
+std::string featureName(ManualFeature feature)
+{
+    return feature == ManualFeature::Brightness ? "brightness" : "volume";
+}
+
+std::string slotTag(const std::string& monitorId, ManualFeature feature)
+{
+    return traceId(monitorId) + " " + featureName(feature);
+}
+
+std::string traceNumber(double value)
+{
+    char buffer[32];
+    std::snprintf(buffer, sizeof buffer, "%.2f", value);
+    return buffer;
 }
 
 // Same rounding as the macOS coordinator. Narrow ranges can map two percents to one
@@ -66,6 +99,11 @@ struct ManualSubmission {
 ManualControls::ManualControls(IManualSink& sink, IScheduler& scheduler, IClock& clock)
     : sink_(sink), scheduler_(scheduler), clock_(clock)
 {
+}
+
+void ManualControls::setTrace(TraceSink trace)
+{
+    trace_ = std::move(trace);
 }
 
 ManualControls::~ManualControls()
@@ -137,8 +175,8 @@ void ManualControls::apply(const Snapshot& snapshot)
             channel.actionPending = std::any_of(
                 snapshot.pendingActions.begin(), snapshot.pendingActions.end(),
                 [&monitor, kind](const PendingAction& action) {
-                    return action.monitorId == monitor.id && action.generation == monitor.generation &&
-                           std::string_view(action.kind) == kind;
+                    // Matched by monitor and kind only: the action generation is not the connection generation.
+                    return action.monitorId == monitor.id && std::string_view(action.kind) == kind;
                 });
 
             const auto found = slots_.find(std::make_pair(monitor.id, feature));
@@ -148,6 +186,7 @@ void ManualControls::apply(const Snapshot& snapshot)
             Slot& slot = found->second;
             if (!channel.eligible) {
                 // Sleep, unstable identity or an unsupported channel ends the draft and any in-flight state.
+                emitTrace(trace_, [&] { return "manual: " + slotTag(monitor.id, feature) + " slot reset reason=not eligible"; });
                 slot = Slot{};
                 continue;
             }
@@ -158,10 +197,12 @@ void ManualControls::apply(const Snapshot& snapshot)
             // Safety net only: the completion normally releases the slot. A snapshot may release it
             // once it has outlived the window, so a lost completion cannot wedge the channel. A snapshot
             // published while the command is still being submitted is always inside the window.
-            const bool outlivedWindow = clock_.steadySeconds() - slot.submittedAt >= kManualInFlightSafetySeconds;
+            const double age = clock_.steadySeconds() - slot.submittedAt;
+            const bool outlivedWindow = age >= kManualInFlightSafetySeconds;
             if (slot.inFlight && outlivedWindow && snapshot.revision > slot.submittedRevision &&
                 !channel.actionPending) {
                 slot.inFlight = false;
+                emitTrace(trace_, [&] { return "manual: " + slotTag(monitor.id, feature) + " in-flight released by safety net age=" + traceNumber(age) + "s"; });
             }
             // An adopted hardware-key action is done once the core lists it and then stops listing it.
             if (slot.external && slot.corePendingSeen && !channel.actionPending) {
@@ -200,14 +241,17 @@ void ManualControls::setTarget(const std::string& monitorId, ManualFeature featu
 
     std::lock_guard<std::mutex> lock(mutex_);
     if (stopped_) {
+        emitTrace(trace_, [&] { return "manual: " + slotTag(monitorId, feature) + " target ignored reason=stopped"; });
         return;
     }
     const auto monitor = monitors_.find(monitorId);
     if (monitor == monitors_.end()) {
+        emitTrace(trace_, [&] { return "manual: " + slotTag(monitorId, feature) + " target ignored reason=unknown monitor"; });
         return;
     }
     const Channel& channel = monitor->second.channels[channelIndex(feature)];
     if (!channel.eligible) {
+        emitTrace(trace_, [&] { return "manual: " + slotTag(monitorId, feature) + " target ignored reason=not eligible"; });
         return;
     }
 
@@ -215,6 +259,7 @@ void ManualControls::setTarget(const std::string& monitorId, ManualFeature featu
     auto found = slots_.find(key);
     if (found == slots_.end() || !found->second.hasDraft) {
         if (countDrafts(slots_) >= kManualMaxDrafts) {
+            emitTrace(trace_, [&] { return "manual: " + slotTag(monitorId, feature) + " target ignored reason=draft cap"; });
             return;
         }
         if (found == slots_.end()) {
@@ -233,31 +278,36 @@ void ManualControls::setTarget(const std::string& monitorId, ManualFeature featu
     const int64_t raw = rawFor(channel.min, channel.max, target);
     if (slot.inFlight && raw == slot.inFlightRaw) {
         slot.queued.reset();
+        emitTrace(trace_, [&] { return "manual: " + slotTag(monitorId, feature) + " target=" + traceNumber(target) + " raw=" + std::to_string(raw) + " same as in flight, not queued"; });
         return;
     }
     slot.queued = target;
+    emitTrace(trace_, [&] { return "manual: " + slotTag(monitorId, feature) + " target accepted value=" + traceNumber(target) + " raw=" + std::to_string(raw); });
     scheduleDrain(kDrainDelay);
 }
 
-void ManualControls::onHardwareCompleted(const std::string& monitorId, ManualFeature feature, uint64_t generation,
-                                         bool ok, std::optional<double> observedPercent)
+void ManualControls::onHardwareCompleted(const std::string& monitorId, ManualFeature feature, bool ok,
+                                         std::optional<double> observedPercent)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     if (stopped_) {
+        emitTrace(trace_, [&] { return "manual: " + slotTag(monitorId, feature) + " completion ignored reason=stopped"; });
         return;
     }
     const auto monitor = monitors_.find(monitorId);
-    // A completion from another connection generation belongs to a command this slot no longer tracks.
-    if (monitor == monitors_.end() || monitor->second.generation != generation) {
+    if (monitor == monitors_.end()) {
+        emitTrace(trace_, [&] { return "manual: " + slotTag(monitorId, feature) + " completion ignored reason=unknown monitor"; });
         return;
     }
     const auto found = slots_.find(std::make_pair(monitorId, feature));
     // Nothing in flight: the safety window already released the slot, or the draft was dropped.
     if (found == slots_.end() || !found->second.inFlight) {
+        emitTrace(trace_, [&] { return "manual: " + slotTag(monitorId, feature) + " completion ignored reason=not in flight"; });
         return;
     }
 
     Slot& slot = found->second;
+    emitTrace(trace_, [&] { return "manual: " + slotTag(monitorId, feature) + " completion received ok=" + (ok ? "1" : "0"); });
     slot.inFlight = false;
     if (slot.queued.has_value()) {
         // The newer target gets its own attempt now, whatever this result was. Its draft is already shown.
@@ -398,16 +448,28 @@ void ManualControls::drain()
         }
         for (auto& entry : slots_) {
             Slot& slot = entry.second;
-            if (!slot.queued.has_value() || slot.inFlight) {
+            if (!slot.queued.has_value()) {
                 continue;
             }
-            const auto monitor = monitors_.find(entry.first.first);
+            const std::string& monitorId = entry.first.first;
+            const ManualFeature feature = entry.first.second;
+            const auto monitor = monitors_.find(monitorId);
             if (monitor == monitors_.end()) {
+                emitTrace(trace_, [&] { return "manual: " + slotTag(monitorId, feature) + " drain skipped reason=no monitor"; });
                 continue;
             }
-            const Channel& channel = monitor->second.channels[channelIndex(entry.first.second)];
+            const Channel& channel = monitor->second.channels[channelIndex(feature)];
+            if (!channel.eligible) {
+                emitTrace(trace_, [&] { return "manual: " + slotTag(monitorId, feature) + " drain skipped reason=not eligible"; });
+                continue;
+            }
+            if (slot.inFlight) {
+                emitTrace(trace_, [&] { return "manual: " + slotTag(monitorId, feature) + " drain skipped reason=inFlight"; });
+                continue;
+            }
             // The core is already working on a manual command for this channel; wait for it to finish.
-            if (!channel.eligible || channel.actionPending) {
+            if (channel.actionPending) {
+                emitTrace(trace_, [&] { return "manual: " + slotTag(monitorId, feature) + " drain skipped reason=actionPending"; });
                 continue;
             }
 
@@ -419,8 +481,8 @@ void ManualControls::drain()
             slot.submittedRevision = snapshotRevision_;
             slot.submittedAt = clock_.steadySeconds();
             slot.submitToken = ++submitCounter_;
-            batch.push_back(ManualSubmission{entry.first.first, entry.first.second, value,
-                                             monitor->second.generation, slot.submitToken});
+            emitTrace(trace_, [&] { return "manual: " + slotTag(monitorId, feature) + " submitted value=" + traceNumber(value) + " raw=" + std::to_string(slot.inFlightRaw) + " generation=" + std::to_string(monitor->second.generation) + " token=" + std::to_string(slot.submitToken) + " revision=" + std::to_string(slot.submittedRevision); });
+            batch.push_back(ManualSubmission{monitorId, feature, value, monitor->second.generation, slot.submitToken});
         }
     }
 
@@ -432,6 +494,7 @@ void ManualControls::drain()
         }
 
         std::lock_guard<std::mutex> lock(mutex_);
+        emitTrace(trace_, [&] { return "manual: " + slotTag(item.monitorId, item.feature) + " sink rejected status=" + std::to_string(status) + " token=" + std::to_string(item.token); });
         const auto found = slots_.find(std::make_pair(item.monitorId, item.feature));
         // Stale when the slot was reset or replaced while the sink ran.
         if (found == slots_.end() || found->second.submitToken != item.token) {

@@ -182,3 +182,203 @@ TEST(camera_selection_inputs_are_not_modified)
     CHECK(history == historyBefore);
     CHECK(selected == selectedBefore);
 }
+
+namespace {
+
+telaviva::CameraInfo namedCamera(const std::string& id, const std::wstring& name)
+{
+    telaviva::CameraInfo camera;
+    camera.id = id;
+    camera.name = name;
+    return camera;
+}
+
+telaviva::CameraDeviceRecord deviceRecord(const std::string& id, const std::wstring& name)
+{
+    telaviva::CameraDeviceRecord device;
+    device.id = id;
+    device.name = name;
+    return device;
+}
+
+telaviva::CameraSourceRecord sourceRecord(telaviva::CameraSourceKind kind, const std::string& deviceId)
+{
+    telaviva::CameraSourceRecord source;
+    source.kind = kind;
+    source.deviceId = deviceId;
+    return source;
+}
+
+telaviva::CameraGroupRecord groupRecord(const std::wstring& name, const std::vector<telaviva::CameraSourceRecord>& sources)
+{
+    telaviva::CameraGroupRecord group;
+    group.name = name;
+    group.sources = sources;
+    return group;
+}
+
+}  // namespace
+
+TEST(camera_selection_dedupe_keeps_first_of_same_id)
+{
+    const std::vector<telaviva::CameraInfo> cameras = {
+        namedCamera("dup", L"First"), namedCamera("other", L"Other"), namedCamera("DUP", L"Second")};
+    const std::vector<telaviva::CameraInfo> result = telaviva::dedupeCameras(cameras, {});
+    CHECK_EQ(result.size(), std::size_t(2));
+    if (result.size() != 2) {
+        return;
+    }
+    CHECK(result[0].name == L"First");
+    CHECK_EQ(result[1].id, std::string("other"));
+}
+
+TEST(camera_selection_dedupe_prefers_device_name_over_earlier_duplicate)
+{
+    const std::vector<telaviva::CameraDeviceRecord> devices = {deviceRecord("rgb", L"Lenovo Performance RGB Camera")};
+    const std::vector<telaviva::CameraInfo> cameras = {
+        namedCamera("rgb", L"LenovoCam-Group"), namedCamera("rgb", L"Lenovo Performance RGB Camera")};
+    const std::vector<telaviva::CameraInfo> result = telaviva::dedupeCameras(cameras, devices);
+    CHECK_EQ(result.size(), std::size_t(1));
+    if (result.size() != 1) {
+        return;
+    }
+    CHECK(result[0].name == L"Lenovo Performance RGB Camera");
+}
+
+TEST(camera_selection_merge_ids_are_unique)
+{
+    const std::vector<telaviva::CameraDeviceRecord> devices = {
+        deviceRecord("rgb", L"RGB"), deviceRecord("RGB", L"RGB")};
+    const std::vector<telaviva::CameraInfo> result = telaviva::mergeCameraLists(devices, {});
+    CHECK_EQ(result.size(), std::size_t(1));
+}
+
+TEST(camera_selection_merge_classifies_infrared_only_device)
+{
+    const std::vector<telaviva::CameraDeviceRecord> devices = {
+        deviceRecord("ir-id", L"IR Cam"), deviceRecord("rgb-id", L"RGB Cam")};
+    const std::vector<telaviva::CameraGroupRecord> groups = {
+        groupRecord(L"IR Cam", {sourceRecord(telaviva::CameraSourceKind::Infrared, "ir-id")}),
+        groupRecord(L"RGB Cam", {sourceRecord(telaviva::CameraSourceKind::Color, "rgb-id")})};
+    const std::vector<telaviva::CameraInfo> result = telaviva::mergeCameraLists(devices, groups);
+    CHECK_EQ(result.size(), std::size_t(2));
+    if (result.size() != 2) {
+        return;
+    }
+    CHECK(result[0].infrared);
+    CHECK(!result[1].infrared);
+}
+
+TEST(camera_selection_merge_hello_group_is_not_infrared)
+{
+    // A group with both a color and an infrared source stays a color camera.
+    const std::vector<telaviva::CameraDeviceRecord> devices = {deviceRecord("hello", L"Hello")};
+    const std::vector<telaviva::CameraGroupRecord> groups = {groupRecord(L"Hello", {
+        sourceRecord(telaviva::CameraSourceKind::Color, "hello"),
+        sourceRecord(telaviva::CameraSourceKind::Infrared, "hello")})};
+    const std::vector<telaviva::CameraInfo> result = telaviva::mergeCameraLists(devices, groups);
+    CHECK_EQ(result.size(), std::size_t(1));
+    if (result.size() != 1) {
+        return;
+    }
+    CHECK(!result[0].infrared);
+}
+
+TEST(camera_selection_merge_drops_group_without_device)
+{
+    const std::vector<telaviva::CameraDeviceRecord> devices = {deviceRecord("rgb", L"RGB")};
+    const std::vector<telaviva::CameraGroupRecord> groups = {
+        groupRecord(L"RGB", {sourceRecord(telaviva::CameraSourceKind::Color, "rgb")}),
+        groupRecord(L"Virtual", {sourceRecord(telaviva::CameraSourceKind::Color, "rgb")}),
+        groupRecord(L"Orphan", {sourceRecord(telaviva::CameraSourceKind::Color, "orphan")})};
+    const std::vector<telaviva::CameraInfo> result = telaviva::mergeCameraLists(devices, groups);
+    CHECK_EQ(result.size(), std::size_t(1));
+    if (result.size() != 1) {
+        return;
+    }
+    CHECK_EQ(result[0].id, std::string("rgb"));
+    CHECK(result[0].name == L"RGB");
+}
+
+TEST(camera_selection_choose_group_prefers_device_name)
+{
+    const std::vector<telaviva::CameraGroupRecord> groups = {
+        groupRecord(L"LenovoCam-Group", {sourceRecord(telaviva::CameraSourceKind::Color, "rgb")}),
+        groupRecord(L"Lenovo Performance RGB Camera", {sourceRecord(telaviva::CameraSourceKind::Color, "rgb")})};
+    CHECK_EQ(telaviva::chooseGroupForDevice(groups, "rgb", L"Lenovo Performance RGB Camera"), std::size_t(1));
+    CHECK_EQ(telaviva::chooseGroupForDevice(groups, "missing", L"Lenovo Performance RGB Camera"), telaviva::kNoCameraGroup);
+}
+
+TEST(camera_selection_merge_duplicate_devices_keep_unique_first)
+{
+    // Layer 1: the merge over duplicated device records still yields unique ids and the first entry.
+    const std::vector<telaviva::CameraDeviceRecord> devices = {
+        deviceRecord("Dup", L"First"), deviceRecord("dup", L"Second"), deviceRecord("other", L"Other")};
+    const std::vector<telaviva::CameraInfo> result = telaviva::mergeCameraLists(devices, {});
+    CHECK_EQ(result.size(), std::size_t(2));
+    if (result.size() != 2) {
+        return;
+    }
+    CHECK_EQ(result[0].id, std::string("Dup"));
+    CHECK(result[0].name == L"First");
+    CHECK_EQ(result[1].id, std::string("other"));
+}
+
+TEST(camera_selection_picker_pipeline_has_unique_ids)
+{
+    // Layer 3: the page pipeline (selectable, then dedupe) never yields two items with one id, and
+    // applying the dedupe again changes nothing.
+    telaviva::CameraInfo infraredCamera = namedCamera("ir", L"IR");
+    infraredCamera.infrared = true;
+    const std::vector<telaviva::CameraInfo> backend = {
+        namedCamera("rgb", L"LenovoCam-Group"), infraredCamera, namedCamera("RGB", L"Lenovo Performance RGB Camera")};
+    const std::vector<telaviva::CameraInfo> once = telaviva::dedupeCameras(telaviva::selectableCameras(backend), {});
+    CHECK_EQ(once.size(), std::size_t(1));
+    if (once.size() != 1) {
+        return;
+    }
+    CHECK_EQ(once[0].id, std::string("rgb"));
+    CHECK(once[0].name == L"LenovoCam-Group");
+
+    const std::vector<telaviva::CameraInfo> twice = telaviva::dedupeCameras(once, {});
+    CHECK_EQ(twice.size(), std::size_t(1));
+}
+
+TEST(camera_selection_dedupe_name_match_survives_across_layers)
+{
+    // Layer 1 and 2: the entry whose name matches the device name survives, and a second dedupe keeps it.
+    const std::vector<telaviva::CameraDeviceRecord> devices = {deviceRecord("rgb", L"Lenovo Performance RGB Camera")};
+    const std::vector<telaviva::CameraInfo> cameras = {
+        namedCamera("rgb", L"LenovoCam-Group"), namedCamera("rgb", L"Lenovo Performance RGB Camera")};
+    const std::vector<telaviva::CameraInfo> once = telaviva::dedupeCameras(cameras, devices);
+    CHECK_EQ(once.size(), std::size_t(1));
+    if (once.size() != 1) {
+        return;
+    }
+    CHECK(once[0].name == L"Lenovo Performance RGB Camera");
+    const std::vector<telaviva::CameraInfo> twice = telaviva::dedupeCameras(once, {});
+    CHECK_EQ(twice.size(), std::size_t(1));
+    CHECK(twice[0].name == L"Lenovo Performance RGB Camera");
+}
+
+TEST(camera_selection_find_index_exact_match)
+{
+    const std::vector<telaviva::CameraInfo> cameras = {namedCamera("a", L"A"), namedCamera("b", L"B")};
+    const std::optional<std::string> stored = std::string("b");
+    const std::optional<std::size_t> found = telaviva::findCameraIndex(cameras, stored);
+    CHECK(found.has_value());
+    if (found) {
+        CHECK_EQ(*found, std::size_t(1));
+    }
+    const std::optional<std::size_t> upper = telaviva::findCameraIndex(cameras, std::optional<std::string>("B"));
+    CHECK(upper.has_value());
+}
+
+TEST(camera_selection_find_index_missing_id_gives_nullopt)
+{
+    const std::vector<telaviva::CameraInfo> cameras = {namedCamera("a", L"A")};
+    const std::optional<std::size_t> missing = telaviva::findCameraIndex(cameras, std::optional<std::string>("gone"));
+    CHECK(!missing.has_value());
+    const std::optional<std::size_t> none = telaviva::findCameraIndex(cameras, std::nullopt);
+    CHECK(!none.has_value());
+}

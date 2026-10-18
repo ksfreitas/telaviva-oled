@@ -88,6 +88,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
                 displayExit = (argc - i - 1 < 1) ? 4 : telaviva::host::runProbeLaptop(argv[i + 1]);
                 break;
             }
+            if (std::wstring_view{ argv[i] } == L"--list-cameras") {
+                displayExit = (argc - i - 1 < 1) ? 4 : telaviva::host::runListCameras(argv[i + 1]);
+                break;
+            }
         }
         LocalFree(argv);
     }

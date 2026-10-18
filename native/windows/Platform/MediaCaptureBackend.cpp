@@ -13,6 +13,7 @@
 #include <winrt/Windows.Storage.Streams.h>
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -115,9 +116,13 @@ void notifyDevicesChanged(const std::weak_ptr<Session>& weak)
     }
 }
 
-bool isBuiltInPanel(const WMCF::MediaFrameSourceInfo& info)
+std::wstring wideText(const winrt::hstring& text)
 {
-    const WDE::DeviceInformation device = info.DeviceInformation();
+    return std::wstring(text.c_str(), text.size());
+}
+
+bool isBuiltInDevice(const WDE::DeviceInformation& device)
+{
     if (!device) {
         return false;
     }
@@ -129,8 +134,80 @@ bool isBuiltInPanel(const WMCF::MediaFrameSourceInfo& info)
     return panel == WDE::Panel::Front || panel == WDE::Panel::Back;
 }
 
+bool isBuiltInPanel(const WMCF::MediaFrameSourceInfo& info)
+{
+    return isBuiltInDevice(info.DeviceInformation());
+}
+
+// VideoCapture devices as the Camera app lists them. Empty on failure, so the caller falls back to groups.
+std::vector<CameraDeviceRecord> readVideoCaptureDevices()
+{
+    std::vector<CameraDeviceRecord> devices;
+    try {
+        for (const WDE::DeviceInformation& device : WDE::DeviceInformation::FindAllAsync(WDE::DeviceClass::VideoCapture).get()) {
+            CameraDeviceRecord record;
+            record.id = winrt::to_string(device.Id());
+            record.name = wideText(device.Name());
+            record.builtIn = isBuiltInDevice(device);
+            devices.push_back(std::move(record));
+        }
+    } catch (const winrt::hresult_error&) {
+        devices.clear();
+    }
+    return devices;
+}
+
+// Frame source groups, empty on failure. Index i of the result matches the group records built from it.
+std::vector<WMCF::MediaFrameSourceGroup> readFrameSourceGroups()
+{
+    std::vector<WMCF::MediaFrameSourceGroup> groups;
+    try {
+        for (const WMCF::MediaFrameSourceGroup& group : WMCF::MediaFrameSourceGroup::FindAllAsync().get()) {
+            groups.push_back(group);
+        }
+    } catch (const winrt::hresult_error&) {
+        groups.clear();
+    }
+    return groups;
+}
+
+CameraGroupRecord groupRecord(const WMCF::MediaFrameSourceGroup& group)
+{
+    CameraGroupRecord record;
+    record.name = wideText(group.DisplayName());
+    for (const WMCF::MediaFrameSourceInfo& info : group.SourceInfos()) {
+        CameraSourceRecord source;
+        const WMCF::MediaFrameSourceKind kind = info.SourceKind();
+        if (kind == WMCF::MediaFrameSourceKind::Color) {
+            source.kind = CameraSourceKind::Color;
+        } else if (kind == WMCF::MediaFrameSourceKind::Infrared) {
+            source.kind = CameraSourceKind::Infrared;
+        }
+        const WDE::DeviceInformation device = info.DeviceInformation();
+        if (device) {
+            source.deviceId = winrt::to_string(device.Id());
+        }
+        record.sources.push_back(std::move(source));
+    }
+    return record;
+}
+
+// Name of the device with this id, empty when it cannot be resolved. Used to pick the matching group.
+std::wstring deviceNameFor(const std::string& cameraId)
+{
+    try {
+        const WDE::DeviceInformation device = WDE::DeviceInformation::CreateFromIdAsync(winrt::to_hstring(cameraId)).get();
+        if (!device) {
+            return {};
+        }
+        return wideText(device.Name());
+    } catch (const winrt::hresult_error&) {
+        return {};
+    }
+}
+
 // The DeviceInformation id of the first source that has one, so it matches the watcher ids.
-// Falls back to the group id. This is the CameraInfo key.
+// Falls back to the group id. Only the group-based fallback list uses it; the device list is primary.
 std::string stableCameraId(const WMCF::MediaFrameSourceGroup& group)
 {
     for (const WMCF::MediaFrameSourceInfo& info : group.SourceInfos()) {
@@ -142,14 +219,58 @@ std::string stableCameraId(const WMCF::MediaFrameSourceGroup& group)
     return winrt::to_string(group.Id());
 }
 
+// Resolves a camera id to its group. Device ids (the listed ids) are matched through the group sources
+// first; the group-derived ids from the fallback list are matched last.
 WMCF::MediaFrameSourceGroup findGroup(const std::string& cameraId)
 {
-    for (const WMCF::MediaFrameSourceGroup& group : WMCF::MediaFrameSourceGroup::FindAllAsync().get()) {
-        if (stableCameraId(group) == cameraId) {
-            return group;
+    const std::vector<WMCF::MediaFrameSourceGroup> groups = readFrameSourceGroups();
+    std::vector<CameraGroupRecord> records;
+    records.reserve(groups.size());
+    for (const WMCF::MediaFrameSourceGroup& group : groups) {
+        records.push_back(groupRecord(group));
+    }
+
+    std::size_t index = chooseGroupForDevice(records, cameraId, deviceNameFor(cameraId));
+    if (index == kNoCameraGroup) {
+        for (std::size_t i = 0; i < groups.size(); ++i) {
+            if (stableCameraId(groups[i]) == cameraId) {
+                index = i;
+                break;
+            }
         }
     }
-    return WMCF::MediaFrameSourceGroup{nullptr};
+    return index == kNoCameraGroup ? WMCF::MediaFrameSourceGroup{nullptr} : groups[index];
+}
+
+// Group-based list for when the device list is unavailable. Duplicate ids are removed by the caller.
+std::vector<CameraInfo> groupCameras(const std::vector<WMCF::MediaFrameSourceGroup>& groups)
+{
+    std::vector<CameraInfo> cameras;
+    for (const WMCF::MediaFrameSourceGroup& group : groups) {
+        bool hasColor = false;
+        bool hasInfrared = false;
+        bool builtIn = false;
+        for (const WMCF::MediaFrameSourceInfo& info : group.SourceInfos()) {
+            const WMCF::MediaFrameSourceKind kind = info.SourceKind();
+            if (kind == WMCF::MediaFrameSourceKind::Color) {
+                hasColor = true;
+                builtIn = builtIn || isBuiltInPanel(info);
+            } else if (kind == WMCF::MediaFrameSourceKind::Infrared) {
+                hasInfrared = true;
+            }
+        }
+        // Depth-only or other groups cannot give the presence pipeline frames.
+        if (!hasColor && !hasInfrared) {
+            continue;
+        }
+        CameraInfo camera;
+        camera.id = stableCameraId(group);
+        camera.name = wideText(group.DisplayName());
+        camera.infrared = isInfraredOnlySource(hasColor, hasInfrared);
+        camera.builtIn = builtIn && !camera.infrared;
+        cameras.push_back(std::move(camera));
+    }
+    return cameras;
 }
 
 // Copies a BGRA8 bitmap into tightly packed rows. The bitmap is only read, never closed.
@@ -417,38 +538,21 @@ MediaCaptureBackend::~MediaCaptureBackend()
 
 std::vector<CameraInfo> MediaCaptureBackend::enumerate()
 {
-    std::vector<CameraInfo> cameras;
-    try {
-        for (const WMCF::MediaFrameSourceGroup& group : WMCF::MediaFrameSourceGroup::FindAllAsync().get()) {
-            bool hasColor = false;
-            bool hasInfrared = false;
-            bool builtIn = false;
-            for (const WMCF::MediaFrameSourceInfo& info : group.SourceInfos()) {
-                const WMCF::MediaFrameSourceKind kind = info.SourceKind();
-                if (kind == WMCF::MediaFrameSourceKind::Color) {
-                    hasColor = true;
-                    builtIn = builtIn || isBuiltInPanel(info);
-                } else if (kind == WMCF::MediaFrameSourceKind::Infrared) {
-                    hasInfrared = true;
-                }
-            }
-            // Depth-only or other groups cannot give the presence pipeline frames.
-            if (!hasColor && !hasInfrared) {
-                continue;
-            }
-            CameraInfo camera;
-            camera.id = stableCameraId(group);
-            const winrt::hstring name = group.DisplayName();
-            camera.name.assign(name.c_str(), name.size());
-            camera.infrared = isInfraredOnlySource(hasColor, hasInfrared);
-            camera.builtIn = builtIn && !camera.infrared;
-            cameras.push_back(std::move(camera));
+    // The device list is what other apps show. Groups only classify infrared devices, so a
+    // virtual group that shares a device id never adds a second entry.
+    const std::vector<CameraDeviceRecord> devices = readVideoCaptureDevices();
+    const std::vector<WMCF::MediaFrameSourceGroup> groups = readFrameSourceGroups();
+    if (!devices.empty()) {
+        std::vector<CameraGroupRecord> records;
+        records.reserve(groups.size());
+        for (const WMCF::MediaFrameSourceGroup& group : groups) {
+            records.push_back(groupRecord(group));
         }
-    } catch (const winrt::hresult_error&) {
-        // Enumeration has no failure channel; an empty list means nothing is selectable.
-        cameras.clear();
+        // Applied to the final list as well: no two entries may share an id, whatever the merge produced.
+        return dedupeCameras(mergeCameraLists(devices, records), devices);
     }
-    return cameras;
+    // No device list: an empty result means nothing is selectable. Duplicate ids are removed.
+    return dedupeCameras(groupCameras(groups), devices);
 }
 
 bool MediaCaptureBackend::open(const std::string& cameraId, double targetFps, ICameraBackendCallbacks& callbacks)

@@ -14,4 +14,8 @@ int runProbeDdc(const std::wstring& outFile);
 // JSON. It reads the WMI panel brightness at most once and never writes it.
 int runProbeLaptop(const std::wstring& outFile);
 
+// --list-cameras: raw frame source groups, VideoCapture devices and the backend's enumerate() result, as
+// JSON. Opens no camera. A section that fails is written as null.
+int runListCameras(const std::wstring& outFile);
+
 }  // namespace telaviva::host

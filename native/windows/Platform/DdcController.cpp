@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <map>
@@ -87,6 +88,51 @@ uint32_t rawTarget(double value)
     return static_cast<uint32_t>(rounded);
 }
 
+// Builds the line only when a sink is set, so an idle controller formats nothing.
+template <typename Build>
+void emitTrace(const DdcController::TraceSink& sink, Build build)
+{
+    if (sink) {
+        sink(build());
+    }
+}
+
+// Short form of a monitor id for traces: its last eight characters.
+std::string traceId(const std::string& monitorId)
+{
+    return monitorId.size() > 8 ? monitorId.substr(monitorId.size() - 8) : monitorId;
+}
+
+std::string actionTag(const PendingAction& action)
+{
+    return "action " + std::to_string(action.id) + " " + std::string(action.kind) + " " + traceId(action.monitorId);
+}
+
+std::string describeActions(const std::vector<PendingAction>& actions)
+{
+    std::string line = "ddc: pending actions=" + std::to_string(actions.size());
+    for (const PendingAction& action : actions) {
+        line += " [" + actionTag(action) + "]";
+    }
+    return line;
+}
+
+// True when both lists name the same actions, in the same order.
+bool sameActions(const std::vector<PendingAction>& left, const std::vector<PendingAction>& right)
+{
+    if (left.size() != right.size()) {
+        return false;
+    }
+    for (std::size_t index = 0; index < left.size(); ++index) {
+        const PendingAction& a = left[index];
+        const PendingAction& b = right[index];
+        if (a.id != b.id || a.kind != b.kind || a.monitorId != b.monitorId || a.generation != b.generation) {
+            return false;
+        }
+    }
+    return true;
+}
+
 }  // namespace
 
 // Every member is guarded by mutex_. Port calls, catalog enumeration, submissions and
@@ -121,6 +167,7 @@ struct DdcController::Impl {
     bool graceActive_ = false;
     uint64_t graceToken_ = 0;  // bumped on every display-state change so stale grace callbacks do nothing
     TimerId graceTimer_ = kInvalidTimerId;
+    TraceSink trace_;  // set before traffic starts; see DdcController::setTrace
 
     // Runs on the executor.
     void refreshOnExecutor()
@@ -241,6 +288,9 @@ struct DdcController::Impl {
                 found->second.displayState = monitor.displayState;
             }
 
+            if (!sameActions(latestActions_, snapshot.pendingActions)) {
+                emitTrace(trace_, [&] { return describeActions(snapshot.pendingActions); });
+            }
             latestActions_ = snapshot.pendingActions;
 
             // Bound completed_ by dropping ids the core no longer lists.
@@ -345,9 +395,11 @@ struct DdcController::Impl {
                 continue;
             }
             if (completed_.count(action.id) != 0 || running_.count(action.id) != 0) {
+                emitTrace(trace_, [&] { return "ddc: " + actionTag(action) + " held reason=" + (completed_.count(action.id) != 0 ? "already completed" : "already running"); });
                 continue;
             }
             if (!mayRunLocked(action.monitorId)) {
+                emitTrace(trace_, [&] { return "ddc: " + actionTag(action) + " held reason=" + holdReasonLocked(); });
                 continue;
             }
             running_.insert(action.id);
@@ -366,6 +418,12 @@ struct DdcController::Impl {
         return found == monitors_.end() || found->second.displayState != "asleep";
     }
 
+    // Caller holds mutex_. Why mayRunLocked refused an action, for traces.
+    const char* holdReasonLocked() const
+    {
+        return graceActive_ ? "grace active" : "asleep";
+    }
+
     // Called without mutex_ held.
     void startActions(std::vector<PendingAction> ready)
     {
@@ -377,6 +435,8 @@ struct DdcController::Impl {
     // Runs on the executor.
     void runAction(const PendingAction& action)
     {
+        const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+        emitTrace(trace_, [&] { return "ddc: " + actionTag(action) + " start actionGeneration=" + std::to_string(action.generation); });
         std::shared_ptr<IDdcPort> port;
         DdcTimingProfile profile;
         double maximum = 100.0;
@@ -385,6 +445,7 @@ struct DdcController::Impl {
             std::lock_guard<std::recursive_mutex> lock(mutex_);
             if (stopped_ || !mayRunLocked(action.monitorId)) {
                 // Held: not completed, so a later snapshot or the end of the grace offers it again.
+                emitTrace(trace_, [&] { return "ddc: " + actionTag(action) + " held at run reason=" + (stopped_ ? "stopped" : holdReasonLocked()); });
                 running_.erase(action.id);
                 return;
             }
@@ -405,6 +466,12 @@ struct DdcController::Impl {
         if (port) {
             outcome = perform(action, *port, profile);
         }
+        emitTrace(trace_, [&] {
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - started).count();
+            return "ddc: " + actionTag(action) + " finish ok=" + (outcome.ok ? "1" : "0") + " error=" +
+                (outcome.ok ? std::string("none") : outcome.error) + " elapsedMs=" + std::to_string(elapsed);
+        });
 
         {
             std::lock_guard<std::recursive_mutex> lock(mutex_);
@@ -425,9 +492,12 @@ struct DdcController::Impl {
         const std::string json = buildHardwareResult(action.id, action.generation, outcome.ok, value, error);
         // A rejected submission is not completed, so the next snapshot offers the action again.
         // The observer is told only once the core has the result, so a slot is never released early.
-        if (submit(json) != 0) {
+        const int status = submit(json);
+        emitTrace(trace_, [&] { return "ddc: " + actionTag(action) + " hardware_result status=" + std::to_string(status); });
+        if (status != 0) {
             std::lock_guard<std::recursive_mutex> lock(mutex_);
             completed_.erase(action.id);
+            emitTrace(trace_, [&] { return "ddc: " + actionTag(action) + " observer skipped reason=result not accepted"; });
             return;
         }
         notifyCompletion(action, outcome, maximum);
@@ -438,15 +508,18 @@ struct DdcController::Impl {
     void notifyCompletion(const PendingAction& action, const Outcome& outcome, double maximum)
     {
         if (observer_ == nullptr) {
+            emitTrace(trace_, [&] { return "ddc: " + actionTag(action) + " observer skipped reason=no observer"; });
             return;
         }
         const bool brightness = action.kind == "set_brightness";
         if (!brightness && action.kind != "set_volume") {
+            emitTrace(trace_, [&] { return "ddc: " + actionTag(action) + " observer skipped reason=not a set action"; });
             return;
         }
         {
             std::lock_guard<std::recursive_mutex> lock(mutex_);
             if (stopped_) {
+                emitTrace(trace_, [&] { return "ddc: " + actionTag(action) + " observer skipped reason=stopped"; });
                 return;
             }
         }
@@ -458,6 +531,7 @@ struct DdcController::Impl {
         if (outcome.ok && outcome.value && maximum > 0.0) {
             completion.observedPercent = std::clamp(*outcome.value / maximum * 100.0, 0.0, 100.0);
         }
+        emitTrace(trace_, [&] { return "ddc: " + actionTag(action) + " observer notified ok=" + (outcome.ok ? "1" : "0") + " actionGeneration=" + std::to_string(action.generation); });
         observer_->onHardwareCompleted(completion);
     }
 
@@ -531,6 +605,11 @@ void DdcController::onSnapshot(const Snapshot& snapshot)
 void DdcController::onDisplayState(bool displayOn)
 {
     impl_->handleDisplayState(displayOn);
+}
+
+void DdcController::setTrace(TraceSink trace)
+{
+    impl_->trace_ = std::move(trace);
 }
 
 void DdcController::shutdown()

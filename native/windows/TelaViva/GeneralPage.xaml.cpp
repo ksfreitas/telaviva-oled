@@ -221,6 +221,12 @@ std::string cameraStatusKey(const telaviva::Snapshot& snapshot)
     return "unknown";
 }
 
+// The picker's list: selectable cameras with no repeated id. Every path that fills the ComboBox uses it.
+std::vector<telaviva::CameraInfo> pickerCameras(const std::vector<telaviva::CameraInfo>& all)
+{
+    return telaviva::dedupeCameras(telaviva::selectableCameras(all), {});
+}
+
 bool sameCameras(const std::vector<telaviva::CameraInfo>& a, const std::vector<telaviva::CameraInfo>& b)
 {
     if (a.size() != b.size()) {
@@ -504,7 +510,7 @@ namespace winrt::TelaViva::implementation
         RowsPanel().Children().Append(telaviva::host::MakeCaption(loc("displayHelp")));
 
         // Fills everything from the latest snapshot, the same data the poll reads from.
-        cameras_ = telaviva::selectableCameras(host_ ? host_->cameras() : std::vector<telaviva::CameraInfo>{});
+        cameras_ = pickerCameras(host_ ? host_->cameras() : std::vector<telaviva::CameraInfo>{});
         fillCameraBox(settings.selected_camera_id);
         buildMonitorRows(snapshot);
         updateCameraStatus(snapshot);
@@ -571,7 +577,7 @@ namespace winrt::TelaViva::implementation
 
     void GeneralPage::syncCameras(const std::optional<std::string>& selected)
     {
-        std::vector<telaviva::CameraInfo> found = telaviva::selectableCameras(host_->cameras());
+        std::vector<telaviva::CameraInfo> found = pickerCameras(host_->cameras());
         if (sameCameras(found, cameras_)) {
             return;
         }
@@ -584,17 +590,18 @@ namespace winrt::TelaViva::implementation
         if (!cameraBox_) {
             return;
         }
+        // Defensive: one item per id, so the index-to-camera mapping stays one to one.
+        cameras_ = telaviva::dedupeCameras(cameras_, {});
+        // suppress_ keeps the programmatic selection from submitting a change.
         suppress_ = true;
         cameraBox_.Items().Clear();
         cameraBox_.Items().Append(winrt::box_value(loc("cameraPicker")));
-        int index = 0;
         for (std::size_t i = 0; i < cameras_.size(); ++i) {
             cameraBox_.Items().Append(winrt::box_value(winrt::hstring{ cameras_[i].name }));
-            if (selected && cameras_[i].id == *selected) {
-                index = static_cast<int>(i) + 1;
-            }
         }
-        cameraBox_.SelectedIndex(index);
+        // An id missing from the list (unplugged camera) shows the default item; the stored setting is left as is.
+        const std::optional<std::size_t> found = telaviva::findCameraIndex(cameras_, selected);
+        cameraBox_.SelectedIndex(found ? static_cast<int>(*found) + 1 : 0);
         suppress_ = false;
     }
 

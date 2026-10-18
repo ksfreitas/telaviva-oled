@@ -14,6 +14,7 @@
 #include "Platform/AudioOwner.h"
 #include "Platform/CalibrationSession.h"
 #include "Platform/CameraLifecycleDriver.h"
+#include "Platform/CameraSelection.h"
 #include "Platform/CoreBridge.h"
 #include "Platform/CoreLifecycleApi.h"
 #include "Platform/DdcController.h"
@@ -47,6 +48,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <filesystem>
 #include <limits>
 #include <map>
@@ -113,6 +115,39 @@ std::string userLocaleName()
         return {};
     }
     return toUtf8(std::wstring_view{ name });
+}
+
+// TELAVIVA_LOG_LEVEL lowercased, for the diagnostics level. Empty when unset, too long or not ASCII.
+std::string requestedLogLevel()
+{
+    wchar_t value[32]{};
+    const DWORD length = GetEnvironmentVariableW(L"TELAVIVA_LOG_LEVEL", value, 32);
+    if (length == 0 || length >= 32) {
+        return {};
+    }
+    std::string text;
+    for (DWORD index = 0; index < length; ++index) {
+        const wchar_t c = value[index];
+        if (c > 127) {
+            return {};
+        }
+        const char lower = (c >= L'A' && c <= L'Z') ? static_cast<char>(c - L'A' + 'a') : static_cast<char>(c);
+        text.push_back(lower);
+    }
+    return text;
+}
+
+// Short form of a monitor id for traces: its last eight characters.
+std::string traceMonitor(const std::string& monitorId)
+{
+    return monitorId.size() > 8 ? monitorId.substr(monitorId.size() - 8) : monitorId;
+}
+
+std::string formatPercent(double value)
+{
+    char buffer[32];
+    std::snprintf(buffer, sizeof buffer, "%.2f", value);
+    return buffer;
 }
 
 // Full path of this executable, which the launch-at-login command starts.
@@ -190,8 +225,7 @@ public:
         }
         std::lock_guard<std::mutex> lock(mutex_);
         if (manual_ != nullptr) {
-            manual_->onHardwareCompleted(completion.monitorId, *feature, completion.generation, completion.ok,
-                completion.observedPercent);
+            manual_->onHardwareCompleted(completion.monitorId, *feature, completion.ok, completion.observedPercent);
         }
     }
 
@@ -620,10 +654,14 @@ struct AppController::Services {
     bool keyAccepting = true;
     bool keyHookWanted = false;
     std::optional<std::string> keyOwner;
+    // Owner monitor the router was last configured with; empty when none. Read by the consumer for traces.
+    std::string keyRouterOwner;
     std::vector<std::string> keyMonitorIds;
     bool keyMonitorsDirty = false;
     // Hook thread id last exempted from Efficiency mode; 0 when none.
     uint32_t keyExemptThread = 0;
+    // Set in the constructor only when TELAVIVA_LOG_LEVEL asks for debug; empty otherwise.
+    std::function<void(const std::string&)> trace;
 
     bool stopped = false;
 
@@ -738,6 +776,7 @@ struct AppController::Services {
         config.ownerMonitorId = hasOwner ? monitor->id : std::string{};
         config.step = static_cast<double>(snapshot.settings.volume_key_step);
         keyRouter->configure(config);
+        keyRouterOwner = config.ownerMonitorId;
 
         if (hasOwner) {
             const ChannelSnapshot& volume = monitor->volume;
@@ -844,9 +883,17 @@ struct AppController::Services {
                 keyEvent.phase = entry.isKeyDown ? telaviva::KeyPhase::Down : telaviva::KeyPhase::Up;
                 keyEvent.isFineStep = entry.shiftDown;
                 keyEvent.isRepeat = entry.isRepeat;
+                if (trace) {
+                    trace("keys: event vk=" + std::to_string(entry.vk) + " down=" + (entry.isKeyDown ? "1" : "0") +
+                        " repeat=" + (entry.isRepeat ? "1" : "0") + " shift=" + (entry.shiftDown ? "1" : "0"));
+                }
                 std::lock_guard<std::mutex> lock(keyMutex);
                 if (keyAccepting) {
-                    keyRouter->handleKey(keyEvent);
+                    const bool swallow = keyRouter->handleKey(keyEvent);
+                    if (trace) {
+                        trace("keys: router swallow=" + std::string(swallow ? "yes" : "no") + " owner=" +
+                            (keyRouterOwner.empty() ? std::string("none") : traceMonitor(keyRouterOwner)));
+                    }
                 }
             }
 
@@ -865,7 +912,14 @@ struct AppController::Services {
                 for (const telaviva::KeyIntent& intent : intents) {
                     // Same per-monitor queue as the slider, so a key write and a slider drain never overlap.
                     // The router keeps its outstanding and expiry logic, so the intent is finished as taken.
+                    if (trace) {
+                        trace("keys: intent monitor=" + traceMonitor(intent.monitorId) + " target=" +
+                            formatPercent(intent.targetVolume) + " generation=" + std::to_string(intent.generation));
+                    }
                     manual->setTarget(intent.monitorId, ManualFeature::Volume, intent.targetVolume);
+                    if (trace) {
+                        trace("keys: setTarget returned, intent finished accepted");
+                    }
                     std::lock_guard<std::mutex> lock(keyMutex);
                     keyRouter->intentFinished(intent, true);
                 }
@@ -999,6 +1053,18 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
     s.onOpenSettings = std::move(onOpenSettings);
     s.onQuit = std::move(onQuit);
 
+    // TELAVIVA_LOG_LEVEL=debug or info raises the level for this run; any other value keeps Error.
+    const std::string requestedLevel = requestedLogLevel();
+    const bool traceDebug = requestedLevel == "debug";
+    if (traceDebug) {
+        s.diagnostics.setLevel(LogLevel::Debug);
+    } else if (requestedLevel == "info") {
+        s.diagnostics.setLevel(LogLevel::Info);
+    }
+    if (traceDebug || requestedLevel == "info") {
+        s.diagnostics.log(LogLevel::Error, "log level: " + requestedLevel + " (TELAVIVA_LOG_LEVEL)");
+    }
+
     if (!s.paths.ensureCreated()) {
         s.diagnostics.log(LogLevel::Error, "app data folder could not be created");
     }
@@ -1019,6 +1085,13 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
     s.manual = std::make_unique<ManualControls>(*s.manualSink, s.scheduler, s.clock);
     // Completions can arrive only after start(), which is after this line.
     s.manualGate.open(s.manual.get());
+    // Trace lines reach the log only at Debug level. Otherwise the sinks stay empty and nothing is formatted.
+    // Set before any traffic: nothing calls into these controllers until start() or the bridge sink below.
+    if (traceDebug) {
+        s.trace = [diagnostics = &s.diagnostics](const std::string& line) { diagnostics->log(LogLevel::Debug, line); };
+        s.ddc->setTrace(s.trace);
+        s.manual->setTrace(s.trace);
+    }
     s.launchAtLogin = std::make_unique<LaunchAtLogin>(s.runKey, executablePath());
 
     // ---- Laptop follow and ambient calibration. The probe is run only by the follower, which polls
@@ -1423,7 +1496,8 @@ void AppController::refreshCameras()
 {
     Services& s = *services_;
     // Enumeration keeps no shared state, so it runs without the mutex; only the cache write locks.
-    std::vector<telaviva::CameraInfo> found = s.camera->enumerate();
+    // The cache never holds two entries with one id; the first entry wins here (the backend already prefers the device name).
+    std::vector<telaviva::CameraInfo> found = telaviva::dedupeCameras(s.camera->enumerate(), {});
     std::lock_guard<std::mutex> lock(s.settingsMutex);
     s.cameraCache = std::move(found);
 }

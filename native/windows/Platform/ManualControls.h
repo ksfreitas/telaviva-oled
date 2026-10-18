@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -57,6 +58,12 @@ public:
     ManualControls(const ManualControls&) = delete;
     ManualControls& operator=(const ManualControls&) = delete;
 
+    // Optional decision trace, one line per event. Set once before the first call that can trace;
+    // it is read without a lock afterwards. Empty means no line is built at all. The sink must not
+    // call back into this object.
+    using TraceSink = std::function<void(const std::string&)>;
+    void setTrace(TraceSink trace);
+
     // Refreshes the known monitors from a snapshot. Monitors that disappeared, changed
     // generation, went asleep, or lost a stable identity lose their drafts and queued
     // targets. A draft clears when the readback is within kManualReadbackTolerance of
@@ -74,12 +81,13 @@ public:
 
     // Completion of a set_brightness or set_volume hardware action that this controller
     // submitted, reported after the core accepted its hardware_result. Thread-safe.
-    // Releases the in-flight slot. A queued newer target goes out at once. Otherwise ok
-    // settles the draft to Ready and clears it, and a failure marks it Failed with the
-    // observed value (observedPercent when the hardware reported one). Ignored when the
-    // slot has nothing in flight, or when the generation is not the monitor's current one.
-    void onHardwareCompleted(const std::string& monitorId, ManualFeature feature, uint64_t generation,
-                             bool ok, std::optional<double> observedPercent);
+    // Matched by monitor and feature only: the core runs one action per monitor in order, and
+    // its action generation is a different counter from the connection generation. Releases the
+    // in-flight slot. A queued newer target goes out at once. Otherwise ok settles the draft to
+    // Ready and clears it, and a failure marks it Failed with the observed value (observedPercent
+    // when the hardware reported one). Ignored for an unknown monitor or when nothing is in flight.
+    void onHardwareCompleted(const std::string& monitorId, ManualFeature feature, bool ok,
+                             std::optional<double> observedPercent);
 
     // The value the UI should show: the draft while one exists, else the observed
     // value. Returns nullopt when the monitor or channel is unknown or ineligible.
@@ -138,6 +146,7 @@ private:
     IManualSink& sink_;
     IScheduler& scheduler_;
     IClock& clock_;
+    TraceSink trace_;
     std::map<std::string, MonitorState> monitors_;
     std::map<std::pair<std::string, ManualFeature>, Slot> slots_;
     std::optional<TimerId> drainTimer_;

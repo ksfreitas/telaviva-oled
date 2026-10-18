@@ -75,6 +75,12 @@ public:
     DdcController(const DdcController&) = delete;
     DdcController& operator=(const DdcController&) = delete;
 
+    // Optional decision trace, one line per event. Set once before the first call that can trace;
+    // it is read without a lock afterwards. Empty means no line is built at all. The sink must not
+    // call back into this controller.
+    using TraceSink = std::function<void(const std::string&)>;
+    void setTrace(TraceSink trace);
+
     // Enumerates the catalog and diffs it against the known set. Each new external
     // monitor is read on the executor (VCP 0x10 and 0x62 through DdcTransaction::readVcp)
     // and reported as monitor_discovered. supported is true only when that read
