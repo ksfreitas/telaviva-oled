@@ -4,35 +4,20 @@
 
 ## 0.1.2 - 2026-10-19
 
-### Verified
-
-- Ran the camera lifecycle acceptance checklist in part on a MacBook Pro with a Dell S3225QC: ten of sixteen scenarios passed, one passed in part and five were not run (see the archived checklist).
-
 ### Added
 
-- Core controls handle ABI: `tv_controls_create`, `tv_controls_step` and `tv_controls_destroy` own manual-control drafts, key policy and DDC dispatch for brightness and volume. The change is additive to ABI version 1, which stays `1`.
 - Always-on local diagnostic logs of brightness decisions and DDC attempts, with monitors as hashed ids: the macOS unified log (subsystem `com.telaviva.oled`) and a rotating `telaviva.log` of at most about 2 MiB on Windows. Core ABI: `tv_diagnostics_drain`, additive to ABI version 1.
-
-### Changed
-
-- Remove the About button from the macOS menu-bar popup; About remains available in Settings.
-- The Windows popup no longer shows the face-detection status line and its camera icon, so it matches the macOS popup. The footer camera status line ("Camera: <status>") is unchanged.
-- Windows manual controls and hardware keys now run on the core controls handle. Hardware checks are pending.
-- DDC writes on Windows are now retried (up to three attempts), and a rejected result submission is resubmitted at most three times instead of re-running the write on every snapshot.
-- macOS manual controls, hardware keys and DDC dispatch now run on the core controls handle, as on Windows; the Swift queue and retry code are removed, and `tools/tests/test-controls-bridge.sh` covers the Swift bridge. On macOS each DDC packet is still sent twice inside one primitive, as before; the core's separate duplicate write applies to GSM monitors only. A rejected result is resubmitted at most three times instead of being dropped. Hardware checks are pending.
-
-- Fewer duplicated snapshot reads: `tv_submit` no longer builds a full snapshot to read the revision, macOS no longer refreshes twice for one accepted command and ignores a snapshot whose revision was already published, and the Windows bridge worker skips a revision it already published. The snapshot content and the C ABI are unchanged. The Windows part is not yet built or tested.
 
 ### Fixed
 
-- Widen the macOS Settings window to 760 points by default and at minimum so all tabs fit.
-- On Windows the manual controls compared the raw monitor value with the slider percentage; they now use the normalized percentage, which differs on monitors whose DDC range is not 0 to 100.
-- The monitor now dims about one sampling interval after the face leaves instead of two: the confirming no-face check runs after the short return interval.
-- Windows and macOS: DDC control recovers by itself after another monitor is connected or the display topology changes, without restarting the app.
 - An external monitor dimmed by protection no longer stays at its dimmed brightness when its DDC answers slowly after wake: DDC attempts are retried for up to 30 s after wake before the restore is given up, on macOS and Windows. Hardware checks are pending.
 - The Windows debug trace no longer writes the monitor id, which contained the EDID serial.
 
 ## 0.1.1 - 2026-10-18
+
+### Verified
+
+- Ran the camera lifecycle acceptance checklist in part on a MacBook Pro with a Dell S3225QC: ten of sixteen scenarios passed, one passed in part and five were not run (see the archived checklist).
 
 ### Added
 
@@ -40,10 +25,15 @@
 - Settings schema 1 gains the optional `inference_device` string (default `auto`), accepted as `auto`, `cpu`, `ane`, `gpu` or `gpu:<vendor>:<device>:<ordinal>`; the core ABI version stays 1. A build without this field treats a settings file that contains it as corrupt, as with earlier additive fields.
 - Windows adapter classification through DXCore (`IsIntegrated` matched to DXGI by LUID), which does not create a device and so does not wake a discrete GPU.
 - The app bundles the inference self-test frame and its attribution.
+- Core controls handle ABI: `tv_controls_create`, `tv_controls_step` and `tv_controls_destroy` own manual-control drafts, key policy and DDC dispatch for brightness and volume. The change is additive to ABI version 1, which stays `1`.
 
 ### Fixed
 
 - The Windows Settings toggles now sit flush with the right edge of their cards instead of floating about 100 px to the left, in line with the sliders, number boxes and combo boxes.
+- Widen the macOS Settings window to 760 points by default and at minimum so all tabs fit.
+- On Windows the manual controls compared the raw monitor value with the slider percentage; they now use the normalized percentage, which differs on monitors whose DDC range is not 0 to 100.
+- The monitor now dims about one sampling interval after the face leaves instead of two: the confirming no-face check runs after the short return interval.
+- Windows and macOS: DDC control recovers by itself after another monitor is connected or the display topology changes, without restarting the app.
 
 ### Changed
 
@@ -52,6 +42,12 @@
 - The `specs/oled-monitor-protection/` folder is removed. It held only three short pointers to the archived record of the initial application, which stays in `specs/archived/external-monitor-control-and-oled-presence-protection/`; the project map in `AGENTS.md` now points at `specs/archived/`.
 - The Windows acceleration profile allowlist (`acceleration-profiles.toml`, its parser and its tests) is removed. DirectML is no longer gated by a recorded energy measurement and the "accelerated must be faster than the CPU" rule is replaced by the 125 ms latency check above. Failure markers remain, for Automatic only.
 - The README is now a short entry point (highlights, platform support, status, install, getting started, privacy, build and contributing). The detailed behavior of each feature moved to the new `docs/user-guide.md`, and the README no longer lists the hardware of the maintainer's test machines; those results remain in the validation reports.
+- Remove the About button from the macOS menu-bar popup; About remains available in Settings.
+- The Windows popup no longer shows the face-detection status line and its camera icon, so it matches the macOS popup. The footer camera status line ("Camera: <status>") is unchanged.
+- Windows manual controls and hardware keys now run on the core controls handle. Hardware checks are pending.
+- DDC writes on Windows are now retried (up to three attempts), and a rejected result submission is resubmitted at most three times instead of re-running the write on every snapshot.
+- macOS manual controls, hardware keys and DDC dispatch now run on the core controls handle, as on Windows; the Swift queue and retry code are removed, and `tools/tests/test-controls-bridge.sh` covers the Swift bridge. On macOS each DDC packet is still sent twice inside one primitive, as before; the core's separate duplicate write applies to GSM monitors only. A rejected result is resubmitted at most three times instead of being dropped. Hardware checks are pending.
+- Fewer duplicated snapshot reads: `tv_submit` no longer builds a full snapshot to read the revision, macOS no longer refreshes twice for one accepted command and ignores a snapshot whose revision was already published, and the Windows bridge worker skips a revision it already published. The snapshot content and the C ABI are unchanged. The Windows part is not yet built or tested.
 
 ## 0.1.0 - 2026-10-17
 
