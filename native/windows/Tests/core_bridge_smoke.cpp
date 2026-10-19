@@ -4,12 +4,15 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <system_error>
+#include <vector>
 
 namespace {
 
@@ -124,4 +127,60 @@ TEST(core_bridge_submit_after_shutdown_returns_closed)
     bridge.shutdown(std::chrono::milliseconds(2000));
 
     CHECK_EQ(bridge.submit(R"({"type":"power","on_battery":false})"), kClosed);
+}
+
+namespace {
+
+// True when CoreBridge::parseDiagnosticLines rejects the text with std::invalid_argument.
+bool diagnosticLinesThrow(const std::string& json)
+{
+    try {
+        static_cast<void>(telaviva::CoreBridge::parseDiagnosticLines(json));
+    } catch (const std::invalid_argument&) {
+        return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+TEST(core_bridge_parses_diagnostic_lines_with_escapes)
+{
+    // Quote, backslash, tab and newline escapes, as serde_json writes them in the core's drain.
+    const std::vector<std::string> lines = telaviva::CoreBridge::parseDiagnosticLines(
+        R"(["restore_enqueued monitor=id-1a2b3c4d target=70 baseline=70","say \"hi\" \\ end","tab\tnew\nline"])");
+    CHECK_EQ(lines.size(), std::size_t(3));
+    if (lines.size() == 3) {
+        CHECK_EQ(lines[0], std::string("restore_enqueued monitor=id-1a2b3c4d target=70 baseline=70"));
+        CHECK_EQ(lines[1], std::string("say \"hi\" \\ end"));
+        CHECK_EQ(lines[2], std::string("tab\tnew\nline"));
+    }
+}
+
+TEST(core_bridge_parses_diagnostic_lines_with_raw_utf8)
+{
+    // serde_json writes non-ASCII as raw UTF-8, which the decoder must keep unchanged.
+    const std::vector<std::string> lines =
+        telaviva::CoreBridge::parseDiagnosticLines(std::string("[\"caf\xC3\xA9\"]"));
+    CHECK_EQ(lines.size(), std::size_t(1));
+    if (lines.size() == 1) {
+        CHECK_EQ(lines[0], std::string("caf\xC3\xA9"));
+    }
+}
+
+TEST(core_bridge_parses_empty_diagnostic_array)
+{
+    CHECK_EQ(telaviva::CoreBridge::parseDiagnosticLines("[]").size(), std::size_t(0));
+}
+
+TEST(core_bridge_rejects_malformed_diagnostic_lines)
+{
+    // Empty text, truncated JSON, a non-array root, a bare string, and elements that are not strings.
+    CHECK(diagnosticLinesThrow(""));
+    CHECK(diagnosticLinesThrow(R"(["a")"));
+    CHECK(diagnosticLinesThrow(R"({"a":"b"})"));
+    CHECK(diagnosticLinesThrow(R"("a")"));
+    CHECK(diagnosticLinesThrow(R"(["a",1])"));
+    CHECK(diagnosticLinesThrow(R"(["a",null])"));
+    CHECK(diagnosticLinesThrow(R"([["a"]])"));
 }

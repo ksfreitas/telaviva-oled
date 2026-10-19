@@ -12,13 +12,15 @@
 namespace telaviva {
 namespace {
 
-constexpr std::uintmax_t kMaxLogBytes = 256 * 1024;
+constexpr std::uintmax_t kMaxLogBytes = 1024 * 1024;
 
 const char* levelName(LogLevel level)
 {
     switch (level) {
     case LogLevel::Error:
         return "ERROR";
+    case LogLevel::Notice:
+        return "NOTICE";
     case LogLevel::Info:
         return "INFO";
     case LogLevel::Debug:

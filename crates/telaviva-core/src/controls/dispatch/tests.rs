@@ -836,3 +836,90 @@ fn dispatch_profile_eviction_keeps_profiles_of_monitors_in_the_snapshot() {
     }
     assert!(!rig.dispatch.profiles.contains_key("extra"));
 }
+
+#[test]
+fn wake_window_keeps_a_failing_read_running_until_the_monitor_answers() {
+    let mut rig = Rig::new();
+    rig.now = 0.0;
+    rig.display_power(true);
+    let held = rig.observe(1, vec![m1()], vec![act(8, "m1", "read_brightness", None)]);
+    assert!(runs(&held).is_empty(), "the wake grace holds the read");
+    rig.assert_deadline(2.0);
+
+    // The read runs when the grace ends at 2 s. Each attempt fails with io until 12 s, and each
+    // failure waits 2 s for the next one, so no result is submitted before the monitor answers.
+    let mut effects = rig.advance_to_deadline();
+    while rig.now < 12.0 {
+        assert_eq!(single_run(&effects).op, AttemptOp::Read);
+        assert!(rig
+            .answer(&effects, false, AttemptError::Io, None)
+            .is_empty());
+        rig.assert_deadline(rig.now + 2.0);
+        effects = rig.advance_to_deadline();
+    }
+
+    let result = rig.answer(&effects, true, AttemptError::None, Some(41.0));
+    let (_, json) = single_result(&result);
+    assert_eq!(json["action_id"], 8);
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["value"].as_f64(), Some(41.0));
+
+    rig.respond(&result, true);
+    assert!(rig.completions().is_empty(), "a read never completes a set");
+}
+
+#[test]
+fn display_power_off_closes_the_wake_window() {
+    let mut rig = Rig::new();
+    rig.now = 0.0;
+    rig.display_power(true);
+    assert_eq!(rig.dispatch.wake_ready_until, Some(30.0));
+
+    rig.now = 1.0;
+    rig.display_power(false);
+    assert_eq!(rig.dispatch.wake_ready_until, None);
+
+    // With the display off, the read is held and nothing runs.
+    let held = rig.observe(1, vec![m1()], vec![act(8, "m1", "read_brightness", None)]);
+    assert!(runs(&held).is_empty());
+    rig.now = 40.0;
+    assert!(runs(&rig.tick()).is_empty());
+}
+
+#[test]
+fn operation_started_after_the_window_uses_the_normal_budget() {
+    let mut rig = Rig::new();
+    rig.now = 0.0;
+    rig.display_power(true);
+
+    // The grace ends at 2 s with nothing pending. The read starts at 31 s, after the window.
+    rig.now = 31.0;
+    assert!(rig.tick().is_empty());
+    let read = rig.observe(1, vec![m1()], vec![act(8, "m1", "read_brightness", None)]);
+    assert_eq!(single_run(&read).op, AttemptOp::Read);
+
+    // Three attempts with the normal backoff: 0.2 s, then 1.0 s, then the read gives up.
+    assert!(rig.answer(&read, false, AttemptError::Io, None).is_empty());
+    rig.assert_deadline(31.2);
+    let second = rig.advance_to_deadline();
+    assert!(rig
+        .answer(&second, false, AttemptError::Io, None)
+        .is_empty());
+    rig.assert_deadline(32.2);
+    let third = rig.advance_to_deadline();
+    let result = rig.answer(&third, false, AttemptError::Io, None);
+    assert_eq!(error_of(&result), "io");
+    rig.respond(&result, true);
+    assert!(rig.completions().is_empty());
+}
+
+#[test]
+fn shutdown_clears_the_wake_window() {
+    let mut rig = Rig::new();
+    rig.now = 0.0;
+    rig.display_power(true);
+    assert_eq!(rig.dispatch.wake_ready_until, Some(30.0));
+
+    rig.shutdown();
+    assert_eq!(rig.dispatch.wake_ready_until, None);
+}

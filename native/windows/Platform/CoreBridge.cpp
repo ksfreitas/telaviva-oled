@@ -126,6 +126,7 @@ struct CoreBridge::Impl {
 
     std::mutex sinkMutex;
     std::vector<SnapshotSink> sinks;
+    DiagnosticSink diagnosticSink;  // guarded by sinkMutex
 
     std::thread worker;
 };
@@ -185,6 +186,28 @@ std::string CoreBridge::coreVersion()
         return std::string{};
     }
     return std::string(reinterpret_cast<const char*>(owned.buffer.data), owned.buffer.len);
+}
+
+std::vector<std::string> CoreBridge::parseDiagnosticLines(const std::string& json)
+{
+    if (!ensureApartment()) {
+        throw std::invalid_argument("diagnostic lines need a WinRT apartment");
+    }
+    winrt::Windows::Data::Json::JsonArray items;
+    if (!winrt::Windows::Data::Json::JsonArray::TryParse(winrt::to_hstring(std::string_view(json)), items)) {
+        throw std::invalid_argument("diagnostic lines are not a JSON array");
+    }
+
+    std::vector<std::string> lines;
+    lines.reserve(items.Size());
+    for (uint32_t i = 0; i < items.Size(); ++i) {
+        const winrt::Windows::Data::Json::IJsonValue item = items.GetAt(i);
+        if (!item || item.ValueType() != winrt::Windows::Data::Json::JsonValueType::String) {
+            throw std::invalid_argument("diagnostic lines hold a value that is not a string");
+        }
+        lines.push_back(winrt::to_string(item.GetString()));
+    }
+    return lines;
 }
 
 std::optional<UpdateOutcome> CoreBridge::evaluateUpdate(const std::string& installed, int status,
@@ -263,8 +286,62 @@ void CoreBridge::addSink(SnapshotSink sink)
     impl_->sinks.push_back(std::move(sink));
 }
 
+void CoreBridge::setDiagnosticSink(DiagnosticSink sink)
+{
+    std::lock_guard<std::mutex> lock(impl_->sinkMutex);
+    impl_->diagnosticSink = std::move(sink);
+}
+
+void CoreBridge::drainDiagnostics()
+{
+    DiagnosticSink sink;
+    {
+        std::lock_guard<std::mutex> lock(impl_->sinkMutex);
+        sink = impl_->diagnosticSink;
+    }
+    if (!sink) {
+        return;
+    }
+
+    std::string text;
+    {
+        std::lock_guard<std::mutex> lock(impl_->coreMutex);
+        if (!impl_->core) {
+            return;
+        }
+        SnapshotBuffer owned;
+        if (tv_diagnostics_drain(impl_->core.get(), &owned.buffer) != TV_OK) {
+            return;
+        }
+        if (owned.buffer.data != nullptr) {
+            text.assign(reinterpret_cast<const char*>(owned.buffer.data), owned.buffer.len);
+        }
+    }
+    // An empty ring is the common case after each revision, so it skips the parser.
+    if (text.empty() || text == "[]") {
+        return;
+    }
+
+    // Parsing runs outside the core mutex, as in snapshot(). A malformed batch is dropped whole.
+    std::vector<std::string> lines;
+    try {
+        lines = parseDiagnosticLines(text);
+    } catch (...) {
+        return;
+    }
+    for (const std::string& line : lines) {
+        try {
+            sink(line);
+        } catch (...) {
+            // A throwing sink must not stop the remaining lines or the worker thread.
+        }
+    }
+}
+
 void CoreBridge::shutdown(std::chrono::milliseconds drainDeadline)
 {
+    // Logs what the core recorded so far, before it stops.
+    drainDiagnostics();
     {
         std::lock_guard<std::mutex> lock(impl_->coreMutex);
         if (!impl_->core) {
@@ -319,6 +396,8 @@ void CoreBridge::runWorker()
             // The next revision signal retries; a single failed read must not stop the worker.
             continue;
         }
+        // Lines the core recorded since the last drain are logged here, on the worker thread.
+        drainDiagnostics();
         // The fetch may be newer than the wake, or equal to a revision already published; only a newer one is sent.
         if (!gate.shouldPublish(next.revision)) {
             continue;

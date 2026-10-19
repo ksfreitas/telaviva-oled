@@ -13,6 +13,7 @@ swiftc -D TELAVIVA_CORE \
   -import-objc-header "$ROOT/native/macos/TelaViva/TelaViva-Bridging-Header.h" \
   -I "$ROOT/include" \
   "$ROOT/native/macos/TelaViva/HardwareKeyRouter.swift" \
+  "$ROOT/native/macos/TelaViva/DiagnosticLog.swift" \
   "$ROOT/native/macos/TelaViva/CoreBridge.swift" \
   "$ROOT/native/macos/TelaViva/UpdateChecker.swift" \
   "$ROOT/native/macos/TelaViva/ManualMonitorControls.swift" \

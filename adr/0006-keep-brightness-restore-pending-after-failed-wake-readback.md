@@ -47,6 +47,8 @@ The change keeps the bounded-retry and read-before-write rules in `contracts.md`
 
 Six regression tests in `crates/telaviva-core/tests/core_contract.rs` cover the change: `failed_wake_readback_keeps_ownership_and_retries_the_restore`, `failed_restore_write_is_retried_after_a_new_readback`, `restore_retries_are_bounded`, `manual_brightness_change_wins_over_a_pending_restore_retry`, `failed_dim_write_is_not_retried_as_a_restore` and `shutdown_failed_readback_does_not_retry_the_restore`. According to the spec's Implementation Notes, the first four failed before the core change, and the fifth passed both before and after it, since it guards the unchanged dim path. The sixth test was reworked after a mutation check showed that its first version also passed without the guard; it now fails when the `!closed` condition is removed from `hardware_result`. The same notes record the workspace tests, clippy, fmt and the Swift suites as passing. Those results were not re-run for this ADR.
 
+[ADR 0033](0033-wait-for-ddc-readiness-after-wake.md) adds a 30 s wake readiness window inside the DDC retry, so the residual risk above applies only to a monitor whose DDC takes longer than that window after wake. The restore counter and the rules of this ADR are unchanged.
+
 ## Non-Obvious Constraints
 
 - The snapshot lists only the first pending action per monitor. A test that looks for a later action must drain the head `read_brightness` first; `manual_brightness_change_wins_over_a_pending_restore_retry` does this.

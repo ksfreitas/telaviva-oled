@@ -11,6 +11,7 @@ This guide describes how each feature of TelaViva OLED behaves on macOS and Wind
 - [Inference device](#inference-device)
 - [Windows specifics](#windows-specifics)
 - [Limits and compatibility](#limits-and-compatibility)
+- [Diagnostic logs](#diagnostic-logs)
 - [Privacy](#privacy)
 
 ## The popup or flyout
@@ -169,9 +170,18 @@ On Windows, DirectML is supplied by Windows and is not bundled with the app. If 
   - the [Windows hardware checklist](../specs/archived/windows-version/validation/hardware-checklist.md);
   - the [Windows measurements](../specs/archived/windows-version/validation/measurements.md).
 
+## Diagnostic logs
+
+TelaViva OLED keeps a local log of its brightness decisions and of each DDC attempt. It is always on, it stays on the device, and nothing sends it anywhere. Each line names a monitor only by a short hashed id, such as `id-3f9c2a10`.
+
+- **macOS:** the lines go to the unified log under the subsystem `com.telaviva.oled`, in the categories `brightness` and `ddc`. To read the last day in Terminal, run `log show --last 1d --predicate 'subsystem == "com.telaviva.oled"'`, or filter the same subsystem in Console.app. macOS decides how long the lines are kept, typically several days.
+- **Windows:** the lines go to `%LOCALAPPDATA%\TelaVivaOLED\telaviva.log`. When the file reaches 1 MiB it is renamed to `telaviva.log.1`, and one previous generation is kept, so at most about 2 MiB remain. The default level is Notice. Set `TELAVIVA_LOG_LEVEL` to `info` or `debug` before you start the app to log more, or to `error` to log less. Uninstalling keeps these files unless you run the uninstaller with `-RemoveUserData`.
+
+A wake leaves these events: the display sleep and wake lines, `display_power`, `display_state` with `state=awake`, one `attempt_failed` line for each failed DDC attempt and `attempt_recovered` once a later attempt succeeds, then `read_result`, `ownership_verified` and `restore_enqueued`. If the restore gives up, `restore_failure` counts up to `failures=3/3` and `ownership_dropped` follows. A monitor that left and came back shows `monitor_disconnected` and then `monitor_discovered`.
+
 ## Privacy
 
-Everything runs locally and the app has no telemetry. Camera frames are processed in memory and are not stored, transmitted or logged, and device identifiers are not logged.
+Everything runs locally and the app has no telemetry. Camera frames are processed in memory and are not stored, transmitted or logged, and device identifiers are not logged. Diagnostic logs show a monitor only as a short hashed id, never by its serial number, name or connection path.
 
 The only network request is an anonymous HTTPS GET to the GitHub releases API, which looks for a newer version. It is made only when the About page is open or **Check now** is pressed. Apart from the standard HTTPS headers, it sends nothing but the app version in the `User-Agent` header, and it downloads nothing.
 

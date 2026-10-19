@@ -11,7 +11,7 @@ extension Notification.Name {
     static let cameraDeviceDisconnected = Notification.Name("AVCaptureDeviceWasDisconnectedNotification")
 }
 
-private let wakeLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "br.com.codebit.telaviva", category: "wake")
+private let wakeLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.telaviva.oled", category: "wake")
 
 /// Wall-clock milliseconds for wake timing logs, on the same clock as `captured_at_ms`.
 private func wakeMilliseconds() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }

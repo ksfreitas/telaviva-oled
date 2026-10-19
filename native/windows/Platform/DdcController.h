@@ -57,6 +57,13 @@ public:
     using TraceSink = std::function<void(const std::string&)>;
     void setTrace(TraceSink trace);
 
+    // Optional notice sink for the diagnostic log at Notice level: failed attempts, first success after
+    // failures, port reopens, and discovery or removal of a monitor. Each line names the monitor by
+    // shortId() only. Set once before the first call that can notice; it is read without a lock afterwards.
+    // Empty means nothing is written. The sink must not call back into this controller.
+    using NoticeSink = std::function<void(const std::string&)>;
+    void setNotice(NoticeSink notice);
+
     // Sets or clears the discovery listener (null for none). Guarded by the controller's lock, so it
     // may be called at any time; the listener must stay valid until it is cleared or shutdown has drained.
     void setListener(IDdcListener* listener);

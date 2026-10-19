@@ -13,6 +13,11 @@ pub(crate) const SETTLE_SECS: f64 = 0.06;
 pub(crate) const DUPLICATE_GAP_SECS: f64 = 0.01;
 /// Time after wake during which DDC is held, because some monitors answer slowly after wake.
 pub(crate) const WAKE_GRACE_SECS: f64 = 2.0;
+/// Time after wake during which a transient DDC failure does not consume the attempt budget,
+/// because some monitors and docks answer DDC only several seconds after wake.
+pub(crate) const WAKE_READY_WINDOW_SECS: f64 = 30.0;
+/// Delay between attempts inside the wake readiness window.
+pub(crate) const WAKE_READY_RETRY_SECS: f64 = 2.0;
 /// Times a rejected `hardware_result` is resubmitted before it is dropped.
 pub(crate) const RESULT_RESUBMITS: u32 = 3;
 
@@ -89,6 +94,8 @@ pub(crate) struct Operation {
     phase: Phase,
     /// Writes that succeeded so far; the duplicate write follows only the first one.
     writes_done: u32,
+    /// End of the wake readiness window that the operation started in, if any.
+    ready_until: Option<f64>,
 }
 
 impl Operation {
@@ -98,7 +105,14 @@ impl Operation {
             profile,
             phase: Phase::Idle,
             writes_done: 0,
+            ready_until: None,
         }
+    }
+
+    /// Records the end of the wake readiness window that the operation starts in, if any.
+    pub(crate) fn with_ready_until(mut self, until: Option<f64>) -> Self {
+        self.ready_until = until;
+        self
     }
 
     pub(crate) fn start(&mut self, _now: f64) -> Step {
@@ -203,6 +217,16 @@ impl Operation {
             error,
             AttemptError::Unsupported | AttemptError::Disconnected
         );
+        // Inside the wake readiness window a transient failure is retried every
+        // WAKE_READY_RETRY_SECS. The count is capped below the budget, so the window never
+        // pushes the next attempt past it.
+        if !permanent && self.ready_until.is_some_and(|until| now < until) {
+            return self.wait(
+                primitive,
+                attempts.min(ATTEMPTS_PER_PRIMITIVE - 1),
+                now + WAKE_READY_RETRY_SECS,
+            );
+        }
         if !permanent && attempts < ATTEMPTS_PER_PRIMITIVE {
             // `attempts` is at least 1 here and below 3, so the index is 0 or 1.
             let backoff = BACKOFF_SECS[(attempts - 1) as usize];

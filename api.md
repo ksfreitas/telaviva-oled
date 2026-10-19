@@ -14,6 +14,7 @@ Header: [`include/telaviva_core.h`](include/telaviva_core.h). ABI version: `1` (
 | `tv_create(version, options, options_len, callback, userdata, out_core)` | Creates a core when the requested version matches. Optional UTF-8 JSON options accept `config_path` and `os_locale`; `NULL`/zero length selects defaults. `os_locale` is still accepted for ABI compatibility but no longer affects snapshot content. |
 | `tv_submit(core, json, json_len)` | Submits a UTF-8 JSON command, with a maximum input size of 64 KiB. Commands after shutdown return `TV_CLOSED`, except hardware results needed to complete pending work. |
 | `tv_snapshot(core, out_buffer)` | Copies the current revisioned UTF-8 JSON snapshot into a Rust-owned buffer, capped at 8 MiB. |
+| `tv_diagnostics_drain(core, out_buffer)` | Returns and clears the pending diagnostic lines as a UTF-8 JSON array of strings, copied into a Rust-owned buffer capped at 8 MiB; an empty ring returns `[]`. Each line names a monitor only by its hashed `id-xxxxxxxx`. Free the buffer with `tv_buffer_free`. Additive to ABI version 1. |
 | `tv_shutdown(core)` | Stops new callbacks/commands and emits best-effort ownership-checked restore actions. |
 | `tv_destroy(core)` | Destroys a handle after the host handles shutdown actions; callers must not race it with other calls. |
 | `tv_buffer_free(buffer)` | Frees and clears a buffer returned by `tv_snapshot`, `tv_camera_lifecycle_step` or `tv_controls_step`. |

@@ -376,3 +376,70 @@ fn ffi_presence_observation_reaches_the_snapshot() {
         ffi::tv_destroy(core);
     }
 }
+
+#[test]
+fn ffi_diagnostics_drain_rejects_null_arguments() {
+    unsafe {
+        let mut buffer = TvBuffer {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        assert_eq!(
+            ffi::tv_diagnostics_drain(ptr::null_mut(), &mut buffer),
+            ffi::TV_INVALID_ARGUMENT
+        );
+        let mut core: *mut TvCore = ptr::null_mut();
+        assert_eq!(
+            ffi::tv_create(1, ptr::null(), 0, None, ptr::null_mut(), &mut core),
+            ffi::TV_OK
+        );
+        assert_eq!(
+            ffi::tv_diagnostics_drain(core, ptr::null_mut()),
+            ffi::TV_INVALID_ARGUMENT
+        );
+        assert!(buffer.data.is_null());
+        assert_eq!(buffer.len, 0);
+        ffi::tv_destroy(core);
+    }
+}
+
+#[test]
+fn ffi_diagnostics_drain_returns_an_empty_array_then_empties_the_ring() {
+    unsafe {
+        let mut core: *mut TvCore = ptr::null_mut();
+        assert_eq!(
+            ffi::tv_create(1, ptr::null(), 0, None, ptr::null_mut(), &mut core),
+            ffi::TV_OK
+        );
+        let mut buffer = TvBuffer {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        assert_eq!(ffi::tv_diagnostics_drain(core, &mut buffer), ffi::TV_OK);
+        let empty: serde_json::Value =
+            serde_json::from_slice(std::slice::from_raw_parts(buffer.data, buffer.len)).unwrap();
+        ffi::tv_buffer_free(&mut buffer);
+        assert_eq!(empty, serde_json::json!([]));
+
+        let cmd = br#"{"type":"monitor_discovered","monitor":{"id":"screen","name":"Display","identity_status":"stable","connection_path":"usb","brightness":{"supported":true,"value":70,"raw":70,"min":0,"max":100},"volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}}}"#;
+        assert_eq!(ffi::tv_submit(core, cmd.as_ptr(), cmd.len()), ffi::TV_OK);
+        assert_eq!(ffi::tv_diagnostics_drain(core, &mut buffer), ffi::TV_OK);
+        let lines: serde_json::Value =
+            serde_json::from_slice(std::slice::from_raw_parts(buffer.data, buffer.len)).unwrap();
+        ffi::tv_buffer_free(&mut buffer);
+        assert_eq!(lines.as_array().unwrap().len(), 1);
+        let first = lines[0].as_str().unwrap();
+        assert!(
+            first.starts_with("monitor_discovered monitor=id-"),
+            "{first}"
+        );
+        assert!(first.ends_with(" raw=70 baseline=70"), "{first}");
+
+        assert_eq!(ffi::tv_diagnostics_drain(core, &mut buffer), ffi::TV_OK);
+        let drained: serde_json::Value =
+            serde_json::from_slice(std::slice::from_raw_parts(buffer.data, buffer.len)).unwrap();
+        ffi::tv_buffer_free(&mut buffer);
+        assert_eq!(drained, serde_json::json!([]));
+        ffi::tv_destroy(core);
+    }
+}

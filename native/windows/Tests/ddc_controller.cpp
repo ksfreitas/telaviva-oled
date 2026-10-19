@@ -601,3 +601,71 @@ TEST(ddc_controller_refresh_does_not_reopen_ambiguous_or_internal_entries)
     rig.controller.refresh();
     CHECK(rig.ports.opened.empty());
 }
+
+TEST(ddc_controller_notice_names_failed_attempts_by_short_id_only)
+{
+    Rig rig;
+    rig.catalog.entries = {makeEntry(kIdA, true, kName)};
+    rig.controller.refresh();
+    rig.ports.state(kIdA)->channels[kBrightness].writeError = DdcError::Io;
+    std::vector<std::string> notices;
+    rig.controller.setNotice([&notices](const std::string& line) { notices.push_back(line); });
+    const AttemptOutcome outcome = rig.controller.run(writeRequest(kIdA, kBrightness, 58));
+    CHECK(!outcome.ok);
+
+    std::size_t failedLines = 0;
+    for (const std::string& line : notices) {
+        // The raw id carries the EDID serial, so no notice line may contain it.
+        CHECK(line.find(kIdA) == std::string::npos);
+        if (line.rfind("attempt_failed ", 0) == 0) {
+            ++failedLines;
+            CHECK(line.find("id-") != std::string::npos);
+            CHECK(line.find("op=write") != std::string::npos);
+            CHECK(line.find("code=0x10") != std::string::npos);
+            CHECK(line.find("error=io") != std::string::npos);
+        }
+    }
+    // The original write and the retry on the reopened port both fail.
+    CHECK_EQ(failedLines, std::size_t(2));
+}
+
+TEST(ddc_controller_notice_reports_first_success_after_failures)
+{
+    Rig rig;
+    rig.catalog.entries = {makeEntry(kIdA, true, kName)};
+    rig.controller.refresh();
+    rig.ports.state(kIdA)->channels[kBrightness].writeError = DdcError::Io;
+    std::vector<std::string> notices;
+    rig.controller.setNotice([&notices](const std::string& line) { notices.push_back(line); });
+    const AttemptOutcome failed = rig.controller.run(writeRequest(kIdA, kBrightness, 58));
+    CHECK(!failed.ok);
+
+    rig.ports.state(kIdA)->channels[kBrightness].writeError.reset();
+    const AttemptOutcome recovered = rig.controller.run(writeRequest(kIdA, kBrightness, 58));
+    CHECK(recovered.ok);
+    CHECK(!notices.empty());
+    if (!notices.empty()) {
+        CHECK(notices.back().rfind("attempt_recovered ", 0) == 0);
+        CHECK(notices.back().find("after_failures=2") != std::string::npos);
+        CHECK(notices.back().find("id-") != std::string::npos);
+        CHECK(notices.back().find(kIdA) == std::string::npos);
+    }
+}
+
+TEST(ddc_controller_notice_names_discovered_monitor_by_short_id_only)
+{
+    Rig rig;
+    rig.catalog.entries = {makeEntry(kIdA, true, kName)};
+    rig.ports.state(kIdA)->channels[kBrightness].value = 41;
+    std::vector<std::string> notices;
+    rig.controller.setNotice([&notices](const std::string& line) { notices.push_back(line); });
+    rig.controller.refresh();
+
+    // Discovery reads brightness, so the single line carries the raw value and the maximum.
+    CHECK_EQ(notices.size(), std::size_t(1));
+    if (!notices.empty()) {
+        CHECK(notices.front().rfind("discovery_added monitor=id-", 0) == 0);
+        CHECK(notices.front().find("brightness=41/100") != std::string::npos);
+        CHECK(notices.front().find(kIdA) == std::string::npos);
+    }
+}

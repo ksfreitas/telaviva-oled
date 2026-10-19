@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 swiftc "$ROOT/native/macos/TelaViva/BuiltInDisplayBackend.swift" \
+  "$ROOT/native/macos/TelaViva/DiagnosticLog.swift" \
   "$ROOT/native/macos/TelaViva/CoreBridge.swift" \
   "$ROOT/native/macos/TelaViva/ManualMonitorControls.swift" \
   "$ROOT/native/macos/TelaViva/ControlsBridge.swift" \

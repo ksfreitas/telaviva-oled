@@ -6,7 +6,7 @@ import IOKit
 import IOKit.graphics
 import os
 
-private let wakeLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "br.com.codebit.telaviva", category: "wake")
+private let wakeLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.telaviva.oled", category: "wake")
 
 /// Apple Silicon DDC/CI transport based on the MIT-licensed m1ddc IORegistry
 /// discovery flow. All IOAV access is serialized on `queue`, never on the UI thread.
@@ -33,6 +33,8 @@ final class MacDDCController {
     private var staleServiceKeys = Set<String>()
     // True while one rediscovery pass is queued by markServiceStale.
     private var rediscoveryScheduled = false
+    // Consecutive failed DDC primitives per monitor, for the attempt_recovered line; reset on success and removal.
+    private var attemptFailures: [String: Int] = [:]
     var onHardwareKeyDisplays: (([HardwareKeyDisplay]) -> Void)?
 
     private struct ReportedDisplayState: Equatable {
@@ -43,23 +45,32 @@ final class MacDDCController {
     init(core: CoreBridge) { self.core = core }
 
     func start() {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+        DiagnosticLog.ddc("app_start version=\(version)")
         queue.async { [weak self] in self?.discoverDisplays() }
         observer = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
             queue: .main
-        ) { [weak self] _ in self?.enumerate() }
+        ) { [weak self] _ in
+            DiagnosticLog.ddc("screen_parameters_changed")
+            self?.enumerate()
+        }
         let workspaceCenter = NSWorkspace.shared.notificationCenter
         workspaceObservers.append(workspaceCenter.addObserver(
             forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: nil
         ) { [weak self] _ in
+            DiagnosticLog.ddc("display_sleep")
             self?.controls?.displayPower(on: false)
+            DiagnosticLog.ddc("display_power on=false")
             self?.setAllDisplaysAsleep()
         })
         workspaceObservers.append(workspaceCenter.addObserver(
             forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: nil
         ) { [weak self] _ in
+            DiagnosticLog.ddc("display_wake")
             self?.controls?.displayPower(on: true)
+            DiagnosticLog.ddc("display_power on=true")
             wakeLog.debug("screens_did_wake at_ms=\(Int64(Date().timeIntervalSince1970 * 1000), privacy: .public)")
             self?.refreshDisplayStates()
         })
@@ -275,6 +286,7 @@ final class MacDDCController {
                     incompleteBrightnessAtDiscovery.remove(key)
                 }
                 controls?.monitorProfile(monitorID: key, manufacturer: EDIDManufacturer.code(vendor: transport.vendor))
+                DiagnosticLog.ddc("discovery_added monitor=\(DiagnosticLog.shortId(key)) brightness=\(brightnessSummary(brightness))")
                 core?.submit(["type": "monitor_discovered", "monitor": [
                     "id": key,
                     "name": transport.name,
@@ -364,6 +376,8 @@ final class MacDDCController {
         }
         for removed in active.subtracting(present) {
             controls?.monitorRemoved(monitorID: removed)
+            attemptFailures.removeValue(forKey: removed)
+            DiagnosticLog.ddc("discovery_removed monitor=\(DiagnosticLog.shortId(removed))")
             core?.submit(["type": "monitor_disconnected", "monitor_id": removed])
         }
         active = present
@@ -459,6 +473,7 @@ final class MacDDCController {
     /// discovery pass replaces it; one pass is scheduled at a time, and the core's backoff paces the retries.
     private func markServiceStale(_ key: String) {
         staleServiceKeys.insert(key)
+        DiagnosticLog.ddc("service_marked_stale monitor=\(DiagnosticLog.shortId(key))")
         guard !rediscoveryScheduled else { return }
         rediscoveryScheduled = true
         queue.async { [weak self] in
@@ -466,6 +481,29 @@ final class MacDDCController {
             self.rediscoveryScheduled = false
             self.discoverDisplays()
         }
+    }
+
+    /// Logs the outcome of one DDC primitive. A failure extends the monitor's streak and logs its op, VCP code and
+    /// elapsed time; the first success after a streak logs how many attempts failed.
+    private func logAttempt(monitorID: String, write: Bool, code: UInt8, succeeded: Bool, startedAt: UInt64) {
+        let key = DiagnosticLog.shortId(monitorID)
+        guard !succeeded else {
+            if let failures = attemptFailures.removeValue(forKey: monitorID) {
+                DiagnosticLog.ddc("attempt_recovered monitor=\(key) after_failures=\(failures)")
+            }
+            return
+        }
+        attemptFailures[monitorID, default: 0] += 1
+        let elapsedMs = (DispatchTime.now().uptimeNanoseconds - startedAt) / 1_000_000
+        let op = write ? "write" : "read"
+        let vcp = String(format: "0x%02x", UInt32(code))
+        DiagnosticLog.ddc("attempt_failed monitor=\(key) op=\(op) code=\(vcp) error=io elapsed_ms=\(elapsedMs)")
+    }
+
+    /// The brightness of a discovery line: "current/maximum" for a reading, otherwise "read_failed".
+    private func brightnessSummary(_ reading: Reading?) -> String {
+        guard let reading else { return "read_failed" }
+        return "\(reading.current)/\(reading.maximum)"
     }
 
     /// Runs exactly one DDC primitive for the core's `run_attempt` effect on the DDC queue and reports the outcome.
@@ -484,15 +522,20 @@ final class MacDDCController {
                 completion(.failure("io"))
                 return
             }
+            let startedAt = DispatchTime.now().uptimeNanoseconds
             if request.write {
-                if self.writeVCPOnce(transport: transport, code: request.code, value: request.value) {
+                let written = self.writeVCPOnce(transport: transport, code: request.code, value: request.value)
+                self.logAttempt(monitorID: request.monitorID, write: true, code: request.code, succeeded: written, startedAt: startedAt)
+                if written {
                     completion(.success(value: nil))
                 } else {
                     self.markServiceStale(request.monitorID)
                     completion(.failure("io"))
                 }
             } else {
-                guard let reading = self.readVCPOnce(transport: transport, code: request.code) else {
+                let readback = self.readVCPOnce(transport: transport, code: request.code)
+                self.logAttempt(monitorID: request.monitorID, write: false, code: request.code, succeeded: readback != nil, startedAt: startedAt)
+                guard let reading = readback else {
                     self.markServiceStale(request.monitorID)
                     completion(.failure("io"))
                     return

@@ -42,7 +42,7 @@ Both apps are native shells over one shared Rust core, with face detection by th
 
 ## Status
 
-This checkout reports application version 0.1.1 and remains under active development. The CI badges above show workflow status; hardware validation is still partial on both platforms:
+This checkout reports application version 0.1.2 and remains under active development. The CI badges above show workflow status; hardware validation is still partial on both platforms:
 
 - DDC support depends on the monitor, the port, the cable, any adapter or dock, and the graphics hardware. It is not uniform, and a passing check on one setup says nothing about another.
 - Only a small number of monitors and computers have been used for physical checks. Many checks are still pending, among them camera sharing with video calls, multi-monitor and dock setups, monitor sleep and wake, Laptop follow on real laptops, and keyboard routing on other keyboards.
@@ -99,6 +99,7 @@ The [user guide](docs/user-guide.md) covers presence timing, protection reasons,
 
 - Everything runs locally and the app has no telemetry.
 - Camera frames are processed in memory and are never stored, transmitted or logged. Device identifiers are not logged.
+- Diagnostic logs show a monitor only as a short hashed id, never by its serial number, name or connection path.
 - Presence means detecting any face. The app does not identify people or enroll faces.
 - The only network request is an anonymous HTTPS GET to the GitHub releases API (`ksfreitas/telaviva-oled`) that looks for a newer version. It is made only when the About page is open or **Check now** is pressed, sends nothing but the app version in the `User-Agent` header, and downloads nothing.
 

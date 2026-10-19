@@ -63,6 +63,8 @@ jobs:
         run: tools/tests/test-status-item-icon.sh
       - name: Test branding assets
         run: tools/tests/test-branding-assets.sh
+      - name: Test diagnostic log
+        run: tools/tests/test-diagnostic-log.sh
       - name: Install Rust tools and arm64 target
         run: |
           rustup toolchain install stable --profile minimal

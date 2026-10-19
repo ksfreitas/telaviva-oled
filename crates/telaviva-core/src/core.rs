@@ -1,3 +1,4 @@
+use crate::diagnostics::{self, Diagnostics};
 use crate::settings::{self, AmbientCurve, Settings};
 use serde::{
     de::{MapAccess, SeqAccess, Visitor},
@@ -96,6 +97,8 @@ pub struct Core {
     calibrating: bool,
     // Monitors at or below the presence brightness threshold. Runtime only, never persisted.
     below_threshold: BTreeSet<String>,
+    // Decision lines for the shell to drain. Runtime only, never persisted.
+    diagnostics: Diagnostics,
 }
 
 impl Core {
@@ -129,6 +132,7 @@ impl Core {
             builtin_percent: None,
             calibrating: false,
             below_threshold: BTreeSet::new(),
+            diagnostics: Diagnostics::default(),
         })
     }
 
@@ -293,6 +297,11 @@ impl Core {
         let brightness = feature(m.get("brightness"), identity)?;
         let volume = feature(m.get("volume"), identity)?;
         let baseline = brightness.raw;
+        let discovered_fields = format!(
+            "raw={} baseline={}",
+            diagnostics::number_or_none(brightness.raw),
+            diagnostics::number_or_none(baseline)
+        );
         let generation = self
             .connection_generations
             .get(id)
@@ -325,6 +334,8 @@ impl Core {
                 wake_ownership_check: false,
             },
         );
+        self.diagnostics
+            .push("monitor_discovered", Some(id), &discovered_fields);
         // Follow runs after discovery sets the baseline, so the response carries the write.
         self.recompute_follow(Some(id));
         if self
@@ -342,6 +353,8 @@ impl Core {
         let generation = self.connection_generations.entry(id.clone()).or_default();
         *generation = generation.saturating_add(1);
         self.monitors.remove(&id);
+        self.diagnostics
+            .push("monitor_disconnected", Some(id.as_str()), "");
         self.actions.retain(|a| a.monitor_id != id);
         self.reconcile_camera();
         Ok(())
@@ -405,6 +418,11 @@ impl Core {
         }
         let was_asleep = monitor.display_state == "asleep";
         monitor.display_state = state.into();
+        self.diagnostics.push(
+            "display_state",
+            Some(id.as_str()),
+            &format!("state={state}"),
+        );
         monitor.misses = 0;
         monitor.restore_failures = 0;
         monitor.presence_dimmed = false;
@@ -487,6 +505,8 @@ impl Core {
             m.baseline = Some(raw);
             m.manual_override = true;
             m.restore_failures = 0;
+            self.diagnostics
+                .push("manual_set", Some(id.as_str()), &format!("raw={raw}"));
         }
         Ok(())
     }
@@ -677,8 +697,7 @@ impl Core {
                 self.low_light = false;
                 self.usable_light_samples = 0;
                 for m in self.monitors.values_mut() {
-                    m.misses = 0;
-                    m.presence_dimmed = false;
+                    clear_presence_dim(&mut self.diagnostics, m);
                     if !m.saver_dimmed {
                         m.manual_override = false;
                     }
@@ -697,6 +716,10 @@ impl Core {
                     }
                     m.misses = m.misses.saturating_add(1);
                     if m.misses >= 2 && !protection_disabled.contains(&m.id) {
+                        if !m.presence_dimmed {
+                            self.diagnostics
+                                .push("presence_dim", Some(m.id.as_str()), "");
+                        }
                         m.presence_dimmed = true;
                     }
                 }
@@ -707,8 +730,7 @@ impl Core {
                 self.low_light = true;
                 self.usable_light_samples = 0;
                 for m in self.monitors.values_mut() {
-                    m.misses = 0;
-                    m.presence_dimmed = false;
+                    clear_presence_dim(&mut self.diagnostics, m);
                 }
                 self.reconcile_camera();
                 self.reconcile_all()?;
@@ -721,8 +743,7 @@ impl Core {
                     .unwrap_or("unavailable")
                     .into();
                 for m in self.monitors.values_mut() {
-                    m.misses = 0;
-                    m.presence_dimmed = false;
+                    clear_presence_dim(&mut self.diagnostics, m);
                 }
                 self.reconcile_camera();
                 self.reconcile_all()?;
@@ -1027,6 +1048,7 @@ impl Core {
                             Some(target),
                             None,
                         )?;
+                        record_brightness_write(&mut self.diagnostics, m, target, following);
                     } else {
                         enqueue_brightness_read(
                             &mut self.actions,
@@ -1064,6 +1086,7 @@ impl Core {
                         Some(target),
                         None,
                     )?;
+                    record_brightness_write(&mut self.diagnostics, m, target, following);
                 }
             }
         }
@@ -1112,6 +1135,12 @@ impl Core {
             return Ok(());
         };
         if action.kind == "read_brightness" {
+            let reported = v.get("value").and_then(Value::as_f64);
+            self.diagnostics.push(
+                "read_result",
+                Some(m.id.as_str()),
+                &format!("ok={ok} value={}", diagnostics::number_or_none(reported)),
+            );
             let feature = &mut m.brightness;
             m.wake_ownership_check = false;
             if ok {
@@ -1127,7 +1156,19 @@ impl Core {
                     .unwrap_or(false)
                 {
                     feature.ownership_checked_target = action.target;
+                    self.diagnostics.push(
+                        "ownership_verified",
+                        Some(m.id.as_str()),
+                        &format!("raw={value}"),
+                    );
                 } else {
+                    if feature.owned {
+                        self.diagnostics.push(
+                            "ownership_dropped",
+                            Some(m.id.as_str()),
+                            "reason=read_mismatch",
+                        );
+                    }
                     feature.raw = Some(value);
                     feature.owned = false;
                     feature.ownership_checked_target = None;
@@ -1136,6 +1177,11 @@ impl Core {
                         feature.desired = None;
                     } else {
                         m.baseline = Some(value);
+                        self.diagnostics.push(
+                            "baseline_adopted",
+                            Some(m.id.as_str()),
+                            &format!("baseline={value}"),
+                        );
                         m.manual_override = !feature.reasons.is_empty();
                     }
                 }
@@ -1153,8 +1199,27 @@ impl Core {
                 {
                     // Keep ownership: reconcile_all re-reads and the baseline stays reachable.
                     m.restore_failures += 1;
+                    self.diagnostics.push(
+                        "restore_failure",
+                        Some(m.id.as_str()),
+                        &format!("failures={}/{}", m.restore_failures, MAX_RESTORE_FAILURES),
+                    );
                     feature.ownership_checked_target = None;
                 } else {
+                    if feature.owned {
+                        let reason = if feature.reasons.is_empty()
+                            && m.restore_failures >= MAX_RESTORE_FAILURES
+                        {
+                            "restore_failed"
+                        } else {
+                            "read_failed"
+                        };
+                        self.diagnostics.push(
+                            "ownership_dropped",
+                            Some(m.id.as_str()),
+                            &format!("reason={reason}"),
+                        );
+                    }
                     feature.owned = false;
                     feature.ownership_checked_target = None;
                     m.manual_override = !feature.reasons.is_empty();
@@ -1187,6 +1252,11 @@ impl Core {
             {
                 if let Some(value) = value {
                     m.baseline = Some(value);
+                    self.diagnostics.push(
+                        "baseline_adopted",
+                        Some(m.id.as_str()),
+                        &format!("baseline={value}"),
+                    );
                 }
             }
         } else {
@@ -1206,7 +1276,24 @@ impl Core {
                     .is_some_and(|(wanted, base)| (wanted - base).abs() < 0.0001);
             if restore_write && !closed && m.restore_failures < MAX_RESTORE_FAILURES {
                 m.restore_failures += 1;
+                self.diagnostics.push(
+                    "restore_failure",
+                    Some(m.id.as_str()),
+                    &format!("failures={}/{}", m.restore_failures, MAX_RESTORE_FAILURES),
+                );
             } else {
+                if feature.owned {
+                    let reason = if restore_write {
+                        "restore_failed"
+                    } else {
+                        "write_failed"
+                    };
+                    self.diagnostics.push(
+                        "ownership_dropped",
+                        Some(m.id.as_str()),
+                        &format!("reason={reason}"),
+                    );
+                }
                 feature.owned = false;
             }
         }
@@ -1274,6 +1361,13 @@ impl Core {
             .collect();
         for (id, raw) in targets {
             if let Some(m) = self.monitors.get_mut(&id) {
+                if m.follow_raw != raw {
+                    self.diagnostics.push(
+                        "follow_target",
+                        Some(id.as_str()),
+                        &format!("raw={}", diagnostics::number_or_none(raw)),
+                    );
+                }
                 m.follow_raw = raw;
                 if let Some(raw) = raw {
                     m.baseline = Some(raw);
@@ -1319,6 +1413,11 @@ impl Core {
     /// Revision of the next snapshot; one increment per accepted command.
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// Returns and clears the pending diagnostic lines, oldest first.
+    pub fn drain_diagnostics(&mut self) -> Vec<String> {
+        self.diagnostics.drain()
     }
 
     pub fn snapshot_value(&self) -> Result<Value, String> {
@@ -1572,6 +1671,32 @@ fn enqueue_brightness_read(
         None,
         Some(target),
     )
+}
+// Logs a brightness write that reconcile_all just queued. A write under a protection reason is a
+// dim. A write with no reason and no follow target goes back to the baseline, so it is a restore.
+fn record_brightness_write(
+    ring: &mut Diagnostics,
+    m: &Monitor,
+    target: f64,
+    following: Option<f64>,
+) {
+    let fields = format!(
+        "target={target} baseline={}",
+        diagnostics::number_or_none(m.baseline)
+    );
+    if !m.brightness.reasons.is_empty() {
+        ring.push("dim_enqueued", Some(m.id.as_str()), &fields);
+    } else if following.is_none() {
+        ring.push("restore_enqueued", Some(m.id.as_str()), &fields);
+    }
+}
+// Ends a presence dim for one monitor: resets the miss count and logs the clear when a dim was active.
+fn clear_presence_dim(ring: &mut Diagnostics, m: &mut Monitor) {
+    m.misses = 0;
+    if m.presence_dimmed {
+        ring.push("presence_clear", Some(m.id.as_str()), "");
+    }
+    m.presence_dimmed = false;
 }
 // Monitor percent for a built-in level: piecewise linear through (0, 0) and each point
 // (MacBook level, monitor percent) in order. Above the last point it holds that point's monitor

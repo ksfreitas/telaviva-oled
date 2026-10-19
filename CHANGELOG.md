@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.2 - 2026-10-19
+
 ### Verified
 
 - Ran the camera lifecycle acceptance checklist in part on a MacBook Pro with a Dell S3225QC: ten of sixteen scenarios passed, one passed in part and five were not run (see the archived checklist).
@@ -9,6 +11,7 @@
 ### Added
 
 - Core controls handle ABI: `tv_controls_create`, `tv_controls_step` and `tv_controls_destroy` own manual-control drafts, key policy and DDC dispatch for brightness and volume. The change is additive to ABI version 1, which stays `1`.
+- Always-on local diagnostic logs of brightness decisions and DDC attempts, with monitors as hashed ids: the macOS unified log (subsystem `com.telaviva.oled`) and a rotating `telaviva.log` of at most about 2 MiB on Windows. Core ABI: `tv_diagnostics_drain`, additive to ABI version 1.
 
 ### Changed
 
@@ -26,6 +29,8 @@
 - On Windows the manual controls compared the raw monitor value with the slider percentage; they now use the normalized percentage, which differs on monitors whose DDC range is not 0 to 100.
 - The monitor now dims about one sampling interval after the face leaves instead of two: the confirming no-face check runs after the short return interval.
 - Windows and macOS: DDC control recovers by itself after another monitor is connected or the display topology changes, without restarting the app.
+- An external monitor dimmed by protection no longer stays at its dimmed brightness when its DDC answers slowly after wake: DDC attempts are retried for up to 30 s after wake before the restore is given up, on macOS and Windows. Hardware checks are pending.
+- The Windows debug trace no longer writes the monitor id, which contained the EDID serial.
 
 ## 0.1.1 - 2026-10-18
 

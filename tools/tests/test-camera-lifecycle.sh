@@ -12,7 +12,8 @@ swiftc "$ROOT/native/macos/TelaViva/CameraSelection.swift" \
   "$ROOT/native/macos/Tests/CameraSelectionTests.swift" \
   -o "$TMP/camera-selection-tests"
 "$TMP/camera-selection-tests"
-swiftc "$ROOT/native/macos/TelaViva/CoreBridge.swift" \
+swiftc "$ROOT/native/macos/TelaViva/DiagnosticLog.swift" \
+  "$ROOT/native/macos/TelaViva/CoreBridge.swift" \
   "$ROOT/native/macos/TelaViva/ManualMonitorControls.swift" \
   "$ROOT/native/macos/TelaViva/ControlsBridge.swift" \
   "$ROOT/native/macos/TelaViva/ControlsDriver.swift" \

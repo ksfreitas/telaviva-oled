@@ -32,6 +32,8 @@ int32_t tv_submit(TvCore *core, const uint8_t *json, size_t json_len);
  * report the raw readback through hardware_result.value. The core then decides
  * whether a matching set_brightness action is still appropriate. */
 int32_t tv_snapshot(TvCore *core, TvBuffer *out_buffer);
+/* Returns and clears the pending diagnostic lines as a JSON array of strings. Free the buffer with tv_buffer_free. */
+int32_t tv_diagnostics_drain(TvCore *core, TvBuffer *out_buffer);
 /* Stops accepting commands, emits best-effort owned-value restore actions, and drains callbacks. */
 int32_t tv_shutdown(TvCore *core);
 void tv_destroy(TvCore *core);

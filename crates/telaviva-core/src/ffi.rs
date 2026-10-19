@@ -221,6 +221,39 @@ pub unsafe extern "C" fn tv_snapshot(handle: *mut TvCore, out: *mut TvBuffer) ->
 }
 
 #[no_mangle]
+/// Returns and clears the pending diagnostic lines as a UTF-8 JSON array of strings.
+///
+/// # Safety
+/// `handle` must be live and `out` must point to a writable `TvBuffer`.
+pub unsafe extern "C" fn tv_diagnostics_drain(handle: *mut TvCore, out: *mut TvBuffer) -> i32 {
+    guarded(|| {
+        if handle.is_null() || out.is_null() {
+            return TV_INVALID_ARGUMENT;
+        }
+        let h = &*handle;
+        let lines = {
+            let Ok(mut core) = h.core.lock() else {
+                return TV_INTERNAL;
+            };
+            core.drain_diagnostics()
+        };
+        let bytes = match serde_json::to_vec(&lines) {
+            Ok(v) => v,
+            Err(_) => return TV_INTERNAL,
+        };
+        if bytes.len() > 8 * 1024 * 1024 {
+            return TV_SIZE_LIMIT;
+        }
+        let bytes = bytes.into_boxed_slice();
+        let len = bytes.len();
+        let ptr = Box::into_raw(bytes) as *mut u8;
+        (*out).data = ptr;
+        (*out).len = len;
+        TV_OK
+    })
+}
+
+#[no_mangle]
 /// Stops callbacks and requests best-effort restoration actions.
 ///
 /// # Safety

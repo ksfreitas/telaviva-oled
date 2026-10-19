@@ -34,6 +34,8 @@ fn exports() -> Vec<Export> {
     ) -> i32 = ffi::tv_create;
     let submit: unsafe extern "C" fn(*mut TvCore, *const u8, usize) -> i32 = ffi::tv_submit;
     let snapshot: unsafe extern "C" fn(*mut TvCore, *mut TvBuffer) -> i32 = ffi::tv_snapshot;
+    let diagnostics_drain: unsafe extern "C" fn(*mut TvCore, *mut TvBuffer) -> i32 =
+        ffi::tv_diagnostics_drain;
     let shutdown: unsafe extern "C" fn(*mut TvCore) -> i32 = ffi::tv_shutdown;
     let destroy: unsafe extern "C" fn(*mut TvCore) = ffi::tv_destroy;
     let buffer_free: unsafe extern "C" fn(*mut TvBuffer) = ffi::tv_buffer_free;
@@ -85,6 +87,11 @@ fn exports() -> Vec<Export> {
             name: "tv_snapshot",
             prototype: "int32_t tv_snapshot(TvCore *, TvBuffer *)",
             address: snapshot as usize,
+        },
+        Export {
+            name: "tv_diagnostics_drain",
+            prototype: "int32_t tv_diagnostics_drain(TvCore *, TvBuffer *)",
+            address: diagnostics_drain as usize,
         },
         Export {
             name: "tv_shutdown",

@@ -1528,3 +1528,115 @@ fn e2e_retry_ceiling_for_a_stuck_monitor() {
         "backoff is at most 4 x (0.2 + 1.0) s, got {backoff}"
     );
 }
+
+#[test]
+fn slow_monitor_wake_read_is_reported_once_after_it_answers() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    let discovered = core_send(
+        &mut core,
+        json!({
+            "type": "monitor_discovered",
+            "monitor": {
+                "id": "m1", "name": "m1", "identity_status": "stable", "connection_path": "usb",
+                "brightness": {"supported": true, "value": 70, "raw": 70, "min": 0, "max": 100},
+                "volume": {"supported": false, "value": null, "raw": null, "min": 0, "max": 100}
+            }
+        }),
+    );
+    // Controls learns the monitor before it is dimmed, so it never sees the dim write.
+    let mut fx = controls_for(&core);
+    core_send(&mut core, json!({"type": "power", "on_battery": false}));
+    let generation = discovered["monitors"][0]["generation"].clone();
+    let enabled = core_send(
+        &mut core,
+        json!({"type": "update_settings", "settings": {"presence_protection_enabled": true}}),
+    );
+    for offset in [10_000, 20_000] {
+        core_send(
+            &mut core,
+            json!({
+                "type": "presence_observation", "status": "absent",
+                "captured_at_ms": capture_time(offset),
+                "camera_generation": enabled["camera"]["generation"]
+            }),
+        );
+    }
+    // The core's dim is acknowledged directly: this test only exercises the wake readback.
+    let dim = core.snapshot_value().unwrap()["pending_actions"][0].clone();
+    core_send(
+        &mut core,
+        json!({
+            "type": "hardware_result", "action_id": dim["id"], "generation": dim["generation"],
+            "ok": true, "value": 0
+        }),
+    );
+    core_send(
+        &mut core,
+        json!({
+            "type": "monitor_display_state", "monitor_id": "m1",
+            "generation": generation, "state": "asleep"
+        }),
+    );
+    core_send(
+        &mut core,
+        json!({
+            "type": "monitor_display_state", "monitor_id": "m1",
+            "generation": generation, "state": "awake"
+        }),
+    );
+
+    // The display wakes. The shell reports the wake to Controls before the monitor answers DDC.
+    fx.send(json!({"type": "display_power", "on": true}));
+    let observed = observe_core(&mut fx, &core);
+    let snapshot = core.snapshot_value().unwrap();
+    assert_eq!(snapshot["pending_actions"][0]["kind"], "read_brightness");
+    assert!(
+        effect_of(&observed, "run_attempt").is_none(),
+        "the wake grace holds the read for 2 s"
+    );
+
+    // The grace ends at 3 s. Each attempt fails with io until 13 s, and each failure is retried
+    // 2 s later, so no result is submitted while the monitor is silent.
+    fx.advance(2.0);
+    let mut result = fx.send(json!({"type": "tick"}));
+    while fx.now < 13.0 {
+        let attempt = effect_of(&result, "run_attempt")
+            .expect("the read runs")
+            .clone();
+        assert_eq!(attempt["op"], "read");
+        let answered = fx.send(attempt_io(&attempt["token"]));
+        assert!(effects(&answered).is_empty(), "a failed attempt only waits");
+        let retry_at = deadline(&answered).expect("a retry is scheduled");
+        assert_near(retry_at, fx.now + 2.0);
+        fx.now = retry_at;
+        result = fx.send(json!({"type": "tick"}));
+    }
+
+    // At 13 s the monitor answers with the dimmed level it holds: one result is submitted.
+    let attempt = effect_of(&result, "run_attempt")
+        .expect("the read runs at 13 s")
+        .clone();
+    let answered = fx.send(attempt_ok(&attempt["token"], json!(0.0)));
+    let submits: Vec<Value> = effects(&answered)
+        .iter()
+        .filter(|effect| effect["type"] == "submit_result")
+        .cloned()
+        .collect();
+    assert_eq!(submits.len(), 1, "one result for the whole read");
+    let text = submits[0]["result_json"]
+        .as_str()
+        .expect("the result carries its JSON text");
+    let report: Value = serde_json::from_str(text).expect("the result is JSON");
+    assert_eq!(report["ok"], true);
+    let reading = report["value"].as_f64().expect("a reading is reported");
+    assert_near(reading, 0.0);
+
+    // The core takes the result, and Controls does not submit it again.
+    deliver(&mut fx, &mut core, &submits[0]);
+    fx.advance(5.0);
+    let later = fx.send(json!({"type": "tick"}));
+    assert!(
+        effect_of(&later, "submit_result").is_none(),
+        "the result is submitted once"
+    );
+}

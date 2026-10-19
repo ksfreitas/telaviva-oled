@@ -1,6 +1,7 @@
 pub mod camera_lifecycle;
 pub mod controls;
 mod core;
+mod diagnostics;
 pub mod ffi;
 mod settings;
 mod strict_json;

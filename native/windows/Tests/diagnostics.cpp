@@ -99,7 +99,25 @@ TEST(diagnostics_line_has_iso_utc_timestamp_and_level)
     static_cast<void>(fs::remove_all(dir, ec));
 }
 
-TEST(diagnostics_rolls_file_over_at_256_kib)
+TEST(diagnostics_default_level_writes_notice_and_skips_info)
+{
+    const fs::path dir = uniqueTempDir();
+    static_cast<void>(fs::create_directories(dir));
+    const fs::path file = dir / "telaviva.log";
+    {
+        Diagnostics diagnostics(file);
+        diagnostics.log(LogLevel::Notice, "notice-line");
+        diagnostics.log(LogLevel::Info, "info-line");
+    }
+    const std::string text = readAll(file);
+    CHECK(text.find("[NOTICE] notice-line\n") != std::string::npos);
+    CHECK(text.find("info-line") == std::string::npos);
+
+    std::error_code ec;
+    static_cast<void>(fs::remove_all(dir, ec));
+}
+
+TEST(diagnostics_rolls_file_over_at_1_mib)
 {
     const fs::path dir = uniqueTempDir();
     static_cast<void>(fs::create_directories(dir));
@@ -115,18 +133,18 @@ TEST(diagnostics_rolls_file_over_at_256_kib)
     const std::string message(1000, 'x');
     {
         Diagnostics diagnostics(file, LogLevel::Info);
-        // About 1 KB per line, so 300 lines is well past one 256 KiB file.
-        for (int i = 0; i < 300; ++i) {
+        // About 1 KB per line, so 1200 lines is well past one 1 MiB file.
+        for (int i = 0; i < 1200; ++i) {
             diagnostics.log(LogLevel::Info, message);
         }
     }
     CHECK(fs::exists(backup));
     if (fs::exists(backup)) {
-        CHECK(fs::file_size(backup) > std::uintmax_t{256} * 1024);
+        CHECK(fs::file_size(backup) > std::uintmax_t{1024} * 1024);
     }
     CHECK(fs::exists(file));
     if (fs::exists(file)) {
-        CHECK(fs::file_size(file) <= std::uintmax_t{256} * 1024);
+        CHECK(fs::file_size(file) <= std::uintmax_t{1024} * 1024);
     }
 
     std::error_code ec;
@@ -159,6 +177,12 @@ TEST(diagnostics_short_id_matches_fnv1a_vectors)
 {
     CHECK_EQ(shortId(""), std::string("id-811c9dc5"));
     CHECK_EQ(shortId("a"), std::string("id-e40c292c"));
+}
+
+// Shared vector: the core's short_id uses the same FNV-1a hash, so core and shell lines correlate.
+TEST(diagnostics_short_id_matches_shared_abc_vector)
+{
+    CHECK_EQ(shortId("abc"), std::string("id-1a47e90b"));
 }
 
 TEST(diagnostics_short_id_never_contains_input)

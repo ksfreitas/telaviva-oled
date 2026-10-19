@@ -997,13 +997,16 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
     s.onOpenSettings = std::move(onOpenSettings);
     s.onQuit = std::move(onQuit);
 
-    // TELAVIVA_LOG_LEVEL=debug or info raises the level for this run; any other value keeps Error.
+    // TELAVIVA_LOG_LEVEL=debug or info raises the level for this run, error lowers it to errors only;
+    // any other value keeps the default, Notice.
     const std::string requestedLevel = requestedLogLevel();
     const bool traceDebug = requestedLevel == "debug";
     if (traceDebug) {
         s.diagnostics.setLevel(LogLevel::Debug);
     } else if (requestedLevel == "info") {
         s.diagnostics.setLevel(LogLevel::Info);
+    } else if (requestedLevel == "error") {
+        s.diagnostics.setLevel(LogLevel::Error);
     }
     if (traceDebug || requestedLevel == "info") {
         s.diagnostics.log(LogLevel::Error, "log level: " + requestedLevel + " (TELAVIVA_LOG_LEVEL)");
@@ -1017,6 +1020,10 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
     options.configPath = s.paths.settingsFile().wstring();
     options.osLocale = userLocaleName();
     s.bridge = std::make_unique<CoreBridge>(options);
+    // Core decision lines reach the log from the bridge worker. Until this sink is set they stay in the core.
+    s.bridge->setDiagnosticSink([diagnostics = &s.diagnostics](const std::string& line) {
+        diagnostics->log(LogLevel::Notice, line);
+    });
     if (!s.bridge->isOpen()) {
         s.diagnostics.log(LogLevel::Error, "core did not open; monitor and setting changes will not apply");
     }
@@ -1031,6 +1038,10 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
     s.controls = std::make_unique<telaviva::ControlsDriver>(*s.controlsApi, *s.submitter, *s.ddc, *s.executor,
         s.scheduler, s.clock);
     s.ddc->setListener(s.controls.get());
+    // DDC attempt and discovery lines go to the diagnostic log. Set before any traffic, like the trace below.
+    s.ddc->setNotice([diagnostics = &s.diagnostics](const std::string& line) {
+        diagnostics->log(LogLevel::Notice, line);
+    });
     // A draft change refreshes the flyout from the latest published snapshot, as refresh() does.
     // The snapshot is copied under settingsMutex, the lock the snapshot thread writes it under.
     s.controls->setDraftObserver([&s](const std::string&, const std::string&) {
@@ -1096,6 +1107,8 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
     SessionEventCallbacks events;
     // The display going off ends a calibration: the panel and the monitor would be read while nothing is shown.
     events.onDisplayState = [ddc, &s](bool displayOn) {
+        s.diagnostics.log(LogLevel::Notice, displayOn ? "display_wake" : "display_sleep");
+        s.diagnostics.log(LogLevel::Notice, displayOn ? "display_power on=true" : "display_power on=false");
         ddc->onDisplayState(displayOn);
         s.controls->displayPower(displayOn);
         s.laptopEnvironment.recordDisplayStatus(displayOn);
@@ -1104,8 +1117,14 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
             s.calibration->end(CalibrationEndReason::DisplaySleep);
         }
     };
-    events.onResume = [ddc] { ddc->refresh(); };
-    events.onTopologyChanged = [ddc] { ddc->refresh(); };
+    events.onResume = [ddc, &s] {
+        s.diagnostics.log(LogLevel::Notice, "resume_refresh");
+        ddc->refresh();
+    };
+    events.onTopologyChanged = [ddc, &s] {
+        s.diagnostics.log(LogLevel::Notice, "topology_refresh");
+        ddc->refresh();
+    };
     s.session = std::make_shared<SessionEvents>(s.scheduler, std::move(events));
 
     // The window keeps its handlers until it is destroyed, which can come after this
@@ -1141,6 +1160,7 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
     if (appVersion_.empty()) {
         appVersion_ = "unknown";
     }
+    s.diagnostics.log(LogLevel::Notice, "app_start version=" + appVersion_);
     AccelerationOptions acceleration;
     // The self-test frame ships next to the executable too. Absent means no frame, so acceleration stays off.
     // A present but invalid file is logged once and also means no frame.

@@ -4639,3 +4639,272 @@ fn insufficient_light_on_the_confirming_sample_clears_the_first_miss() {
         .iter()
         .all(|a| a["kind"] != "set_brightness"));
 }
+
+// Every monitor reference in a diagnostic line is the hashed `id-xxxxxxxx` form.
+fn assert_hashed_monitor_references(lines: &[String]) {
+    for line in lines {
+        if let Some(reference) = line.split(" monitor=").nth(1) {
+            let id = reference.split(' ').next().unwrap();
+            let hex = id.strip_prefix("id-").unwrap_or_default();
+            assert!(
+                hex.len() == 8 && hex.chars().all(|c| c.is_ascii_hexdigit()),
+                "unhashed monitor reference in {line:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn wake_restore_records_diagnostic_lines() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    let discovered = send(
+        &mut core,
+        json!({"type":"monitor_discovered","monitor":{
+            "id":"screen","name":"Display","identity_status":"stable","connection_path":"usb",
+            "brightness":{"supported":true,"value":70,"raw":70,"min":0,"max":100},
+            "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}
+        }}),
+    );
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    let generation = discovered["monitors"][0]["generation"].clone();
+    let enabled = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true}}),
+    );
+    for offset in [10_000, 20_000] {
+        send(
+            &mut core,
+            json!({"type":"presence_observation","status":"absent","captured_at_ms":capture_time(offset),"camera_generation":enabled["camera"]["generation"]}),
+        );
+    }
+    let dim = core.snapshot_value().unwrap()["pending_actions"][0].clone();
+    send(
+        &mut core,
+        json!({"type":"hardware_result","action_id":dim["id"],"generation":dim["generation"],"ok":true,"value":0}),
+    );
+    // Only the wake sequence is checked below, so the setup lines are discarded here.
+    core.drain_diagnostics();
+    send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"screen","generation":generation,"state":"asleep"}),
+    );
+    let awake = send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"screen","generation":generation,"state":"awake"}),
+    );
+    let read = pending_action(&awake, "read_brightness");
+    let verified = send(
+        &mut core,
+        json!({"type":"hardware_result","action_id":read["id"],"generation":read["generation"],"ok":true,"value":0}),
+    );
+    let restore = pending_action(&verified, "set_brightness");
+    assert_eq!(restore["value"].as_f64(), Some(70.0));
+    send(
+        &mut core,
+        json!({"type":"hardware_result","action_id":restore["id"],"generation":restore["generation"],"ok":true,"value":70}),
+    );
+
+    let lines = core.drain_diagnostics();
+    let events: Vec<&str> = lines
+        .iter()
+        .map(|line| line.split(' ').next().unwrap())
+        .collect();
+    let wanted = [
+        "display_state",
+        "read_result",
+        "ownership_verified",
+        "restore_enqueued",
+    ];
+    let mut next = 0;
+    for event in events {
+        if next < wanted.len() && event == wanted[next] {
+            next += 1;
+        }
+    }
+    assert_eq!(next, wanted.len(), "missing or out of order in {lines:?}");
+    let has = |prefix: &str, suffix: &str| {
+        lines
+            .iter()
+            .any(|line| line.starts_with(prefix) && line.ends_with(suffix))
+    };
+    assert!(has("display_state monitor=id-", " state=awake"));
+    assert!(has("read_result monitor=id-", " ok=true value=0"));
+    assert!(has("ownership_verified monitor=id-", " raw=0"));
+    assert!(has(
+        "restore_enqueued monitor=id-",
+        " target=70 baseline=70"
+    ));
+    assert!(lines.iter().all(|line| !line.contains("screen")));
+    assert_hashed_monitor_references(&lines);
+}
+
+#[test]
+fn exhausted_restore_records_ownership_dropped() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    let discovered = send(
+        &mut core,
+        json!({"type":"monitor_discovered","monitor":{
+            "id":"screen","name":"Display","identity_status":"stable","connection_path":"usb",
+            "brightness":{"supported":true,"value":70,"raw":70,"min":0,"max":100},
+            "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}
+        }}),
+    );
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    let generation = discovered["monitors"][0]["generation"].clone();
+    let enabled = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true}}),
+    );
+    for offset in [10_000, 20_000] {
+        send(
+            &mut core,
+            json!({"type":"presence_observation","status":"absent","captured_at_ms":capture_time(offset),"camera_generation":enabled["camera"]["generation"]}),
+        );
+    }
+    let dim = core.snapshot_value().unwrap()["pending_actions"][0].clone();
+    send(
+        &mut core,
+        json!({"type":"hardware_result","action_id":dim["id"],"generation":dim["generation"],"ok":true,"value":0}),
+    );
+    send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"screen","generation":generation,"state":"asleep"}),
+    );
+    let awake = send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"screen","generation":generation,"state":"awake"}),
+    );
+    let mut read = pending_action(&awake, "read_brightness");
+    // Three failed readbacks each record a restore failure while ownership is kept.
+    for _ in 0..3 {
+        let failed = send(
+            &mut core,
+            json!({"type":"hardware_result","action_id":read["id"],"generation":read["generation"],"ok":false,"error":"unsupported"}),
+        );
+        read = pending_action(&failed, "read_brightness");
+    }
+    // The fourth failure exhausts the retries and drops ownership.
+    send(
+        &mut core,
+        json!({"type":"hardware_result","action_id":read["id"],"generation":read["generation"],"ok":false,"error":"unsupported"}),
+    );
+
+    let lines = core.drain_diagnostics();
+    let failures: Vec<&String> = lines
+        .iter()
+        .filter(|line| line.starts_with("restore_failure "))
+        .collect();
+    assert_eq!(failures.len(), 3, "{lines:?}");
+    for (n, line) in failures.iter().enumerate() {
+        assert!(
+            line.starts_with("restore_failure monitor=id-")
+                && line.ends_with(&format!(" failures={}/3", n + 1)),
+            "{line}"
+        );
+    }
+    let dropped: Vec<&String> = lines
+        .iter()
+        .filter(|line| line.starts_with("ownership_dropped "))
+        .collect();
+    assert_eq!(dropped.len(), 1, "{lines:?}");
+    assert!(
+        dropped[0].starts_with("ownership_dropped monitor=id-")
+            && dropped[0].ends_with(" reason=restore_failed"),
+        "{}",
+        dropped[0]
+    );
+    assert!(lines
+        .last()
+        .is_some_and(|line| line.starts_with("ownership_dropped ")));
+    assert_hashed_monitor_references(&lines);
+}
+
+#[test]
+fn rediscovery_records_disconnect_and_discovery() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    discover_monitor(&mut core, "screen", json!(70));
+    core.drain_diagnostics();
+    send(
+        &mut core,
+        json!({"type":"monitor_disconnected","monitor_id":"screen"}),
+    );
+    discover_monitor(&mut core, "screen", json!(40));
+
+    let lines = core.drain_diagnostics();
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(lines[0].starts_with("monitor_disconnected monitor=id-"));
+    assert!(lines[1].starts_with("monitor_discovered monitor=id-"));
+    assert!(lines[1].ends_with(" raw=40 baseline=40"));
+    assert_hashed_monitor_references(&lines);
+}
+
+#[test]
+fn diagnostic_lines_never_contain_the_monitor_id_name_or_path() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    let discovered = send(
+        &mut core,
+        json!({"type":"monitor_discovered","monitor":{
+            "id":"secret-serial-123","name":"My Secret Name","identity_status":"stable","connection_path":"usb-secret-path",
+            "brightness":{"supported":true,"value":70,"raw":70,"min":0,"max":100},
+            "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}
+        }}),
+    );
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    let generation = discovered["monitors"][0]["generation"].clone();
+    let enabled = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true}}),
+    );
+    for offset in [10_000, 20_000] {
+        send(
+            &mut core,
+            json!({"type":"presence_observation","status":"absent","captured_at_ms":capture_time(offset),"camera_generation":enabled["camera"]["generation"]}),
+        );
+    }
+    let dim = core.snapshot_value().unwrap()["pending_actions"][0].clone();
+    send(
+        &mut core,
+        json!({"type":"hardware_result","action_id":dim["id"],"generation":dim["generation"],"ok":true,"value":0}),
+    );
+    send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"secret-serial-123","generation":generation,"state":"asleep"}),
+    );
+    let awake = send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"secret-serial-123","generation":generation,"state":"awake"}),
+    );
+    let read = pending_action(&awake, "read_brightness");
+    let failed = send(
+        &mut core,
+        json!({"type":"hardware_result","action_id":read["id"],"generation":read["generation"],"ok":false,"error":"unsupported"}),
+    );
+    let retry = pending_action(&failed, "read_brightness");
+    let verified = send(
+        &mut core,
+        json!({"type":"hardware_result","action_id":retry["id"],"generation":retry["generation"],"ok":true,"value":0}),
+    );
+    let restore = pending_action(&verified, "set_brightness");
+    send(
+        &mut core,
+        json!({"type":"hardware_result","action_id":restore["id"],"generation":restore["generation"],"ok":true,"value":70}),
+    );
+    send(
+        &mut core,
+        json!({"type":"monitor_disconnected","monitor_id":"secret-serial-123"}),
+    );
+
+    let lines = core.drain_diagnostics();
+    assert!(lines
+        .iter()
+        .any(|line| line.starts_with("monitor_discovered monitor=id-")));
+    assert!(lines
+        .iter()
+        .any(|line| line.starts_with("restore_enqueued monitor=id-")));
+    for line in &lines {
+        for secret in ["secret-serial-123", "My Secret Name", "usb-secret-path"] {
+            assert!(!line.contains(secret), "{line}");
+        }
+    }
+    assert_hashed_monitor_references(&lines);
+}

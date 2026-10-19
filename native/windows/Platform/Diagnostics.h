@@ -8,12 +8,13 @@ namespace telaviva {
 
 // Ordered from most to least severe; a message is written when its level is
 // at or above the configured one, i.e. its value is <= the configured value.
-enum class LogLevel { Error, Info, Debug };
+// Notice is the default: the brightness decisions and DDC attempts kept for support.
+enum class LogLevel { Error, Notice, Info, Debug };
 
 // Appends UTF-8 lines to a log file. Thread-safe. Never throws.
 class Diagnostics {
 public:
-    explicit Diagnostics(std::filesystem::path logFile, LogLevel level = LogLevel::Error);
+    explicit Diagnostics(std::filesystem::path logFile, LogLevel level = LogLevel::Notice);
 
     void setLevel(LogLevel level);
 

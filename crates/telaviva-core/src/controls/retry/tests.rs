@@ -52,8 +52,28 @@ fn sleeps(trace: &[String]) -> Vec<&str> {
 
 // Drives the machine with a fake clock and records every primitive and wait.
 fn run(kind: OpKind, profile: Profile, answers: Vec<Answer>) -> (Outcome, Vec<String>) {
+    run_with_window(kind, profile, None, answers)
+}
+
+// Runs a stuck read whose three attempts all fail with `error`.
+fn run_read_failing(error: AttemptError) -> (Outcome, Vec<String>) {
+    run(
+        OpKind::Read { code: 16 },
+        Profile::default(),
+        vec![fail(error), fail(error), fail(error)],
+    )
+}
+
+// Drives the machine like `run`, but starts it inside a wake readiness window that ends at
+// `ready_until`, or with no window when it is None.
+fn run_with_window(
+    kind: OpKind,
+    profile: Profile,
+    ready_until: Option<f64>,
+    answers: Vec<Answer>,
+) -> (Outcome, Vec<String>) {
     let mut script = Script { answers };
-    let mut op = Operation::new(kind, profile);
+    let mut op = Operation::new(kind, profile).with_ready_until(ready_until);
     let mut trace = Vec::new();
     let mut now = 0.0;
     let mut step = op.start(now);
@@ -78,15 +98,6 @@ fn run(kind: OpKind, profile: Profile, answers: Vec<Answer>) -> (Outcome, Vec<St
             Step::Done(outcome) => return (outcome, trace),
         }
     }
-}
-
-// Runs a stuck read whose three attempts all fail with `error`.
-fn run_read_failing(error: AttemptError) -> (Outcome, Vec<String>) {
-    run(
-        OpKind::Read { code: 16 },
-        Profile::default(),
-        vec![fail(error), fail(error), fail(error)],
-    )
 }
 
 #[test]
@@ -453,4 +464,151 @@ fn retry_misuse_does_not_panic() {
     assert!(!outcome.ok);
     let outcome = expect_done(op.on_attempt_done(0.0, true, AttemptError::None, Some(1.0)));
     assert!(!outcome.ok);
+}
+
+#[test]
+fn read_keeps_retrying_inside_the_wake_ready_window() {
+    // Five io failures, each inside the window at 30 s, then a value: 2 s between attempts.
+    let (outcome, trace) = run_with_window(
+        OpKind::Read { code: 0x10 },
+        Profile::default(),
+        Some(30.0),
+        vec![
+            fail(AttemptError::Io),
+            fail(AttemptError::Io),
+            fail(AttemptError::Io),
+            fail(AttemptError::Io),
+            fail(AttemptError::Io),
+            read_ok(41.0),
+        ],
+    );
+    assert_eq!(
+        trace,
+        [
+            "read 16",
+            "sleep 2000",
+            "read 16",
+            "sleep 2000",
+            "read 16",
+            "sleep 2000",
+            "read 16",
+            "sleep 2000",
+            "read 16",
+            "sleep 2000",
+            "read 16",
+        ]
+    );
+    assert!(outcome.ok);
+    assert_eq!(outcome.error, None);
+    near(outcome.value.expect("current value"), 41.0);
+}
+
+#[test]
+fn read_falls_back_to_the_normal_budget_after_the_window() {
+    // The monitor never answers. Attempts run every 2 s from 0 s to 30 s, which is 15 waits; the
+    // attempt at 30 s is the first one after the window, and its failure ends the read.
+    let (outcome, trace) = run_with_window(
+        OpKind::Read { code: 0x10 },
+        Profile::default(),
+        Some(30.0),
+        (0..16).map(|_| fail(AttemptError::Io)).collect(),
+    );
+    assert_eq!(sleeps(&trace), vec!["sleep 2000"; 15]);
+    assert_eq!(
+        trace
+            .iter()
+            .filter(|event| event.starts_with("read"))
+            .count(),
+        16
+    );
+    assert!(!outcome.ok);
+    assert_eq!(outcome.error, Some("io"));
+
+    // A window that ends while the first retry waits leaves the normal backoff in force after it:
+    // the attempt at 2 s is the second one, so its failure waits 1.0 s before the third.
+    let (outcome, trace) = run_with_window(
+        OpKind::Read { code: 0x10 },
+        Profile::default(),
+        Some(1.0),
+        vec![
+            fail(AttemptError::Io),
+            fail(AttemptError::Io),
+            fail(AttemptError::Io),
+        ],
+    );
+    assert_eq!(
+        trace,
+        ["read 16", "sleep 2000", "read 16", "sleep 1000", "read 16"]
+    );
+    assert!(!outcome.ok);
+    assert_eq!(outcome.error, Some("io"));
+}
+
+#[test]
+fn permanent_errors_end_at_once_inside_the_window() {
+    let cases = [
+        (AttemptError::Unsupported, "unsupported"),
+        (AttemptError::Disconnected, "disconnected"),
+    ];
+    for (error, name) in cases {
+        let (outcome, trace) = run_with_window(
+            OpKind::Read { code: 0x10 },
+            Profile::default(),
+            Some(30.0),
+            vec![fail(error)],
+        );
+        assert_eq!(trace, ["read 16"]);
+        assert!(!outcome.ok);
+        assert_eq!(outcome.error, Some(name));
+
+        let (outcome, trace) = run_with_window(
+            OpKind::SetVerify {
+                code: 16,
+                target: 60,
+            },
+            Profile::default(),
+            Some(30.0),
+            vec![fail(error)],
+        );
+        assert_eq!(trace, ["write 16=60"]);
+        assert!(!outcome.ok);
+        assert_eq!(outcome.error, Some(name));
+    }
+}
+
+#[test]
+fn readback_mismatch_stays_final_inside_the_window() {
+    let (outcome, trace) = run_with_window(
+        OpKind::SetVerify {
+            code: 16,
+            target: 60,
+        },
+        Profile::default(),
+        Some(30.0),
+        vec![wrote(), read_ok(61.0)],
+    );
+    assert_eq!(trace, ["write 16=60", "sleep 60", "read 16"]);
+    assert!(!outcome.ok);
+    assert_eq!(outcome.error, Some("io"));
+    near(outcome.value.expect("observed value"), 61.0);
+}
+
+#[test]
+fn operation_without_window_keeps_three_attempts() {
+    let (outcome, trace) = run_with_window(
+        OpKind::Read { code: 0x10 },
+        Profile::default(),
+        None,
+        vec![
+            fail(AttemptError::Io),
+            fail(AttemptError::Io),
+            fail(AttemptError::Io),
+        ],
+    );
+    assert_eq!(
+        trace,
+        ["read 16", "sleep 200", "read 16", "sleep 1000", "read 16"]
+    );
+    assert!(!outcome.ok);
+    assert_eq!(outcome.error, Some("io"));
 }

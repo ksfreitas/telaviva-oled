@@ -9,7 +9,7 @@ use super::model::{
 };
 use super::retry::{
     OpKind, Operation, Outcome, Primitive, Profile, Step, BACKOFF_SECS, RESULT_RESUBMITS,
-    WAKE_GRACE_SECS,
+    WAKE_GRACE_SECS, WAKE_READY_WINDOW_SECS,
 };
 use super::Tokens;
 use serde_json::json;
@@ -81,6 +81,8 @@ pub(crate) struct Dispatch {
     last_revision: u64,
     display_off: bool,
     grace_deadline: Option<f64>,
+    /// End of the wake readiness window; an operation that starts before it records it.
+    wake_ready_until: Option<f64>,
     /// One DDC primitive executes at a time across every monitor.
     exec_busy: bool,
     completions: Vec<Completion>,
@@ -156,7 +158,8 @@ impl Dispatch {
         self.monitors.remove(monitor_id);
     }
 
-    /// Applies the display power state. Off clears grace; on arms the wake grace. Starts nothing;
+    /// Applies the display power state. Off clears grace and the wake readiness window; on arms
+    /// the wake grace and opens a readiness window of `WAKE_READY_WINDOW_SECS`. Starts nothing;
     /// a held action runs at the next `observe` or `tick` after grace ends.
     pub(crate) fn display_power(&mut self, now: f64, tokens: &mut Tokens, on: bool) -> Vec<Effect> {
         if self.stopped {
@@ -165,9 +168,11 @@ impl Dispatch {
         if on {
             self.display_off = false;
             self.grace_deadline = Some(now + WAKE_GRACE_SECS);
+            self.wake_ready_until = Some(now + WAKE_READY_WINDOW_SECS);
         } else {
             self.display_off = true;
             self.grace_deadline = None;
+            self.wake_ready_until = None;
         }
         self.pump(tokens)
     }
@@ -289,6 +294,7 @@ impl Dispatch {
         self.completed.clear();
         self.latest_actions.clear();
         self.grace_deadline = None;
+        self.wake_ready_until = None;
     }
 
     /// Starts the first action of each monitor that may run now and is not completed or running.
@@ -359,7 +365,8 @@ impl Dispatch {
         };
         match verdict {
             Ok(kind) => {
-                let mut op = Operation::new(kind, profile);
+                let mut op = Operation::new(kind, profile)
+                    .with_ready_until(self.wake_ready_until.filter(|until| now < *until));
                 let step = op.start(now);
                 entry.op = Some(op);
                 apply_step(&mut entry, step);

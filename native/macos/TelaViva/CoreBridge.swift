@@ -54,6 +54,7 @@ final class CoreBridge: ObservableObject {
     private func refreshOnce() {
         refreshRunObserver?()
         if let core, let value = readSnapshot(core) { publish(value) }
+        drainDiagnostics()
         refreshLock.lock()
         if refreshAgain {
             refreshAgain = false
@@ -100,7 +101,33 @@ final class CoreBridge: ObservableObject {
             snapshot = value
         }
     }
+
+    /// Logs the core's pending diagnostic lines to the `brightness` category. Runs on the worker queue only.
+    /// Never throws: a failed drain logs nothing.
+    private func drainDiagnostics() {
+        guard let core, let data = takeDiagnostics(core) else { return }
+        CoreBridge.forwardDiagnostics(data)
+    }
+
+    /// Returns a copy of the drained JSON array and frees the core's buffer, under the same lock as `readSnapshot`.
+    private func takeDiagnostics(_ instance: OpaquePointer) -> Data? {
+        ffiLock.lock(); defer { ffiLock.unlock() }
+        var buffer = TvBuffer(data: nil, len: 0)
+        guard tv_diagnostics_drain(instance, &buffer) == 0, let data = buffer.data else { return nil }
+        defer { tv_buffer_free(&buffer) }
+        return Data(bytes: data, count: buffer.len)
+    }
     #endif
+
+    /// Logs each line of a drained diagnostics array to the `brightness` category, in order.
+    static func forwardDiagnostics(_ data: Data) {
+        for line in decodeDiagnostics(data) { DiagnosticLog.core(line) }
+    }
+
+    /// Decodes the JSON array of strings that `tv_diagnostics_drain` returns. Data that is not such an array yields no lines.
+    static func decodeDiagnostics(_ data: Data) -> [String] {
+        (try? JSONDecoder().decode([String].self, from: data)) ?? []
+    }
 
     @discardableResult
     func submit(_ object: [String: Any]) -> Bool {
@@ -166,6 +193,8 @@ final class CoreBridge: ObservableObject {
         workerQueue.async { [weak self] in
             guard let self else { DispatchQueue.main.async(execute: completion); return }
             if let value = self.readSnapshot(core) { self.publish(value) }
+            // The core is still alive here: deinit cannot run while this block holds self.
+            self.drainDiagnostics()
             DispatchQueue.main.async(execute: completion)
         }
         #else
