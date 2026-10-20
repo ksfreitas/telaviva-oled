@@ -10,6 +10,8 @@ private struct InferenceDeviceSelectionTests {
         let options = InferenceDeviceSelection.options
         expect(options.map(\.id) == ["auto", "ane", "gpu", "cpu"], "stable option order and ids")
         expect(options.map(\.kind) == ["auto", "ane", "gpu", "cpu"], "locale-independent option kinds")
+        expect(InferenceDeviceSelection.latencyBudgetMilliseconds == 500,
+               "self-test budget is 500 ms on macOS and Windows")
 
         let auto = InferenceDeviceSelection.resolve(requestedId: "auto", automaticValidated: false)
         expect(auto.candidate.provider == 0 && auto.report.state == .autoCPU,

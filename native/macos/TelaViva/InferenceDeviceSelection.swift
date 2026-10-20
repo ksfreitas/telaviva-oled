@@ -5,7 +5,8 @@ enum InferenceDeviceSelection {
     // Enabled after the M4 Pro hardware/host validation; each session still validates locally.
     // Evidence: specs/archived/inference-device-selection/validation/macos-coreml.md.
     static let automaticValidated = true
-    static let latencyBudgetMilliseconds: Double = 125
+    // The first CoreML inference compiles lazily and measured up to 242 ms for the GPU option. The budget is 500 ms to leave headroom for a cold compile; Windows uses the same value.
+    static let latencyBudgetMilliseconds: Double = 500
 
     struct Option: Equatable, Identifiable {
         let id: String

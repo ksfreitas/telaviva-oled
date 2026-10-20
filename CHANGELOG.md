@@ -12,6 +12,7 @@
 
 - An external monitor dimmed by protection no longer stays at its dimmed brightness when its DDC answers slowly after wake: DDC attempts are retried for up to 30 s after wake before the restore is given up, on macOS and Windows. Hardware checks are pending.
 - The Windows debug trace no longer writes the monitor id, which contained the EDID serial.
+- On macOS, choosing Neural Engine or GPU could fall back to the CPU because the first CoreML inference was rejected for taking more than 125 ms. The accelerated self-test budget is now 500 ms on macOS and Windows. Hardware checks are pending.
 
 ## 0.1.1 - 2026-10-18
 
