@@ -8,11 +8,15 @@
 
 - Always-on local diagnostic logs of brightness decisions and DDC attempts, with monitors as hashed ids: the macOS unified log (subsystem `com.telaviva.oled`) and a rotating `telaviva.log` of at most about 2 MiB on Windows. Core ABI: `tv_diagnostics_drain`, additive to ABI version 1.
 
+### Changed
+
+- The accelerated self-test latency budget is now 250 ms on macOS and Windows (it was 125 ms), to leave headroom for a cold CoreML compile.
+
 ### Fixed
 
 - An external monitor dimmed by protection no longer stays at its dimmed brightness when its DDC answers slowly after wake: DDC attempts are retried for up to 30 s after wake before the restore is given up, on macOS and Windows. Hardware checks are pending.
 - The Windows debug trace no longer writes the monitor id, which contained the EDID serial.
-- On macOS, choosing Neural Engine or GPU could fall back to the CPU because the first CoreML inference was rejected for taking more than 125 ms. The accelerated self-test budget is now 500 ms on macOS and Windows. Hardware checks are pending.
+- On macOS, Automatic, Neural Engine and GPU always fell back to the CPU since 0.1.1 (Settings showed "In use: CPU", reason `session_failed`): a passing accelerator self-test was treated as a failure by the validator wiring. The self-test result is now used as is. The latency budget was not the cause. A hardware check of the corrected build is pending.
 
 ## 0.1.1 - 2026-10-18
 

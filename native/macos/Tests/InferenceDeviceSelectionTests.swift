@@ -10,8 +10,8 @@ private struct InferenceDeviceSelectionTests {
         let options = InferenceDeviceSelection.options
         expect(options.map(\.id) == ["auto", "ane", "gpu", "cpu"], "stable option order and ids")
         expect(options.map(\.kind) == ["auto", "ane", "gpu", "cpu"], "locale-independent option kinds")
-        expect(InferenceDeviceSelection.latencyBudgetMilliseconds == 500,
-               "self-test budget is 500 ms on macOS and Windows")
+        expect(InferenceDeviceSelection.latencyBudgetMilliseconds == 250,
+               "self-test budget is 250 ms on macOS and Windows")
 
         let auto = InferenceDeviceSelection.resolve(requestedId: "auto", automaticValidated: false)
         expect(auto.candidate.provider == 0 && auto.report.state == .autoCPU,
@@ -135,11 +135,42 @@ private struct InferenceDeviceSelectionTests {
                    "\(reason.rawValue) rejects the candidate and keeps a CPU detector")
         }
 
+        let passingHost = InferenceDeviceSelection.DetectorHost<Int>(
+            session: InferenceDeviceSelection.Session(preference: "gpu"),
+            create: { _ in 1 }, destroy: { _ in },
+            selectedProvider: { _ in 1 }, validate: { _ in nil }, publish: { _, _ in })
+        expect(passingHost.ensure() && passingHost.session.resolution.report.state == .ok
+                && passingHost.session.resolution.report.activeId == "gpu"
+                && passingHost.session.resolution.report.reason == nil,
+               "a passing accelerator self-test keeps the requested accelerator with no fallback reason")
+        validationHelperKeepsPassFailAndMissingOwnerApart()
+
         let report = InferenceDeviceSelection.Report()
         expect(!report.decided, "report starts undecided while session creation is lazy")
         report.update(auto.report, decided: false)
         expect(!report.decided && report.value.requestedId == "auto", "undecided report can show its predicted route")
 
         print("Inference device selection tests passed")
+    }
+
+    /// Regression test for the validator wiring: `owner?.check() ?? .sessionFailed` turned every passing
+    /// self-test (nil) into `session_failed`, so the accelerator never stayed active.
+    private static func validationHelperKeepsPassFailAndMissingOwnerApart() {
+        final class ValidationOwner {}
+        let owner = ValidationOwner()
+        let handle = 42
+
+        expect(InferenceDeviceSelection.validate(owner, handle, using: { _, _ in nil }) == nil,
+               "a passing check with a live owner yields nil")
+        expect(InferenceDeviceSelection.validate(owner, handle, using: { _, _ in .selfTestMismatch }) == .selfTestMismatch,
+               "a self-test mismatch with a live owner stays selfTestMismatch")
+        expect(InferenceDeviceSelection.validate(owner, handle, using: { _, _ in .selfTestSlow }) == .selfTestSlow,
+               "a slow self-test with a live owner stays selfTestSlow")
+
+        var ownerlessChecks = 0
+        let missingOwner: ValidationOwner? = nil
+        expect(InferenceDeviceSelection.validate(missingOwner, handle, using: { _, _ in ownerlessChecks += 1; return nil }) == .sessionFailed,
+               "a missing owner yields sessionFailed")
+        expect(ownerlessChecks == 0, "the check is not called when the owner is gone")
     }
 }

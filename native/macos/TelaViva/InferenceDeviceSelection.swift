@@ -5,8 +5,8 @@ enum InferenceDeviceSelection {
     // Enabled after the M4 Pro hardware/host validation; each session still validates locally.
     // Evidence: specs/archived/inference-device-selection/validation/macos-coreml.md.
     static let automaticValidated = true
-    // The first CoreML inference compiles lazily and measured up to 242 ms for the GPU option. The budget is 500 ms to leave headroom for a cold compile; Windows uses the same value.
-    static let latencyBudgetMilliseconds: Double = 500
+    // Owner decision: 250 ms leaves headroom for a cold CoreML compile (an isolated test measured a 242 ms first run for the GPU option). Windows uses the same value.
+    static let latencyBudgetMilliseconds: Double = 250
 
     struct Option: Equatable, Identifiable {
         let id: String
@@ -257,6 +257,14 @@ enum InferenceDeviceSelection {
                           report: Value(requestedId: requestedId, activeId: candidate.activeId,
                                         activeLabel: candidate.activeLabel, state: finalState, reason: reason),
                           viaAutomatic: viaAutomatic)
+    }
+
+    /// Runs `check` on a weakly held owner. nil from `check` means the validation passed, so a missing owner has to be
+    /// decided before the call: `owner?.check() ?? .sessionFailed` would turn every pass (nil) into a failure.
+    static func validate<Owner: AnyObject, Handle>(_ owner: Owner?, _ handle: Handle,
+                                                   using check: (Owner, Handle) -> FailureReason?) -> FailureReason? {
+        guard let owner else { return .sessionFailed }
+        return check(owner, handle)
     }
 
     private static let cpuCandidate = Candidate(provider: 0, deviceIndex: 0, activeId: "cpu", activeLabel: "CPU")

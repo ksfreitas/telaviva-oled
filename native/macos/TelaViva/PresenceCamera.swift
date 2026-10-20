@@ -49,7 +49,7 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         },
         destroy: { tv_inference_destroy($0) },
         selectedProvider: { tv_inference_selected_provider($0) },
-        validate: { [weak self] in self?.validate($0) ?? .sessionFailed },
+        validate: { [weak self] handle in InferenceDeviceSelection.validate(self, handle) { $0.validate($1) } },
         publish: { [weak self] value, decided in
             guard let self else { return }
             self.inferenceReport.update(value, decided: decided)

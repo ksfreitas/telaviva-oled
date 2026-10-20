@@ -9,9 +9,9 @@
 namespace telaviva {
 
 // Longest accelerated detect call accepted (seconds). It applies once per preference session,
-// to the first detection, and is 500 ms on both macOS and Windows: the first accelerated
+// to the first detection, and is 250 ms on both macOS and Windows: the first accelerated
 // inference can compile lazily (CoreML measured 242 ms on macOS).
-inline constexpr double kMaxAcceleratedLatencySeconds = 0.500;
+inline constexpr double kMaxAcceleratedLatencySeconds = 0.250;
 
 // One self-test detect call: the status it returned and the seconds it took.
 struct SelfTestSample {
