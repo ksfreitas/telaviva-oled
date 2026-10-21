@@ -178,11 +178,34 @@ final class CoreBridge: ObservableObject {
         return submit(["type": "update_settings", "settings": ["selected_camera_id": value]])
     }
 
+    /// The only path that sends `monitored_display_id`. Call it when the user picks a display or Automatic.
+    /// `nil` clears the core's history, so the core resolves the monitored display again from what is connected.
+    @discardableResult
+    func selectMonitoredDisplay(_ id: String?) -> Bool {
+        submit(CoreBridge.monitoredDisplayCommand(id))
+    }
+
+    /// The `update_settings` body that selects the monitored display. Pure, so the payload can be checked without a running core.
+    static func monitoredDisplayCommand(_ id: String?) -> [String: Any] {
+        let value: Any = id ?? NSNull()
+        return ["type": "update_settings", "settings": ["monitored_display_id": value]]
+    }
+
     /// Reports the built-in display's level for brightness follow. Callable from any thread and fire-and-forget:
-    /// a rejected report leaves the core's previous state in place.
-    func submitBuiltInDisplay(available: Bool, brightness: Int?, calibrating: Bool) {
+    /// a rejected report leaves the core's previous state in place. `protectable` and `holding` default to false,
+    /// so a report without them is the legacy report.
+    func submitBuiltInDisplay(available: Bool, brightness: Int?, calibrating: Bool, protectable: Bool = false,
+                              holding: Bool = false) {
+        submit(CoreBridge.builtInDisplayCommand(available: available, brightness: brightness, calibrating: calibrating,
+                                                protectable: protectable, holding: holding))
+    }
+
+    /// The `builtin_display` command body. Pure, so the protection flags can be checked without a running core.
+    static func builtInDisplayCommand(available: Bool, brightness: Int?, calibrating: Bool, protectable: Bool = false,
+                                      holding: Bool = false) -> [String: Any] {
         let level: Any = brightness ?? NSNull()
-        submit(["type": "builtin_display", "available": available, "brightness": level, "calibrating": calibrating])
+        return ["type": "builtin_display", "available": available, "brightness": level, "calibrating": calibrating,
+                "protectable": protectable, "holding": holding]
     }
 
     func beginShutdown(completion: @escaping () -> Void = {}) {
@@ -247,10 +270,31 @@ struct CoreSnapshot: Decodable {
     var pending_actions: [PendingAction]?
     var camera: CameraSnapshot?
     var ambient: CoreAmbient?
+    /// Built-in display protection. Snapshots from before it existed decode as `.none`.
+    var builtinProtection: CoreBuiltInProtection = .none
+    /// The core's resolved monitored display. Snapshots from before it existed decode as automatic.
+    var monitoredDisplay: CoreMonitoredDisplay = .automatic
+    enum CodingKeys: String, CodingKey {
+        case revision, settings, monitors, pending_actions, camera, ambient, builtinProtection = "builtin_protection",
+             monitoredDisplay = "monitored_display"
+    }
     static let unavailable = CoreSnapshot(revision: nil, settings: nil, monitors: [], pending_actions: [], camera: nil)
     private init(revision: UInt64?, settings: CoreSettings?, monitors: [CoreMonitor]?, pending_actions: [PendingAction]?, camera: CameraSnapshot?) {
         self.revision = revision; self.settings = settings; self.monitors = monitors
         self.pending_actions = pending_actions; self.camera = camera
+    }
+
+    /// Written by hand so `builtin_protection` and `monitored_display` can fall back; the other fields decode as the synthesized code would.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        revision = try container.decodeIfPresent(UInt64.self, forKey: .revision)
+        settings = try container.decodeIfPresent(CoreSettings.self, forKey: .settings)
+        monitors = try container.decodeIfPresent([CoreMonitor].self, forKey: .monitors)
+        pending_actions = try container.decodeIfPresent([PendingAction].self, forKey: .pending_actions)
+        camera = try container.decodeIfPresent(CameraSnapshot.self, forKey: .camera)
+        ambient = try container.decodeIfPresent(CoreAmbient.self, forKey: .ambient)
+        builtinProtection = try container.decodeIfPresent(CoreBuiltInProtection.self, forKey: .builtinProtection) ?? .none
+        monitoredDisplay = try container.decodeIfPresent(CoreMonitoredDisplay.self, forKey: .monitoredDisplay) ?? .automatic
     }
 }
 
@@ -333,6 +377,34 @@ struct CoreAmbient: Codable, Equatable {
     }
 }
 
+/// The core's built-in display protection state, read from the snapshot. `none` stands in for a snapshot without it.
+struct CoreBuiltInProtection: Decodable, Equatable {
+    var protectable: Bool
+    var protected: Bool
+    var available: Bool
+    /// Subset of "presence" and "screensaver"; empty when nothing dims the built-in display.
+    var reasons: [String]
+    /// Nil when `reasons` is empty; otherwise the percent the built-in display is dimmed to.
+    var targetPercent: Double?
+    var holdAutoBrightness: Bool
+    /// The shell's last reported `holding`, echoed back by the core.
+    var holding: Bool
+    static let none = CoreBuiltInProtection(protectable: false, protected: false, available: false, reasons: [],
+                                            targetPercent: nil, holdAutoBrightness: false, holding: false)
+    enum CodingKeys: String, CodingKey {
+        case protectable, protected, available, reasons
+        case targetPercent = "target_percent", holdAutoBrightness = "hold_auto_brightness", holding
+    }
+}
+
+/// The monitored display the core resolved. `id` is a monitor id, "builtin", or nil when none is connected; `automatic`
+/// is true while the user has made no selection.
+struct CoreMonitoredDisplay: Decodable, Equatable {
+    var id: String?
+    var automatic: Bool
+    static let automatic = CoreMonitoredDisplay(id: nil, automatic: true)
+}
+
 struct CoreSettings: Decodable {
     var locale = "auto"
     var presence_sampling_interval_s = 10.0
@@ -351,12 +423,18 @@ struct CoreSettings: Decodable {
     var volume_key_step: Int?
     /// Optional so snapshots written before device selection still decode; saves emit the core default when absent.
     var inference_device: String?
-    /// Brightness above which presence checks may run, 10 to 90. Optional so older snapshots still decode.
+    /// Brightness above which presence checks may run, 0 to 90. Optional so older snapshots still decode.
     var presence_min_brightness_percent: Double?
     /// Brightness follow and protection opt-outs. Optional so older snapshots still decode; sent only when set.
     var ambientFollowEnabled: Bool?
     var ambientCurves: [String: AmbientCurve]?
     var protectionDisabled: [String]?
+    /// Presence thresholds per display (monitor id or "builtin"), 0 to 90. Optional so older snapshots still decode;
+    /// sent only when set, because `update_settings` replaces the whole map.
+    var presenceMinBrightnessByDisplay: [String: Double]?
+    /// Holds automatic brightness off while the built-in display is dimmed for protection. Not optional: the core
+    /// always sends it, and saves always emit it.
+    var builtinAutoBrightnessOffOnProtection = false
 
     /// Keys are listed explicitly because the three ambient fields use snake_case raw names.
     enum CodingKeys: String, CodingKey {
@@ -366,6 +444,8 @@ struct CoreSettings: Decodable {
              brightness_key_step, volume_key_step, presence_min_brightness_percent, inference_device
         case ambientFollowEnabled = "ambient_follow_enabled", ambientCurves = "ambient_curves"
         case protectionDisabled = "protection_disabled"
+        case presenceMinBrightnessByDisplay = "presence_min_brightness_by_display"
+        case builtinAutoBrightnessOffOnProtection = "builtin_auto_brightness_off_on_protection"
     }
 
     /// Omits `selected_camera_id` and `camera_history` on purpose: only `selectCamera(_:)` sends the camera, so an
@@ -382,7 +462,8 @@ struct CoreSettings: Decodable {
             "hardware_keys_enabled": hardware_keys_enabled ?? false,
             "brightness_key_step": brightness_key_step ?? 5, "volume_key_step": volume_key_step ?? 5,
             "presence_min_brightness_percent": presence_min_brightness_percent ?? 20,
-            "inference_device": inference_device ?? "auto"
+            "inference_device": inference_device ?? "auto",
+            "builtin_auto_brightness_off_on_protection": builtinAutoBrightnessOffOnProtection
         ]
         // Ambient keys are added only when set, so an unrelated save leaves the core's stored values untouched.
         if let ambientFollowEnabled { object["ambient_follow_enabled"] = ambientFollowEnabled }
@@ -395,6 +476,7 @@ struct CoreSettings: Decodable {
             }
         }
         if let protectionDisabled { object["protection_disabled"] = protectionDisabled.sorted() }
+        if let presenceMinBrightnessByDisplay { object["presence_min_brightness_by_display"] = presenceMinBrightnessByDisplay }
         return object
     }
 }

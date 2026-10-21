@@ -20,21 +20,43 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     })
     private lazy var manualControls = ManualMonitorControls(driver: controls)
     let camera = PresenceCamera()
+    /// Keeps the camera off the built-in camera while the lid is closed.
+    private lazy var lidMonitor = LidStateMonitor { [weak self] closed in self?.camera.setLidClosed(closed) }
     private lazy var ddc = MacDDCController(core: core)
     private lazy var hardwareKeyRouter = HardwareKeyRouter(controls: controls)
     private let defaultAudioOutput = DefaultAudioOutputMonitor()
     private let ambientAvailability = AmbientAvailability()
     private let builtInBackend = DisplayServicesBackend()
+    /// Application Support folder shared by the calibration session and the built-in protection record.
+    private let appSupportDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("TelaVivaOLED", isDirectory: true)
+    /// One owner of the system's automatic brightness, so calibration and protection never each read and restore it.
+    private lazy var autoBrightnessOwner = BuiltInAutoBrightnessOwner(backend: builtInBackend, store: AutoBrightnessHoldStore(directory: appSupportDirectory))
+    /// Guards the cached report and the holding flag: the monitor reports from its queue, holding changes on main.
+    private let builtInLock = NSLock()
+    private var lastBuiltInReport: BuiltInDisplayReport?
+    private var protectionHolding = false
     private lazy var builtInMonitor = BuiltInBrightnessMonitor(backend: builtInBackend, scheduler: DispatchBuiltInScheduler(), submit: { [weak self] report in
-        self?.core.submitBuiltInDisplay(available: report.available, brightness: report.brightness, calibrating: report.calibrating)
+        guard let self else { return }
+        self.builtInLock.lock()
+        self.lastBuiltInReport = report
+        self.builtInLock.unlock()
+        self.publishBuiltIn()
         DispatchQueue.main.async { [weak self] in
             self?.ambientAvailability.reason = report.available ? nil : report.reason
             if !report.available { self?.calibration.end(.builtInUnavailable) }
         }
     })
+    private lazy var protection = BuiltInProtectionController(backend: builtInBackend, scheduler: DispatchBuiltInScheduler(),
+                                                              store: BuiltInProtectionStore(directory: appSupportDirectory),
+                                                              holder: autoBrightnessOwner.handle(for: .protection),
+                                                              reportHolding: { [weak self] holding in self?.setProtectionHolding(holding) })
+    /// The card's and Settings' built-in hooks. Called only on main, the queue that owns the backend.
+    /// Internal, not private: the Settings scene in App.swift reads it.
+    lazy var builtInControls = BuiltInControls(protection: protection,
+                                                       readLevel: { [weak self] in self?.builtInBackend.readLevel() },
+                                                       writeLevel: { [weak self] in self?.builtInBackend.writeLevel($0) ?? false })
     private lazy var calibration: AmbientCalibrationController = {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("TelaVivaOLED", isDirectory: true)
         let hooks = CalibrationHooks(
             monitorBrightness: { [weak self] id in
                 guard let value = self?.core.snapshot.monitors?.first(where: { $0.id == id })?.brightness, value.supported else { return nil }
@@ -53,9 +75,14 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                 self.core.updateSettings(settings)
             },
             setCalibrating: { [weak self] flag in self?.builtInMonitor.setCalibrating(flag) },
-            now: { ISO8601DateFormatter().string(from: Date()) }
+            now: { ISO8601DateFormatter().string(from: Date()) },
+            // Calibration is refused while protection holds the built-in screen (architecture Decision 9).
+            isProtectionHolding: { [weak self] in self?.protection.isHolding ?? false },
+            // Gives up a monitor restore that is still pending after launch (see AmbientCalibrationController).
+            after: { delay, block in DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: block) }
         )
-        return AmbientCalibrationController(backend: builtInBackend, store: CalibrationSessionStore(directory: appSupport), hooks: hooks)
+        return AmbientCalibrationController(backend: builtInBackend, store: CalibrationSessionStore(directory: appSupportDirectory),
+                                            autoBrightness: autoBrightnessOwner.handle(for: .calibration), hooks: hooks)
     }()
     private var hardwareKeyDisplays: [HardwareKeyDisplay] = []
     private var statusItem: NSStatusItem!
@@ -100,7 +127,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         let openSettingsAction: () -> Void = { [weak self] in self?.openSettings() }
         let refreshDisplaysAction: () -> Void = ddc.refresh
         let popupView = MonitorPopup(core: core, controls: manualControls, openSettings: openSettingsAction,
-                                     refreshDisplays: refreshDisplaysAction)
+                                     refreshDisplays: refreshDisplaysAction, builtIn: builtInControls)
         // The popover now follows the SwiftUI content size; a hardware check of the resize is pending.
         let host = NSHostingController(rootView: popupView)
         host.sizingOptions = [.preferredContentSize]
@@ -118,6 +145,8 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             self.controls.observe(snapshot)
             self.ddc.process(snapshot)
             guard !self.terminating else { return }
+            self.calibration.monitorsChanged()
+            self.protection.reconcile(snapshot.builtinProtection)
             self.hardwareKeyRouter.apply(enabled: snapshot.settings?.hardware_keys_enabled ?? false,
                                          displays: self.hardwareKeyDisplays)
             self.syncControlsConfiguration()
@@ -133,7 +162,8 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             } else {
                 self.defaultAudioOutput.stop()
             }
-            self.builtInMonitor.setEnabled(snapshot.settings?.ambientFollowEnabled ?? false)
+            self.builtInMonitor.setEnabled((snapshot.settings?.ambientFollowEnabled ?? false)
+                || (snapshot.builtinProtection.protectable && snapshot.builtinProtection.protected))
         }
         // Feed the current sound-output UID into the router; see DefaultAudioOutputMonitor.
         defaultAudioOutput.onChange = { [weak self] uid in
@@ -172,6 +202,9 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         ddc.controls = controls
         controls.onDraftChanged = { [weak self] _, _ in self?.manualControls.draftChanged() }
         ddc.start()
+        // Before protection, which may hold automatic brightness again once its own record is recovered.
+        autoBrightnessOwner.recoverIfNeeded()
+        protection.recoverIfNeeded()
         builtInMonitor.start()
         calibration.recoverIfNeeded()
         // Availability is re-read on display changes, system wake, and display sleep and wake; there is no polling for it.
@@ -180,6 +213,8 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         }
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             self?.builtInMonitor.refreshAvailability()
+            // A lid change can be missed around sleep, so the state is read again on wake.
+            self?.camera.setLidClosed(DisplayServicesBackend.lidClosed())
         }
         displaySleepObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: .main) { [weak self] _ in
             self?.calibration.end(.displaySleep)
@@ -187,10 +222,13 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         }
         screensWakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main) { [weak self] _ in
             self?.builtInMonitor.refreshAvailability()
+            self?.camera.setLidClosed(DisplayServicesBackend.lidClosed())
             // The display can still read asleep when the notification arrives, so availability is checked again shortly after.
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.builtInMonitor.refreshAvailability() }
         }
         observeScreensaver()
+        // Started after the camera exists; the first callback sets the lid state the camera starts with.
+        lidMonitor.start()
         powerSource = IOPSNotificationCreateRunLoopSource(powerSourceChanged, Unmanaged.passUnretained(self).toOpaque())?.takeRetainedValue()
         if let powerSource { CFRunLoopAddSource(CFRunLoopGetMain(), powerSource, .defaultMode) }
         reportPower()
@@ -227,6 +265,39 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         screensWakeObserver = nil
         settingsCloseObserver = nil
         builtInMonitor.stop()
+    }
+
+    /// Called by the protection controller on main when it starts or finishes holding the built-in display dimmed.
+    private func setProtectionHolding(_ holding: Bool) {
+        // Read before the lock, which the monitor queue also takes; the level is needed only when the hold ends.
+        let level: Double? = holding ? nil : builtInBackend.readLevel()
+        builtInLock.lock()
+        protectionHolding = holding
+        // The cached report still carries the level the poll reported while the screen was dimmed. When the hold
+        // ends, that level is replaced with the current one, so the core does not store the dimmed value as the level.
+        if !holding, var report = lastBuiltInReport, report.available {
+            report.brightness = MenuBarController.wholePercent(level)
+            lastBuiltInReport = report
+        }
+        builtInLock.unlock()
+        publishBuiltIn()
+    }
+
+    /// Whole percent clamped to 0...100, or nil when the level is unknown. Same rounding as `BuiltInBrightnessMonitor`.
+    private static func wholePercent(_ level: Double?) -> Int? {
+        guard let level, level.isFinite else { return nil }
+        return Int(min(max(level, 0), 100).rounded())
+    }
+
+    /// Sends the last built-in report and the holding flag to the core. The lock is held across the submit so that
+    /// reports from the monitor queue and holding changes from main reach the core in the order they were set.
+    private func publishBuiltIn() {
+        builtInLock.lock()
+        defer { builtInLock.unlock() }
+        guard let report = lastBuiltInReport else { return }
+        core.submitBuiltInDisplay(available: report.available, brightness: report.brightness, calibrating: report.calibrating,
+                                  protectable: BuiltInProtectionController.isProtectable(reason: report.reason),
+                                  holding: protectionHolding)
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
@@ -268,7 +339,8 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             let settingsView = SettingsView(core: core, navigation: settingsNavigation, updateChecker: updateChecker,
                                             installedVersion: installedVersion, requestHardwareKeyPermission: { [weak self] in
                 self?.requestHardwareKeyPermission()
-            }, ambientAvailability: ambientAvailability, inferenceReport: camera.inferenceReport, calibration: calibration)
+            }, ambientAvailability: ambientAvailability, inferenceReport: camera.inferenceReport, calibration: calibration,
+                                            builtIn: builtInControls)
                 .frame(minWidth: 760, minHeight: 560)
             let created = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 720),
                                    styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -333,7 +405,9 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         hardwareKeyRouter.shutdown()
         removePermissionObservers()
         calibration.end(.appQuit)
+        protection.restoreNow()
         stopBuiltInMonitor()
+        lidMonitor.stop()
         manualControls.shutdown()
         camera.shutdown()
         let deadline = DispatchWorkItem { [weak self] in
@@ -391,12 +465,15 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         calibration.end(.appQuit)
+        // Idempotent: a restore that already completed at quit is a no-op here.
+        protection.restoreNow()
         if let powerSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), powerSource, .defaultMode) }
         camera.shutdown()
         defaultAudioOutput.stop()
         hardwareKeyRouter.shutdown()
         removePermissionObservers()
         stopBuiltInMonitor()
+        lidMonitor.stop()
         // The driver serves the core's shutdown restoration until the DDC controller stops.
         controls.shutdown()
         ddc.shutdown()

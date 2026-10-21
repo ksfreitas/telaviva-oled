@@ -47,6 +47,10 @@ jobs:
         run: tools/tests/test-builtin-brightness-monitor.sh
       - name: Test ambient calibration
         run: tools/tests/test-ambient-calibration.sh
+      - name: Test built-in protection
+        run: tools/tests/test-builtin-protection.sh
+      - name: Test built-in automatic brightness owner
+        run: tools/tests/test-builtin-auto-brightness-owner.sh
       - name: Test DDC transactions
         run: tools/tests/test-ddc-transaction.sh
       - name: Test hardware-key routing

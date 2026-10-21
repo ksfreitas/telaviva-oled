@@ -67,21 +67,27 @@ private final class Fixture {
     let log: EventLog
     let backend: FakeBackend
     let store: CalibrationSessionStore
+    /// The shared automatic-brightness owner over the fake backend, with its own record in the temp directory.
+    let owner: BuiltInAutoBrightnessOwner
     let directory: URL
     /// Monitor brightness readouts. A missing key means the monitor is not connected.
     /// Writes are logged but do not change these readouts.
     var monitors: [String: Double] = ["monitor-a": 62, "monitor-b": 30]
     var curves: [String: AmbientCurve] = [:]
+    /// Delays and blocks passed to `hooks.after`, in the order they were scheduled. Tests run a block by hand as the timeout.
+    var scheduled: [(delay: TimeInterval, block: () -> Void)] = []
 
     init(level: Double? = 44, auto: Bool? = true) {
         let log = EventLog()
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("ambient-calibration-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let backend = FakeBackend(log: log, level: level, auto: auto)
         self.log = log
-        self.backend = FakeBackend(log: log, level: level, auto: auto)
+        self.backend = backend
         self.directory = directory
         self.store = CalibrationSessionStore(directory: directory)
+        self.owner = BuiltInAutoBrightnessOwner(backend: backend, store: AutoBrightnessHoldStore(directory: directory))
     }
 
     var sessionURL: URL { directory.appendingPathComponent("calibration-session.json") }
@@ -96,7 +102,8 @@ private final class Fixture {
                 self.curves[id] = curve
             },
             setCalibrating: { enabled in self.log.events.append("setCalibrating \(enabled)") },
-            now: { "2026-10-16T12:00:00Z" }
+            now: { "2026-10-16T12:00:00Z" },
+            after: { delay, block in self.scheduled.append((delay: delay, block: block)) }
         )
     }
 
@@ -147,6 +154,8 @@ private struct AmbientCalibrationTests {
         unreadableBuiltInLevelStartsNothing()
         beginIsRefusedWhileTheBuiltInScreenIsUnavailable()
         beginIsRefusedWhileTheBuiltInScreenIsAsleep()
+        beginIsRefusedWhileProtectionIsHolding()
+        calibrationAndProtectionRestoreAutomaticBrightnessOnce()
         unknownAutomaticBrightnessStillCalibrates()
         automaticBrightnessRefusalStillCalibrates()
         failedFirstWriteRestoresAndReports()
@@ -155,7 +164,11 @@ private struct AmbientCalibrationTests {
         endBuiltInUnavailableWithoutASessionSetsNoNotice()
         otherEndReasonsLeaveNoNotice()
         recoveryRestoresLeftoverSession()
-        recoveryWithDisconnectedMonitorSkipsMonitor()
+        recoveryWithDisconnectedMonitorDefersThenGivesUp()
+        recoveryDefersAMonitorThatIsNotKnownYet()
+        giveUpLeavesALaterMonitorUntouched()
+        beginClearsAPendingMonitorRecovery()
+        recoveryWithUnknownMonitorBrightnessDeletesAtOnce()
         recoveryWithAutomaticBrightnessOffLeavesItOff()
         recoveryReportsUnreadableFile()
         recoveryWithoutFileDoesNothing()
@@ -164,7 +177,8 @@ private struct AmbientCalibrationTests {
     }
 
     private static func makeController(_ fixture: Fixture) -> AmbientCalibrationController {
-        AmbientCalibrationController(backend: fixture.backend, store: fixture.store, hooks: fixture.hooks)
+        AmbientCalibrationController(backend: fixture.backend, store: fixture.store,
+                                     autoBrightness: fixture.owner.handle(for: .calibration), hooks: fixture.hooks)
     }
 
     private static func beginCapturesStateAndWritesFirstPoint() {
@@ -650,6 +664,50 @@ private struct AmbientCalibrationTests {
         expect(fixture.store.load() == .none, "no session file is written while the screen is asleep")
     }
 
+    private static func beginIsRefusedWhileProtectionIsHolding() {
+        let fixture = Fixture()
+        defer { fixture.cleanUp() }
+        // The screen also reports unavailable, so the protection notice only wins if the protection check runs first.
+        fixture.backend.statusValue = BuiltInDisplayStatus(available: false, reason: .displayOffline, displayID: nil)
+        var hooks = fixture.hooks
+        hooks.isProtectionHolding = { true }
+        let controller = AmbientCalibrationController(backend: fixture.backend, store: fixture.store,
+                                                      autoBrightness: fixture.owner.handle(for: .calibration), hooks: hooks)
+        controller.begin(monitorID: "monitor-a", point: 25)
+        expect(controller.notice == .protectionActive, "a begin while protection holds reports the protection notice")
+        expect(!controller.isActive && controller.active == nil, "no session starts while protection holds")
+        expect(fixture.log.events.isEmpty,
+               "no monitor write, MacBook write, calibrating call or automatic brightness call happens while protection holds")
+        expect(fixture.store.load() == .none, "no session file is written while protection holds")
+        expect(fixture.backend.auto == true, "automatic brightness is left on while protection holds")
+    }
+
+    /// Protection takes the hold first, calibration joins it. Whichever releases last restores automatic brightness once.
+    private static func calibrationAndProtectionRestoreAutomaticBrightnessOnce() {
+        for calibrationEndsFirst in [true, false] {
+            let fixture = Fixture()
+            defer { fixture.cleanUp() }
+            let protection = fixture.owner.handle(for: .protection)
+            let controller = makeController(fixture)
+            protection.acquire()
+            controller.begin(monitorID: "monitor-a", point: 25)
+            expect(fixture.log.events.filter { $0 == "setAuto false" }.count == 1,
+                   "protection and calibration turn automatic brightness off exactly once")
+            fixture.log.events.removeAll()
+            if calibrationEndsFirst {
+                controller.end(.done)
+                protection.release()
+            } else {
+                protection.release()
+                controller.end(.done)
+            }
+            expect(fixture.log.events.filter { $0 == "setAuto true" }.count == 1,
+                   "automatic brightness is restored exactly once, by the last holder, when calibration ends first: \(calibrationEndsFirst)")
+            expect(fixture.backend.auto == true,
+                   "automatic brightness is back on after both holders release, when calibration ends first: \(calibrationEndsFirst)")
+        }
+    }
+
     private static func unknownAutomaticBrightnessStillCalibrates() {
         let fixture = Fixture(auto: nil)
         defer { fixture.cleanUp() }
@@ -760,7 +818,9 @@ private struct AmbientCalibrationTests {
         expect(!controller.isActive, "recovery leaves no active session")
     }
 
-    private static func recoveryWithDisconnectedMonitorSkipsMonitor() {
+    /// A monitor missing at launch is deferred, not skipped, because the core snapshot may not list it yet. The timeout
+    /// then gives up on it while it is still absent.
+    private static func recoveryWithDisconnectedMonitorDefersThenGivesUp() {
         let fixture = Fixture()
         defer { fixture.cleanUp() }
         fixture.monitors["monitor-a"] = nil
@@ -770,7 +830,94 @@ private struct AmbientCalibrationTests {
         controller.recoverIfNeeded()
         expect(fixture.log.events == ["writeLevel 44", "setAuto true", "setCalibrating false"],
                "a disconnected monitor is not written during recovery")
-        expect(fixture.store.load() == .none, "recovery deletes the session file")
+        expect(fixture.store.load() == .session(capturedSession()),
+               "recovery keeps the session file while the monitor is pending")
+        expect(fixture.scheduled.count == 1 && fixture.scheduled[0].delay == 90,
+               "a pending monitor is given up on after 90 seconds")
+        fixture.scheduled[0].block()
+        expect(fixture.log.events == ["writeLevel 44", "setAuto true", "setCalibrating false"],
+               "the timeout writes nothing to a monitor that is still absent")
+        expect(fixture.store.load() == .none, "the timeout deletes the session file")
+    }
+
+    /// A monitor not yet known at launch: the built-in restore runs at once, the monitor waits for its first readout.
+    private static func recoveryDefersAMonitorThatIsNotKnownYet() {
+        let fixture = Fixture(level: 30, auto: false)
+        defer { fixture.cleanUp() }
+        fixture.monitors["monitor-a"] = nil
+        let session = capturedSession(monitor: 40)
+        expect(fixture.store.save(session), "leftover session is written")
+        let controller = makeController(fixture)
+        controller.recoverIfNeeded()
+        expect(fixture.log.events == ["writeLevel 44", "setAuto true", "setCalibrating false"],
+               "recovery restores the built-in level and automatic brightness at once, and not the unknown monitor")
+        expect(fixture.store.load() == .session(session), "recovery keeps the session file while the monitor is pending")
+        expect(!controller.isActive, "a deferred recovery leaves no active session")
+        fixture.monitors["monitor-a"] = 62
+        fixture.log.events.removeAll()
+        controller.monitorsChanged()
+        expect(fixture.log.events == ["setMonitor monitor-a 40"],
+               "once the monitor is known, its saved brightness is restored exactly once")
+        expect(fixture.store.load() == .none, "the session file is deleted once the monitor is restored")
+        controller.monitorsChanged()
+        expect(fixture.log.events == ["setMonitor monitor-a 40"], "a later monitor change writes nothing more")
+    }
+
+    /// The timeout gives up on a monitor that never returned. A monitor that appears afterwards is left alone.
+    private static func giveUpLeavesALaterMonitorUntouched() {
+        let fixture = Fixture()
+        defer { fixture.cleanUp() }
+        fixture.monitors["monitor-a"] = nil
+        expect(fixture.store.save(capturedSession(monitor: 40)), "leftover session is written")
+        let controller = makeController(fixture)
+        controller.recoverIfNeeded()
+        expect(fixture.scheduled.count == 1 && fixture.scheduled[0].delay == 90,
+               "a deferred monitor restore schedules one give-up after 90 seconds")
+        fixture.log.events.removeAll()
+        fixture.scheduled[0].block()
+        expect(fixture.log.events.isEmpty, "giving up while the monitor is unknown writes nothing")
+        expect(fixture.store.load() == .none, "giving up deletes the session file")
+        fixture.monitors["monitor-a"] = 62
+        controller.monitorsChanged()
+        expect(fixture.log.events.isEmpty, "a monitor that returns after giving up is not written")
+        expect(fixture.store.load() == .none, "no session file is recreated after giving up")
+    }
+
+    /// A new calibration overwrites the file, so an earlier session's pending monitor restore must not fire during it.
+    private static func beginClearsAPendingMonitorRecovery() {
+        let fixture = Fixture()
+        defer { fixture.cleanUp() }
+        fixture.monitors["monitor-a"] = nil
+        expect(fixture.store.save(capturedSession(monitor: 40)), "leftover session for monitor A is written")
+        let controller = makeController(fixture)
+        controller.recoverIfNeeded()
+        // Monitor B is connected, so a new calibration starts while monitor A's restore is still pending.
+        controller.begin(monitorID: "monitor-b", point: 50)
+        expect(controller.isActive, "a new calibration starts while an earlier monitor restore is pending")
+        let current = capturedSession(monitor: 30, id: "monitor-b")
+        expect(fixture.store.load() == .session(current), "the new calibration overwrites the session file")
+        fixture.monitors["monitor-a"] = 62
+        fixture.log.events.removeAll()
+        controller.monitorsChanged()
+        expect(fixture.log.events.isEmpty, "the earlier restore of monitor A does not fire during the new calibration")
+        expect(fixture.store.load() == .session(current), "the earlier restore leaves the new calibration's file untouched")
+        fixture.scheduled[0].block()
+        expect(fixture.store.load() == .session(current), "the earlier timeout does not delete the new calibration's file")
+        expect(controller.isActive, "the new calibration stays active after the earlier timeout")
+    }
+
+    /// A session saved without a monitor brightness owes no monitor write, so nothing is deferred.
+    private static func recoveryWithUnknownMonitorBrightnessDeletesAtOnce() {
+        let fixture = Fixture()
+        defer { fixture.cleanUp() }
+        fixture.monitors["monitor-a"] = nil
+        expect(fixture.store.save(capturedSession(monitor: nil)), "leftover session without a monitor brightness is written")
+        let controller = makeController(fixture)
+        controller.recoverIfNeeded()
+        expect(fixture.log.events == ["writeLevel 44", "setAuto true", "setCalibrating false"],
+               "a session with no saved monitor brightness writes no monitor value during recovery")
+        expect(fixture.store.load() == .none, "the session file is deleted at once")
+        expect(fixture.scheduled.isEmpty, "nothing is scheduled to give up on")
     }
 
     private static func recoveryWithAutomaticBrightnessOffLeavesItOff() {

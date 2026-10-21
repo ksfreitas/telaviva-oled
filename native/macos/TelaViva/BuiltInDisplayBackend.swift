@@ -59,6 +59,8 @@ final class DisplayServicesBackend: BuiltInDisplayBackend {
         dlopen("/System/Library/PrivateFrameworks/CoreBrightness.framework/CoreBrightness", RTLD_LAZY) != nil
 
     private let autoLock = NSLock()
+    /// Serializes the DisplayServices get and set calls in readLevel and writeLevel. Never held across status().
+    private let levelLock = NSLock()
     // Guarded by autoLock.
     private var cbClient: AnyObject?
     private var displayClientCache: (displayID: UInt32, client: AnyObject)?
@@ -110,14 +112,24 @@ final class DisplayServicesBackend: BuiltInDisplayBackend {
     func readLevel() -> Double? {
         guard let symbols = Self.symbols, let id = adjustableDisplayID() else { return nil }
         var level: Float = 0
-        guard symbols.getBrightness(id, &level) == 0, level.isFinite else { return nil }
+        // The lock covers only the DisplayServices call; adjustableDisplayID() above has already called status().
+        let code: Int32 = {
+            levelLock.lock(); defer { levelLock.unlock() }
+            return symbols.getBrightness(id, &level)
+        }()
+        guard code == 0, level.isFinite else { return nil }
         return Double(min(max(level, 0), 1)) * 100
     }
 
     func writeLevel(_ percent: Double) -> Bool {
         guard percent.isFinite, let symbols = Self.symbols, let id = adjustableDisplayID() else { return false }
         let level = Float(min(max(percent, 0), 100) / 100)
-        return symbols.setBrightness(id, level) == 0
+        // The lock covers only the DisplayServices call; adjustableDisplayID() above has already called status().
+        let code: Int32 = {
+            levelLock.lock(); defer { levelLock.unlock() }
+            return symbols.setBrightness(id, level)
+        }()
+        return code == 0
     }
 
     func autoBrightnessEnabled() -> Bool? {

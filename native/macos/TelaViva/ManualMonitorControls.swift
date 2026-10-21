@@ -64,16 +64,6 @@ final class ManualMonitorControls: ObservableObject {
         }
     }
 
-    /// The brightness ceiling for presence protection. A pending lower draft applies at once; a pending increase
-    /// widens the cap only after the core confirms it.
-    func protectionBrightnessMaximum(monitor: CoreMonitor) -> Double? {
-        guard let confirmed = monitor.brightness?.value else { return nil }
-        guard monitor.generation != nil else { return confirmed }
-        let draft = driver.queryDraft(monitorID: monitor.id, feature: .brightness)
-        if draft.hasDraft, draft.status == .pending, draft.draft < confirmed { return draft.draft }
-        return confirmed
-    }
-
     /// Stops forwarding slider values. The core owns its own shutdown.
     func shutdown() {
         dispatchPrecondition(condition: .onQueue(.main))

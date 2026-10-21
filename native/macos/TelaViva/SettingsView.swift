@@ -16,6 +16,8 @@ struct SettingsView: View {
     @ObservedObject var ambientAvailability: AmbientAvailability = AmbientAvailability()
     @ObservedObject var inferenceReport: InferenceDeviceSelection.Report
     var calibration: AmbientCalibrationController? = nil
+    /// Nil leaves the built-in rows out. The Settings scene in App.swift passes `appDelegate.builtInControls`.
+    var builtIn: BuiltInControls? = nil
     @State private var locale = "auto"
     @State private var presence = false
     @State private var alwaysOnCamera = false
@@ -25,6 +27,7 @@ struct SettingsView: View {
     @State private var hardwareKeys = false
     @State private var brightnessKeyStep = 5.0
     @State private var volumeKeyStep = 5.0
+    /// The threshold the slider shows: the monitored display's own value, synced from the snapshot, never the global draft.
     @State private var presenceMinBrightness = 20.0
     @State private var presentInterval = 10.0
     @State private var returnInterval = 1.0
@@ -41,8 +44,20 @@ struct SettingsView: View {
     private var cameraSelection: Binding<String?> {
         Binding(get: { effectiveCameraID }, set: { core.selectCamera($0) })
     }
+    /// The monitored display the core resolved, or nil for Automatic. The setter runs only for a user choice.
+    private var monitoredDisplaySelection: Binding<String?> {
+        Binding(
+            get: { core.snapshot.monitoredDisplay.automatic ? nil : core.snapshot.monitoredDisplay.id },
+            set: { core.selectMonitoredDisplay($0) }
+        )
+    }
     /// Monitors listed in the protection section, from the latest core snapshot.
     private var connectedMonitors: [CoreMonitor] { core.snapshot.monitors ?? [] }
+    /// The built-in row is listed only while the screen is protectable and available, like the popup card.
+    private var showsBuiltInProtection: Bool {
+        let bp = core.snapshot.builtinProtection
+        return builtIn != nil && bp.protectable && bp.available
+    }
 
     private func refreshCameras() {
         cameras = AVCaptureDevice.DiscoverySession(deviceTypes: [.builtInWideAngleCamera, .external], mediaType: .video, position: .unspecified).devices
@@ -75,6 +90,7 @@ struct SettingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: .cameraDeviceConnected)) { _ in refreshCameras() }
         .onReceive(NotificationCenter.default.publisher(for: .cameraDeviceDisconnected)) { _ in refreshCameras() }
         .onChange(of: core.snapshot.revision) { _, _ in if !didLoad { load() } }
+        .onChange(of: core.snapshot.monitoredDisplay.id) { _, _ in syncPresenceMinBrightness() }
     }
 
     private var settingUpdates: some View {
@@ -89,7 +105,6 @@ struct SettingsView: View {
         .onChange(of: returnInterval) { _, _ in save() }
         .onChange(of: brightnessKeyStep) { _, _ in save() }
         .onChange(of: volumeKeyStep) { _, _ in save() }
-        .onChange(of: presenceMinBrightness) { _, _ in save() }
         .onChange(of: inferenceDevice) { _, _ in save() }
     }
 
@@ -131,12 +146,26 @@ struct SettingsView: View {
                 // Threshold below which the camera stays off; editable only while presence protection is on.
                 VStack(alignment: .leading, spacing: 4) {
                     LabeledContent(AppText.string("presenceMinBrightness", locale: locale)) {
-                        HStack { Slider(value: $presenceMinBrightness, in: 10...90, step: 1); Text("\(Int(presenceMinBrightness)) %").monospacedDigit() }
+                        HStack { Slider(value: presenceMinBrightnessSelection, in: 0...90, step: 1); Text("\(Int(presenceMinBrightness)) %").monospacedDigit() }
+                    }
+                    if let name = monitoredDisplayName {
+                        Text(AppText.string("presenceMinBrightness.forDisplay", locale: locale)
+                            .replacingOccurrences(of: "{0}", with: name))
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                     Text(AppText.string("presenceMinBrightnessHelp", locale: locale))
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 .disabled(!presence)
+                Picker(AppText.string("monitored.title", locale: locale), selection: monitoredDisplaySelection) {
+                    Text(AppText.string("monitored.automatic", locale: locale)).tag(String?.none)
+                    ForEach(connectedMonitors) { monitor in Text(monitor.name).tag(Optional(monitor.id)) }
+                    if core.snapshot.builtinProtection.protectable && core.snapshot.builtinProtection.available {
+                        Text(AppText.string("builtin.name", locale: locale)).tag(Optional(BuiltInProtectionController.displayID))
+                    }
+                }
+                Text(AppText.string("monitored.help", locale: locale))
+                    .font(.caption).foregroundStyle(.secondary)
                 Toggle(AppText.string("alwaysOnCamera", locale: locale), isOn: $alwaysOnCamera)
                     .help(AppText.string("alwaysOnCameraHelp", locale: locale))
                 Toggle(AppText.string("saver", locale: locale), isOn: $screensaver)
@@ -153,7 +182,7 @@ struct SettingsView: View {
                     Text(AppText.string("protection.monitors.help", locale: locale))
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                if connectedMonitors.isEmpty {
+                if connectedMonitors.isEmpty && !showsBuiltInProtection {
                     Text(AppText.string("protection.monitors.none", locale: locale))
                         .foregroundStyle(.secondary)
                 }
@@ -162,6 +191,24 @@ struct SettingsView: View {
                         get: { monitor.protected ?? true },
                         set: { setMonitorProtection(monitor.id, enabled: $0) }
                     ))
+                }
+                if let builtIn, showsBuiltInProtection {
+                    Toggle(AppText.string("builtin.name", locale: locale), isOn: Binding(
+                        get: { core.snapshot.builtinProtection.protected },
+                        set: { setMonitorProtection(BuiltInProtectionController.displayID, enabled: $0) }
+                    ))
+                    .help(AppText.string("builtin.protection.toggle.help", locale: locale))
+                    // The option only matters while protection dims the built-in screen, so it is locked while protection is off.
+                    VStack(alignment: .leading, spacing: 4) {
+                        Toggle(AppText.string("builtin.protection.option.title", locale: locale), isOn: Binding(
+                            get: { core.snapshot.settings?.builtinAutoBrightnessOffOnProtection ?? false },
+                            set: { setBuiltInAutoBrightnessOption($0) }
+                        ))
+                        .disabled(!core.snapshot.builtinProtection.protected)
+                        Text(AppText.string("builtin.protection.option.help", locale: locale))
+                            .font(.caption).foregroundStyle(.secondary)
+                        BuiltInNoticeLabel(protection: builtIn.protection, locale: locale)
+                    }
                 }
             }
             Section(AppText.string("availability", locale: locale)) {
@@ -261,7 +308,7 @@ struct SettingsView: View {
         hardwareKeys = value.hardware_keys_enabled ?? false
         brightnessKeyStep = Double(value.brightness_key_step ?? 5)
         volumeKeyStep = Double(value.volume_key_step ?? 5)
-        presenceMinBrightness = value.presence_min_brightness_percent ?? 20
+        presenceMinBrightness = storedPresenceMinBrightness(value)
         returnInterval = Double(value.return_sampling_interval_s)
         inferenceDevice = value.inference_device ?? "auto"
     }
@@ -277,7 +324,8 @@ struct SettingsView: View {
         settings.hardware_keys_enabled = hardwareKeys
         settings.brightness_key_step = Int(brightnessKeyStep.rounded())
         settings.volume_key_step = Int(volumeKeyStep.rounded())
-        settings.presence_min_brightness_percent = presenceMinBrightness
+        // The presence threshold is not saved here: the shown value may belong to the monitored display, so
+        // writePresenceMinBrightness sends it. save() keeps the stored threshold from the latest snapshot.
         settings.inference_device = inferenceDevice
         core.updateSettings(settings)
     }
@@ -288,6 +336,55 @@ struct SettingsView: View {
         var disabled = Set(next.protectionDisabled ?? [])
         if enabled { disabled.remove(monitorID) } else { disabled.insert(monitorID) }
         next.protectionDisabled = disabled.sorted()
+        core.updateSettings(next)
+    }
+
+    /// The threshold the slider shows: the monitored display's own value, or the global one when no display resolves
+    /// or the display has no entry yet.
+    private func storedPresenceMinBrightness(_ settings: CoreSettings) -> Double {
+        if let id = core.snapshot.monitoredDisplay.id, let value = settings.presenceMinBrightnessByDisplay?[id] {
+            return value
+        }
+        return settings.presence_min_brightness_percent ?? 20
+    }
+
+    /// Re-reads the shown threshold from the latest snapshot, so a change of monitored display shows that display's value.
+    private func syncPresenceMinBrightness() {
+        guard let settings = core.snapshot.settings else { return }
+        presenceMinBrightness = storedPresenceMinBrightness(settings)
+    }
+
+    /// The name of the monitored display for the threshold caption, or nil when none resolves.
+    private var monitoredDisplayName: String? {
+        guard let id = core.snapshot.monitoredDisplay.id else { return nil }
+        if id == BuiltInProtectionController.displayID { return AppText.string("builtin.name", locale: locale) }
+        return connectedMonitors.first(where: { $0.id == id })?.name
+    }
+
+    /// The slider's binding. SwiftUI calls the setter only for a user move, so a sync from the snapshot never writes.
+    private var presenceMinBrightnessSelection: Binding<Double> {
+        Binding(get: { presenceMinBrightness }, set: { writePresenceMinBrightness($0) })
+    }
+
+    /// Writes the threshold of the monitored display, or the global value when none resolves. Direct, like the protection
+    /// toggles, so save() never sends the threshold and a per-display value cannot land in the global field.
+    private func writePresenceMinBrightness(_ value: Double) {
+        presenceMinBrightness = value
+        guard var next = core.snapshot.settings else { return }
+        if let id = core.snapshot.monitoredDisplay.id {
+            var byDisplay = next.presenceMinBrightnessByDisplay ?? [:]
+            byDisplay[id] = value
+            next.presenceMinBrightnessByDisplay = byDisplay
+        } else {
+            next.presence_min_brightness_percent = value
+        }
+        core.updateSettings(next)
+    }
+
+    /// Writes the built-in automatic-brightness option directly, with no draft: save() keeps this field from the latest snapshot.
+    private func setBuiltInAutoBrightnessOption(_ enabled: Bool) {
+        guard var next = core.snapshot.settings else { return }
+        next.builtinAutoBrightnessOffOnProtection = enabled
         core.updateSettings(next)
     }
 }

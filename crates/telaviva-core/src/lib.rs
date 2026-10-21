@@ -1,3 +1,4 @@
+mod builtin;
 pub mod camera_lifecycle;
 pub mod controls;
 mod core;

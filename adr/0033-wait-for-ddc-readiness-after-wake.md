@@ -33,7 +33,7 @@ The budget is counted in attempts, not in time. Each core read is one controls o
 - Any operation that starts in the window waits for an answer, including a manual slider write. A manual write to a monitor that does not answer stays pending until the window ends, instead of failing in about 1.2 s. The normal budget then applies.
 - The figures in ADR 0006 (about 7 s) describe the behavior only outside this window. The limit of three attempts per primitive in ADR 0029 holds outside it too.
 - Not verified on hardware. If the work monitor takes longer than 30 s to answer, raise `WAKE_READY_WINDOW_SECS`, not `MAX_RESTORE_FAILURES`.
-- The window does not fix two other paths. A monitor rediscovered while dimmed captures the dimmed value as its new baseline (ADR 0006), and a display sleep during an in-flight dim write is ignored by the core. Both remain open. The bug plan lists them as owner decisions.
+- The window does not fix two other paths. A monitor rediscovered while dimmed captures the dimmed value as its new baseline (ADR 0006), and a display sleep during an in-flight dim write is ignored by the core. Rediscovery at the dimmed level under the same id is resolved by the [ADR 0006 amendment](0006-keep-brightness-restore-pending-after-failed-wake-readback.md#amendment-2026-10-21-restore-a-dim-after-reconnect). Rediscovery at another level or under another id, and a display sleep during an in-flight dim write, remain open. The bug plan lists those as owner decisions.
 
 ## Non-Obvious Constraints
 

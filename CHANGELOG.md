@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+## 0.1.3 - 2026-10-21
+
+### Added
+
+- Laptop screen protection on macOS and Windows: the built-in screen appears in the popup and in Settings > General as "MacBook screen" on macOS and "Laptop" on Windows, with a protection switch, a brightness slider and a Protection brightness slider, and no volume control. It dims when no face is detected and when the screensaver starts, is restored afterwards, and is hidden while the lid is closed. Hardware checks are pending on both platforms.
+- An option, off by default, to turn off the system's automatic brightness while the laptop screen is protected: "Automatically adjust brightness" on macOS, and "Change brightness automatically when lighting changes" in the active power plan on Windows. The app turns it back on afterwards unless you turned it on during protection, and after a crash it recovers the setting and the screen brightness at the next launch. On macOS it uses private interfaces that are not verified on hardware yet.
+- A Monitored display selector on macOS and Windows: Automatic (on macOS, the main external display, then the other external displays, then this Mac; on Windows, the main external display, otherwise the laptop screen) is the default, or you can choose a display. The choice is remembered by priority, like the camera, up to eight displays. The camera follows the monitored display, or the next awake display when it sleeps.
+- The presence brightness threshold is saved per display on macOS and Windows, with a range of 0 to 90 percent (it was 10 to 90 percent on Windows). A display without its own value uses the global value.
+- On macOS and Windows, the built-in camera is ignored while the lid is closed, as if it were disconnected. The camera choice is kept, and the built-in camera is used again when the lid opens.
+
+### Changed
+
+- Protection brightness is a fixed level of 1 to 50 percent for each screen on macOS and Windows, used for both presence absence and the screensaver. The default is 1 percent. Before, the level applied to the screensaver only on macOS, with a default of 0, and presence absence dimmed to 0 on Windows.
+- The camera follows the gate display (the monitored display, or the next awake display when it sleeps) and also runs while any display is dimmed by presence. It was any protected display above the threshold.
+- Calibration and laptop screen protection share one owner of the system's automatic brightness on macOS and Windows, so the setting is restored when the last of them ends, unless you turned it on in the meantime. Calibration is refused while protection holds the laptop screen.
+- Upgrade note: the laptop screen is protected by default on macOS and Windows, and its protection switch turns it off.
+- Upgrade note: a build older than this one treats a `settings.json` written by this version as corrupt and resets its settings, as it already does for earlier additive fields.
+
+### Fixed
+
+- Calibration crash recovery now restores the external monitor's brightness once the monitor is available again, for up to 90 seconds after launch. It was lost before. Hardware checks are pending.
+- A monitor that protection dimmed gets its previous brightness back, rounded to a whole unit, when it is dropped and rediscovered (or rediscovered in place) under the same ID at the dimmed level. Before, the dimmed level became the new baseline, so the monitor stayed dimmed. At another level that level is kept, and under another ID the previous brightness is not restored. Shared by macOS and Windows; hardware checks are pending.
+- A brightness or volume set from a slider is stored as a whole device unit. Before, a fractional value (for example a device value of 45.15) never matched the whole number the monitor reports, so the app re-read and rewrote the monitor about every second, costing CPU and DDC traffic. Shared by macOS and Windows; hardware checks are pending.
+
 ## 0.1.2 - 2026-10-19
 
 ### Added

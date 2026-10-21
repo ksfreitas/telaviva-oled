@@ -6,10 +6,16 @@ use std::{
 };
 
 pub const MAX_CAMERA_HISTORY: usize = 8;
+pub const MAX_MONITORED_HISTORY: usize = 8;
 const MAX_MONITOR_ENTRIES: usize = 128;
 const MAX_MONITOR_ID_BYTES: usize = 512;
 pub const MIN_CURVE_POINTS: usize = 2;
 pub const MAX_CURVE_POINTS: usize = 32;
+// Protection level bounds, in percent of a screen's range. Presence and the screensaver both dim a
+// screen to its level, fixed and independent of the screen's current brightness, so an
+// ambient-following slider is never capped at 0.
+pub const PROTECTION_MIN_PERCENT: f64 = 1.0;
+pub const PROTECTION_MAX_PERCENT: f64 = 50.0;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -28,6 +34,11 @@ pub struct Settings {
     pub presence_protection_enabled: bool,
     #[serde(default = "default_presence_min_brightness")]
     pub presence_min_brightness_percent: f64,
+    // Per-display presence threshold, percent 0..=90, keyed by monitor id or "builtin". A display
+    // without an entry uses presence_min_brightness_percent. Entries for disconnected displays are
+    // kept, so a display that returns gets its threshold back.
+    #[serde(default)]
+    pub presence_min_brightness_by_display: std::collections::BTreeMap<String, f64>,
     #[serde(default)]
     pub always_on_camera: bool,
     #[serde(default)]
@@ -47,6 +58,13 @@ pub struct Settings {
     // Most recent first. The front entry is always selected_camera_id; clients cannot set it.
     #[serde(default)]
     pub camera_history: Vec<String>,
+    // The display that represents "I am looking at it". A monitor id or the reserved "builtin";
+    // null is Automatic. Most recent first; the front entry is always monitored_display_id, and
+    // clients cannot set the history.
+    #[serde(default)]
+    pub monitored_display_id: Option<String>,
+    #[serde(default)]
+    pub monitored_display_history: Vec<String>,
     #[serde(default)]
     pub screensaver_targets: std::collections::BTreeMap<String, f64>,
     #[serde(default)]
@@ -55,6 +73,8 @@ pub struct Settings {
     pub ambient_curves: std::collections::BTreeMap<String, AmbientCurve>,
     #[serde(default)]
     pub protection_disabled: std::collections::BTreeSet<String>,
+    #[serde(default)]
+    pub builtin_auto_brightness_off_on_protection: bool,
 }
 
 // One monitor's calibration. Each point pairs a monitor brightness percent (`monitor`) with the
@@ -237,6 +257,7 @@ impl Default for Settings {
             suspend_presence_on_battery: true,
             presence_protection_enabled: false,
             presence_min_brightness_percent: 20.0,
+            presence_min_brightness_by_display: Default::default(),
             always_on_camera: false,
             screensaver_protection_enabled: false,
             launch_at_login: false,
@@ -246,10 +267,13 @@ impl Default for Settings {
             inference_device: "auto".into(),
             selected_camera_id: None,
             camera_history: Vec::new(),
+            monitored_display_id: None,
+            monitored_display_history: Vec::new(),
             screensaver_targets: Default::default(),
             ambient_follow_enabled: false,
             ambient_curves: Default::default(),
             protection_disabled: Default::default(),
+            builtin_auto_brightness_off_on_protection: false,
         }
     }
 }
@@ -259,6 +283,26 @@ impl Settings {
         let value: Self = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
         value.validate()?;
         Ok(value)
+    }
+
+    // Protection level of one screen, in percent. A screen without an entry gets the floor, so
+    // protection never dims to the raw minimum by default. Stored values are clamped into the
+    // range here, where they are applied.
+    pub(crate) fn protection_percent(&self, id: &str) -> f64 {
+        self.screensaver_targets
+            .get(id)
+            .copied()
+            .unwrap_or(PROTECTION_MIN_PERCENT)
+            .clamp(PROTECTION_MIN_PERCENT, PROTECTION_MAX_PERCENT)
+    }
+
+    // Presence threshold of one display, in percent. A display without an entry uses the global
+    // threshold, so settings files written before the per-display map keep their behavior.
+    pub(crate) fn presence_threshold(&self, id: &str) -> f64 {
+        self.presence_min_brightness_by_display
+            .get(id)
+            .copied()
+            .unwrap_or(self.presence_min_brightness_percent)
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -296,6 +340,31 @@ impl Settings {
         if self.selected_camera_id.as_ref() != self.camera_history.first() {
             return Err("selected camera must be the first camera history entry".into());
         }
+        // Same rules as the camera history. The id is a monitor id or "builtin", so it uses the
+        // monitor id length bound.
+        if self
+            .monitored_display_id
+            .as_ref()
+            .is_some_and(|id| id.is_empty() || id.len() > MAX_MONITOR_ID_BYTES)
+        {
+            return Err("invalid monitored display ID".into());
+        }
+        if self.monitored_display_history.len() > MAX_MONITORED_HISTORY {
+            return Err("monitored display history exceeds its limit".into());
+        }
+        for (index, id) in self.monitored_display_history.iter().enumerate() {
+            if id.is_empty() || id.len() > MAX_MONITOR_ID_BYTES {
+                return Err("invalid monitored display history entry".into());
+            }
+            if self.monitored_display_history[..index].contains(id) {
+                return Err("duplicate monitored display history entry".into());
+            }
+        }
+        if self.monitored_display_id.as_ref() != self.monitored_display_history.first() {
+            return Err(
+                "monitored display must be the first monitored display history entry".into(),
+            );
+        }
         if !self.presence_sampling_interval_s.is_finite()
             || !(5.0..=300.0).contains(&self.presence_sampling_interval_s)
         {
@@ -313,16 +382,35 @@ impl Settings {
             return Err("volume key step out of range".into());
         }
         if !self.presence_min_brightness_percent.is_finite()
-            || !(10.0..=90.0).contains(&self.presence_min_brightness_percent)
+            || !(0.0..=90.0).contains(&self.presence_min_brightness_percent)
         {
             return Err("presence brightness threshold out of range".into());
         }
+        // Stored values outside 1..=50 are clamped when applied (see protection_percent), not
+        // rejected here, so settings files written before the fixed range keep loading.
         if self
             .screensaver_targets
             .iter()
             .any(|(k, v)| k.is_empty() || !v.is_finite() || !(0.0..=100.0).contains(v))
         {
             return Err("invalid screensaver target".into());
+        }
+        // Same entry and key bounds as the other per-display maps. The value range matches the
+        // global threshold, so any entry is a valid replacement for it.
+        if self.presence_min_brightness_by_display.len() > MAX_MONITOR_ENTRIES {
+            return Err("presence thresholds exceed their limit".into());
+        }
+        if self
+            .presence_min_brightness_by_display
+            .iter()
+            .any(|(k, v)| {
+                k.is_empty()
+                    || k.len() > MAX_MONITOR_ID_BYTES
+                    || !v.is_finite()
+                    || !(0.0..=90.0).contains(v)
+            })
+        {
+            return Err("invalid presence threshold by display".into());
         }
         if self.ambient_curves.len() > MAX_MONITOR_ENTRIES {
             return Err("ambient curves exceed their limit".into());

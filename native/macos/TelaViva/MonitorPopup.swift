@@ -5,7 +5,24 @@ struct MonitorPopup: View {
     @ObservedObject var controls: ManualMonitorControls
     let openSettings: () -> Void
     let refreshDisplays: () -> Void
+    /// Nil when the built-in screen is not wired in; the card is then never listed.
+    var builtIn: BuiltInControls? = nil
     @State private var cardHeights: [String: CGFloat] = [:]
+
+    private var monitors: [CoreMonitor] { core.snapshot.monitors ?? [] }
+
+    /// The built-in card is listed only while the screen is protectable and available, so it is absent with the lid closed.
+    private var showsBuiltIn: Bool {
+        let bp = core.snapshot.builtinProtection
+        return builtIn != nil && bp.protectable && bp.available
+    }
+
+    /// Card IDs in list order, matching the cards above, so the height estimate covers the built-in card too.
+    private var cardIDs: [String] {
+        var ids = monitors.map(\.id)
+        if showsBuiltIn { ids.insert(BuiltInProtectionController.displayID, at: 0) }
+        return ids
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -17,14 +34,18 @@ struct MonitorPopup: View {
                     .buttonStyle(.borderless).help(AppText.string("refresh", locale: core.snapshot.settings?.locale))
             }
             Divider()
-            if let monitors = core.snapshot.monitors, !monitors.isEmpty {
+            if showsBuiltIn || !monitors.isEmpty {
                 ScrollView {
                     VStack(spacing: 12) {
+                        if let builtIn, showsBuiltIn {
+                            BuiltInCardView(core: core, builtIn: builtIn, protection: builtIn.protection)
+                                .reportPopupCardHeight(id: BuiltInProtectionController.displayID)
+                        }
                         ForEach(monitors) { MonitorControls(monitor: $0, core: core, controls: controls).reportPopupCardHeight(id: $0.id) }
                     }
                 }
                 .frame(height: PopupLayout.listHeight(
-                    cardHeights: monitors.map { cardHeights[$0.id] ?? PopupLayout.estimatedCardHeight },
+                    cardHeights: cardIDs.map { cardHeights[$0] ?? PopupLayout.estimatedCardHeight },
                     spacing: 12,
                     screenCap: PopupLayout.listCap(visibleScreenHeight: NSScreen.main?.visibleFrame.height ?? 800)))
                 .onPreferenceChange(PopupCardHeightsKey.self) { cardHeights = $0 }
@@ -70,12 +91,10 @@ private struct MonitorControls: View {
                 control(AppText.string("brightness", locale: core.snapshot.settings?.locale), value: monitor.brightness, feature: .brightness)
             }
             control(AppText.string("volume", locale: core.snapshot.settings?.locale), value: monitor.volume, feature: .volume)
-            if core.snapshot.settings?.screensaver_protection_enabled == true, monitor.protected != false {
+            if core.snapshot.settings?.presence_protection_enabled == true || core.snapshot.settings?.screensaver_protection_enabled == true, monitor.protected != false {
                 screensaverTarget
             }
         }
-        .onAppear(perform: clampScreensaverTarget)
-        .onChange(of: monitor.brightness?.value) { _, _ in clampScreensaverTarget() }
         .padding(12).background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 10))
     }
 
@@ -84,20 +103,18 @@ private struct MonitorControls: View {
         core.snapshot.ambient?.active == true && monitor.follow == "eligible"
     }
 
+    /// Fixed 1...50 range, independent of the screen's brightness: with ambient follow the monitor's brightness can sit near 0.
     private var screensaverTarget: some View {
-        let maximum = protectionBrightnessMaximum
-        let enabled = maximum.map { $0 > 0 } ?? false
-        let target = min(core.snapshot.settings?.screensaver_targets[monitor.id] ?? 0, maximum ?? 0)
+        let target = min(max(core.snapshot.settings?.screensaver_targets[monitor.id] ?? 1, 1), 50)
         return HStack(spacing: 8) {
             rowLabel(AppText.string("protectionBrightness", locale: core.snapshot.settings?.locale))
             Slider(value: Binding(get: {
-                min(core.snapshot.settings?.screensaver_targets[monitor.id] ?? 0, maximum ?? 0)
+                min(max(core.snapshot.settings?.screensaver_targets[monitor.id] ?? 1, 1), 50)
             }, set: { value in
                 guard var settings = core.snapshot.settings else { return }
-                settings.screensaver_targets[monitor.id] = min(max(value, 0), maximum ?? 0)
+                settings.screensaver_targets[monitor.id] = min(max(value, 1), 50)
                 core.updateSettings(settings)
-            }), in: 0...(maximum.map { $0 > 0 ? $0 : 1 } ?? 1))
-            .disabled(!enabled)
+            }), in: 1...50)
             Text("\(Int(target.rounded()))%").monospacedDigit().frame(width: 42, alignment: .trailing).font(.caption)
         }
     }
@@ -150,25 +167,6 @@ private struct MonitorControls: View {
             Label("\(title) \(AppText.string("unavailable", locale: core.snapshot.settings?.locale))", systemImage: "minus.circle")
                 .font(.caption).foregroundStyle(.secondary)
         }
-    }
-
-    private var protectionBrightnessMaximum: Double? {
-        guard let brightness = monitor.brightness, brightness.supported,
-              let value = brightness.value else { return nil }
-        let confirmed = min(max(value, 0), 100)
-        // A followed monitor has no brightness control, so any leftover draft is ignored.
-        guard !isFollowed, let draft = controls.displayValue(monitor: monitor, feature: .brightness) else { return confirmed }
-        return min(confirmed, max(0, draft))
-    }
-
-    private func clampScreensaverTarget() {
-        guard let maximum = protectionBrightnessMaximum,
-              var settings = core.snapshot.settings else { return }
-        let existing = settings.screensaver_targets[monitor.id] ?? 0
-        let clamped = min(max(existing, 0), maximum)
-        guard existing != clamped else { return }
-        settings.screensaver_targets[monitor.id] = clamped
-        core.updateSettings(settings)
     }
 
     private func rowLabel(_ title: String) -> some View {

@@ -55,5 +55,22 @@ Six regression tests in `crates/telaviva-core/tests/core_contract.rs` cover the 
 - Presence protection is cleared on every display-state change, so a woken monitor returns to its baseline. It is dimmed again only after two new absent samples. This is existing behavior and is kept.
 - An active screensaver reason blocks the restore by design. The restore waits until the screensaver stops.
 - Retries are disabled once shutdown has started (`Core.closed`). A failed read or restore write queued by `shutdown_policy` drops ownership as before, so quitting never waits on retries. This is covered by `shutdown_failed_readback_does_not_retry_the_restore` in `crates/telaviva-core/tests/core_contract.rs`.
-- Not addressed: a monitor that is re-discovered while dimmed captures the dimmed value as its new baseline. `contracts.md` forbids reusing a baseline after reconnect, so this needs a design decision.
+- A monitor that is re-discovered while dimmed captured the dimmed value as its new baseline. The [2026-10-21 amendment](#amendment-2026-10-21-restore-a-dim-after-reconnect) resolves the same-id, same-level case; the other cases keep this behavior.
 - If the monitor still stays dim after this fix, collect a snapshot after wake before changing code again. Take `display_state`, `brightness` (`owned`, `raw`, `observed`, `status`, `reasons`), `screensaver.state` and `pending_actions`.
+
+## Amendment 2026-10-21: restore a dim after reconnect
+
+**Context.** A monitor that protection had dimmed could disconnect, or be discovered again in place, and return at the dimmed value. Discovery then took that value as the monitor's new baseline, so the dim was never undone and no later event restored it.
+
+**Decision.** For each monitor id, the core parks the previous baseline (rounded) and the dimmed raw value when the monitor disconnects or is replaced while the app owns a value that differs from the baseline. When the same id is discovered again with stable identity and supported brightness, the parked entry is consumed:
+
+- If the reading is within 0.5 raw units of the dimmed value, the parked baseline is restored through the normal ownership path, which reads first and then writes. The log line `dim_resumed monitor=<id> baseline=<n>` is written.
+- If the monitor returns at another level, nothing is restored and that level becomes the baseline.
+- An entry is never used for another id.
+- An ambiguous or unsupported rediscovery leaves the entry parked.
+
+**Scope.** The entries are runtime only and are never persisted. External monitors have no on-disk record, so a quit before the monitor returns loses the dim. Shutdown discards every entry. The core keeps at most 16 entries; when a new one would exceed that, the first id in key order is dropped, not the oldest. An entry lasts until a stable, supported discovery of its id, shutdown, or eviction. A resumed monitor starts with no presence reason, so if the user is still away it dims again after two absent checks.
+
+**Supersedes.** For the same-id, same-level case only, this amendment supersedes two lines of the archived [contracts.md](../specs/archived/external-monitor-control-and-oled-presence-protection/contracts.md): line 33, "Never reuse a baseline after reconnect or application restart", and line 56, which asks to "read a fresh baseline" on reconnect. The restart half of line 33 still holds: no baseline is reused after an application restart.
+
+**Status.** Hardware checks are pending for every monitor. This amendment does not claim a physical restore. The Windows DDC path uses the same core and applies once a Windows build includes it.

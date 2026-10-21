@@ -15,7 +15,7 @@ Header: [`include/telaviva_core.h`](include/telaviva_core.h). ABI version: `1` (
 | `tv_submit(core, json, json_len)` | Submits a UTF-8 JSON command, with a maximum input size of 64 KiB. Commands after shutdown return `TV_CLOSED`, except hardware results needed to complete pending work. |
 | `tv_snapshot(core, out_buffer)` | Copies the current revisioned UTF-8 JSON snapshot into a Rust-owned buffer, capped at 8 MiB. |
 | `tv_diagnostics_drain(core, out_buffer)` | Returns and clears the pending diagnostic lines as a UTF-8 JSON array of strings, copied into a Rust-owned buffer capped at 8 MiB; an empty ring returns `[]`. Each line names a monitor only by its hashed `id-xxxxxxxx`. Free the buffer with `tv_buffer_free`. Additive to ABI version 1. |
-| `tv_shutdown(core)` | Stops new callbacks/commands and emits best-effort ownership-checked restore actions. |
+| `tv_shutdown(core)` | Stops new callbacks/commands and emits best-effort ownership-checked restore actions. Parked dims are discarded, not restored. |
 | `tv_destroy(core)` | Destroys a handle after the host handles shutdown actions; callers must not race it with other calls. |
 | `tv_buffer_free(buffer)` | Frees and clears a buffer returned by `tv_snapshot`, `tv_camera_lifecycle_step` or `tv_controls_step`. |
 | `tv_camera_lifecycle_create(out)` | Creates an inactive `TvCameraLifecycle` handle (mode `disabled`, no deadlines). Additive to ABI version 1. |
@@ -33,7 +33,7 @@ Implemented command envelope types are `monitor_discovered`, `monitor_disconnect
 
 Each monitor snapshot reports `id`, `name`, `identity_status`, `connection_path`, `generation`, `display_state`, `presence_dimmed`, `brightness`, `volume`, `follow`, and `protected`. Each brightness/volume feature reports `supported`, `normalized`, `raw`, `min`, `max`, `observed`, `desired`, `status`, `owned`, and `reasons`. Each pending action reports `id`, `monitor_id`, `generation`, `kind`, `value`, and `target`. Discovery identities are `stable` or `ambiguous`; camera status inputs are `unknown`, `ready`, `unavailable`, `busy`, `permission`, or `error`. Presence observations currently accept `present`, `absent`, `insufficient_light`, `unavailable`, and `usable_light`; observation freshness and camera generation gate whether an event is applied.
 
-Settings schema version `1` uses locale `auto`, `en-US`, or `pt-BR` (the core stores this setting and each native shell reads it to choose its own UI strings; the core translates nothing); presence sampling interval 5–300 seconds (default 10); return sampling interval 0.25–5 seconds (default 1); Boolean presence, screensaver, battery-suspension, launch-at-login, `always_on_camera`, and `hardware_keys_enabled` options; integer `brightness_key_step` and `volume_key_step` options (1–15 percentage points, default 5; additive in schema 1 with no ABI change, and out-of-range values are rejected by `update_settings`); the numeric `presence_min_brightness_percent` threshold (10–90 percentage points, default 20; additive in schema 1 with no ABI change, a missing key loads as 20, and out-of-range values are rejected by `update_settings`; see the camera lifecycle section); optional selected camera ID and read-only `camera_history` (see below); per-monitor normalized screensaver targets 0–100; and the brightness follow and protection settings described in the brightness follow section below. Defaults disable presence and screensaver protection, enable battery suspension, and disable launch at login, always-on capture, and hardware-key routing. Missing `always_on_camera` and `hardware_keys_enabled` default to false when loading existing settings; older binaries that reject unknown fields may not accept files saved by this version. Brightness and volume control commands use normalized values 0–100; device actions/readbacks use adapter-reported raw values and ranges.
+Settings schema version `1` uses locale `auto`, `en-US`, or `pt-BR` (the core stores this setting and each native shell reads it to choose its own UI strings; the core translates nothing); presence sampling interval 5–300 seconds (default 10); return sampling interval 0.25–5 seconds (default 1); Boolean presence, screensaver, battery-suspension, launch-at-login, `always_on_camera`, and `hardware_keys_enabled` options; integer `brightness_key_step` and `volume_key_step` options (1–15 percentage points, default 5; additive in schema 1 with no ABI change, and out-of-range values are rejected by `update_settings`); the numeric `presence_min_brightness_percent` threshold (0–90 percentage points, default 20; additive in schema 1 with no ABI change, a missing key loads as 20, and out-of-range values are rejected by `update_settings`; see the camera lifecycle section); optional selected camera ID and read-only `camera_history` (see below); per-monitor normalized screensaver targets 0–100, applied as the 1–50 percent protection level (see [Setting `screensaver_targets` as the protection level](#setting-screensaver_targets-as-the-protection-level)); and the brightness follow and protection settings described in the brightness follow section below. Defaults disable presence and screensaver protection, enable battery suspension, and disable launch at login, always-on capture, and hardware-key routing. Missing `always_on_camera` and `hardware_keys_enabled` default to false when loading existing settings; older binaries that reject unknown fields may not accept files saved by this version. Brightness and volume control commands use normalized values 0–100; device actions/readbacks use adapter-reported raw values and ranges. `set_brightness` and `set_volume` map the value to the device raw range, round it to a whole raw unit and clamp it, so desired and baseline are whole units.
 
 The implemented camera snapshot has mode `disabled`, `suspended`, `light_only`, or `face`; capture mode is `stopped`, `single_frame`, `continuous_return`, or `continuous_monitoring`. It reports status, display status, generation, and `next_sample_in_ms` (null while disabled or suspended). This is policy output; the native adapter performs capture. The core ABI carries no frame data. `display_status` is presentation-only: `disabled`, `checking`, `ready`, `insufficient_light`, `unavailable`, `busy`, `permission`, `error`, `suspended_battery`, `suspended_power_unknown`, `suspended_no_monitor`, `suspended_display_sleep`, `suspended_low_brightness`, or fallback `unknown`. Each native shell maps these codes to its own localized text. It must not be used to override acquisition policy; consumers use `mode` and `capture_mode` for that.
 
@@ -201,7 +201,7 @@ Semver rules:
 
 `monitor_display_state` accepts `monitor_id`, the current monitor connection `generation`, and `state` (`unknown`, `awake`, or `asleep`). Invalid states and unknown monitor IDs are rejected; stale connection observations are ignored. Each monitor snapshot reports `display_state`. Unknown state is not classified as asleep. When all eligible external monitors (stable identity, supported brightness, known baseline) are asleep, camera mode is `suspended`, capture is `stopped`, and the next-sample delay is null. Any awake eligible monitor above the brightness threshold permits monitoring. Brightness zero does not indicate display sleep.
 
-The brightness threshold `presence_min_brightness_percent` (default 20, range 10 to 90; the comparison is strict, so a monitor exactly at the threshold does not count) applies in the same way. Presence checking needs at least one eligible monitor that is awake and above the threshold. Otherwise the camera is `suspended` with capture `stopped` and a null next-sample delay. Display status is `suspended_low_brightness` when an eligible monitor exists, and `suspended_no_monitor` when none does. When several suspension reasons apply, battery states take precedence, then `suspended_display_sleep`, then `suspended_low_brightness`, then `suspended_no_monitor`. The existing no-eligible-monitor suspension is unchanged. The level compared is the monitor's `baseline` while the app owns its brightness or a protection reason is active (presence or screensaver dimming, or a pending restore write), and the observed level otherwise. A monitor with `presence_dimmed` set always counts as above, so its return check keeps running; an unknown observed level also counts as above. A monitor that falls to or below the threshold restarts its absence count. A connected monitor that rises above the threshold, or a threshold lowered below it, starts a resume as described below. Newly discovered monitors do not trigger a resume.
+The brightness threshold `presence_min_brightness_percent` (default 20, range 0 to 90; the comparison is strict, so a monitor exactly at the threshold does not count) applies in the same way. Presence checking needs at least one eligible monitor that is awake and above the threshold. Otherwise the camera is `suspended` with capture `stopped` and a null next-sample delay. Display status is `suspended_low_brightness` when an eligible monitor exists, and `suspended_no_monitor` when none does. When several suspension reasons apply, battery states take precedence, then `suspended_display_sleep`, then `suspended_low_brightness`, then `suspended_no_monitor`. The existing no-eligible-monitor suspension is unchanged. The level compared is the monitor's `baseline` while the app owns its brightness or a protection reason is active (presence or screensaver dimming, or a pending restore write), and the observed level otherwise. A monitor with `presence_dimmed` set always counts as above, so its return check keeps running; an unknown observed level also counts as above. A monitor that falls to or below the threshold restarts its absence count. A connected monitor that rises above the threshold, or a threshold lowered below it, starts a resume as described below. Newly discovered monitors do not trigger a resume.
 
 `always_on_camera` retains an eligible capture session in `continuous_monitoring` mode during face and light-only checks. It does not bypass presence enablement, battery suspension, display sleep, camera errors, no-monitor suspension, or shutdown. Inference follows the configured intervals, and frames between checks are discarded. Existing return checks continue to hold capture regardless of this setting. Presence observations received while disabled or suspended, or carrying an obsolete camera generation, are ignored.
 
@@ -229,7 +229,7 @@ Follow is *active* when `ambient_follow_enabled` and `available` are both true. 
 
 When follow is not applying, `follow_raw` is cleared and the monitor keeps its current baseline; follow issues no writes. When `follow_raw` is set, the baseline becomes `follow_raw` and `manual_override` is unchanged. A write is queued only when the monitor is awake, not dimmed by a protection reason, not already within one raw unit of `follow_raw` (observed or desired), and the bounded hardware queue accepts it. Presence or screensaver dimming keeps the dimmed level and updates only the baseline; when protection ends, the existing restore writes the baseline, which is the mapped value.
 
-`set_brightness` is unchanged and still sets `manual_override` and the baseline. The calibration uses it to set the monitor to each point; the calibration slider for the MacBook screen is written by the native shell, not through this command. While calibration is in use the shell reports `calibrating: true`, which pauses follow as described above. `monitor_discovered` also recomputes `follow_raw` for the new monitor.
+`set_brightness` is unchanged and still sets `manual_override` and the baseline, both as the whole raw unit. The calibration uses it to set the monitor to each point; the calibration slider for the MacBook screen is written by the native shell, not through this command. While calibration is in use the shell reports `calibrating: true`, which pauses follow as described above. `monitor_discovered` also recomputes `follow_raw` for the new monitor.
 
 The top-level `ambient` snapshot object reports `enabled` (the `ambient_follow_enabled` setting), `available`, `active`, `calibrating`, and `builtin_percent`:
 
@@ -329,3 +329,125 @@ The Advanced page lists Automatic, Neural Engine preference, GPU preference and 
 CoreML uses the provider's string `MLComputeUnits` option through the versioned runtime API. macOS bundles ONNX Runtime 1.23.0 with unchanged `ort` rc.9/API 20 bindings; Windows retains 1.20.1. The initial macOS 1.22.0 target was replaced after reproducing a runtime process-exit mutex abort, including CPU-only sessions.
 
 The shell checks the bundled self-test frame against a CPU reference and a 250 ms budget for the first detection of each preference session on both platforms, because the first CoreML inference compiles lazily. A candidate failure selects CPU; a runtime accelerator error retries the same frame on CPU and retains CPU for the preference session, including after idle detector release. Successful validation is also retained across idle recreation. A changed preference resets the decision. A foreign-platform id is retained, behaves as Automatic and reports `unavailable`. CoreML preferences do not prove which physical compute unit executed individual operators. No network use is added.
+
+## Laptop display protection
+
+The laptop's built-in screen is a protectable display in the shared core, under the reserved id `"builtin"`. The core decides and the macOS shell applies. The change is JSON only: ABI version `1` (`TV_CORE_ABI_VERSION`) and settings schema `1` are unchanged, no function signature changes, and the built-in screen never appears in the snapshot `monitors` object. The behavior is in [ARCHITECTURE.md](ARCHITECTURE.md) and the decision is in [ADR 0035](adr/0035-laptop-display-protection-and-auto-brightness.md).
+
+This section supersedes the earlier ranges for `presence_min_brightness_percent` (now 0 to 90, not 10 to 90) and the protection level (1 to 50 percent, not 0 to 100).
+
+### Command `builtin_display`
+
+The command in [Built-in display brightness follow](#built-in-display-brightness-follow) gains two optional keys. It remains a runtime command and is not persisted.
+
+```json
+{ "type": "builtin_display", "available": true, "brightness": 62, "calibrating": false, "protectable": true, "holding": false }
+```
+
+- `protectable` (Boolean, optional, default `false`): the shell has a built-in screen whose brightness it can adjust. It stays `true` while the lid is closed, so the camera and display-sleep logic still see the screen.
+- `holding` (Boolean, optional, default `false`): the shell holds the screen dimmed and has not finished restoring it. It is ignored unless `protectable` is `true`.
+- A non-boolean `protectable` or `holding` returns a command error (`protectable must be boolean` or `holding must be boolean`) and changes no state. The validation of `available`, `brightness` and `calibrating` is unchanged.
+- Freeze: while `holding` is `true` or any reason is active, `brightness` does not replace `builtin_percent`, which keeps the last undimmed level. Follow pauses until the freeze ends and then uses the next fresh report.
+- `available: false` clears the built-in absence count and presence dim.
+
+### Snapshot `builtin_protection`
+
+A top-level object next to `ambient`:
+
+```json
+"builtin_protection": { "protectable": true, "protected": true, "available": true, "reasons": ["presence"], "target_percent": 1.0, "hold_auto_brightness": false, "holding": true }
+```
+
+- `protectable`: the last `protectable` value from `builtin_display`; `false` for a shell that never sends it.
+- `protected`: `protectable` is `true` and `"builtin"` is not in `protection_disabled`.
+- `available`: the last reported availability.
+- `reasons`: `"presence"` and/or `"screensaver"`, in that order. Empty unless the screen is protected, available and not calibrating, and the core is open.
+- `target_percent`: `null` without reasons; otherwise the protection level of `"builtin"` (see below).
+- `hold_auto_brightness`: `true` when `builtin_auto_brightness_off_on_protection` is `true` and `reasons` is not empty.
+- `holding`: the last `holding` value reported by the shell. It is `false` unless `protectable` is `true`.
+
+### Snapshot `monitored_display`
+
+A top-level object, next to `builtin_protection`:
+
+```json
+"monitored_display": { "id": "builtin", "automatic": true }
+```
+
+`id` is the selected display: the first connected entry of `monitored_display_history`, otherwise Automatic. Automatic picks the external monitor flagged `primary`, then the first usable external monitor by id, then the built-in screen when it is protectable and available. An external monitor is usable when its identity is stable and its brightness is supported. `id` is `null` when nothing resolves. `automatic` is `true` when `monitored_display_history` is empty.
+
+The camera gate uses the first candidate in that order that is awake (the gate display), so a sleeping display falls through to the next one. The camera runs while the gate display is above its threshold or its level is unknown, and also while any display is presence-dimmed so that the return check continues. It is suspended for display sleep only when every candidate sleeps and no display is dimmed. Absence counting and dimming still cover every protected screen.
+
+### Command `monitor_discovered` `primary`
+
+The `monitor` object of `monitor_discovered` accepts an optional `primary` Boolean (default `false`; `primary must be boolean` otherwise). The macOS shell sets it from `CGDisplayIsMain`. It is a hint for Automatic only. A repeated `monitor_discovered` for the same id replaces the flag, so a change of the main display reaches the core at the next discovery of that monitor. Snapshot monitor objects report `primary`.
+
+### Setting `builtin_auto_brightness_off_on_protection`
+
+Boolean, default `false` (`setting must be boolean` otherwise). When `true`, the shell turns the system's automatic brightness off while protection dims the built-in screen, and turns it back on afterwards unless a fresh read says it is already on (a nil or off read still turns it on). When `false`, protection never reads or writes automatic brightness. The core publishes the decision as `hold_auto_brightness`. The notices for an unreadable or unchangeable automatic-brightness state are shell text in en-US and pt-BR, not core fields.
+
+### Setting `monitored_display_id` and `monitored_display_history`
+
+- `monitored_display_id`: a monitor id or `"builtin"`, or `null`. `null` selects Automatic and clears the history. A string moves to the front of the history, which holds at most 8 unique ids. Any other non-null value returns `monitored_display_id must be string or null`; an empty or over-long id returns `invalid monitored display ID`.
+- `monitored_display_history`: read-only, most recent first. Its first entry always equals `monitored_display_id`. Setting it returns `monitored_display_history is read-only`.
+
+Files without these keys load as Automatic with an empty history.
+
+### Setting `presence_min_brightness_by_display`
+
+A map from display id (a monitor id or `"builtin"`) to a threshold from 0 to 90 percent. Default `{}`. Keys are 1 to 512 bytes, and the map holds at most 128 entries. `update_settings` replaces the whole map, as it does `screensaver_targets`. A value out of range returns `invalid presence threshold by display`. Entries for disconnected displays are kept. The camera gate compares the level of its gate display (the first awake candidate, which is the monitored display unless it sleeps) with that display's entry, or with `presence_min_brightness_percent` when it has none. The Settings slider edits the monitored display's entry, or the global value when no display resolves.
+
+### Setting `presence_min_brightness_percent`
+
+The valid range is now 0 to 90 (the sections above give 10 to 90, which this section supersedes). The default stays 20. Out-of-range values return `presence brightness threshold out of range`.
+
+### Setting `screensaver_targets` as the protection level
+
+Keys are display ids, including `"builtin"` for the built-in screen. Stored values from 0 to 100 are accepted; a non-finite or out-of-range value returns `invalid screensaver target`. The applied level is clamped to 1 to 50 percent, and a display without an entry uses 1. The same level applies to presence absence and to the screensaver, for each protected monitor and for the built-in screen. Presence absence now uses this level too, which earlier builds did not.
+
+### Setting `protection_disabled` with `"builtin"`
+
+`protection_disabled` accepts `"builtin"` as a display id, validated like a monitor id. Adding it turns protection off for the built-in screen: the core clears the built-in presence dim and absence count, and the shell restores the screen. Removing it turns protection on again with a fresh absence count and no immediate dim.
+
+### Diagnostics
+
+- `builtin_protection reasons=<csv or none> target=<percent or none>` is written when the set of reasons changes.
+- `presence_dim` for the built-in screen uses the reserved id, hashed like a monitor id (`monitor=id-xxxxxxxx`, see [ADR 0034](adr/0034-local-diagnostic-logs.md)).
+- Shell lines (`builtin_dim`, `builtin_restore`, `builtin_restore_failed`, `builtin_recovery`, `auto_brightness_unknown`, `auto_brightness_not_changed`, `auto_brightness_restore_failed` and `auto_brightness_recovered`) are written by the shell to the unified log, not returned by `tv_diagnostics_drain`.
+- Reconnect lines from the core: `dim_resumed monitor=id-xxxxxxxx baseline=N` (a parked dim restored after the monitor returned at the dimmed level), and `ownership_dropped` with `reason` `read_mismatch`, `read_failed`, `restore_failed` or `write_failed`. See the [reconnect section](#external-monitor-reconnect-restore--2026-10-21).
+
+### Compatibility
+
+- ABI version stays `1`. All changes are JSON fields and settings keys.
+- Settings schema stays `1`. The new keys are optional with defaults, and older files load with those defaults. An older build that rejects unknown fields treats a file containing these keys as corrupt, renames it to `settings.json.corrupt` and starts from defaults, as it does for the earlier additive keys.
+- Windows sends neither `protectable` nor `holding`, so the built-in policy is inert there. It receives the protection level applied to presence, the 0 to 90 threshold range and snapshot objects it ignores.
+- The DisplayServices writes and the automatic-brightness setter are private macOS APIs and are unverified on hardware.
+
+## external-monitor-reconnect-restore — 2026-10-21
+
+The command contract is unchanged, and the behavior below is runtime only: nothing is persisted. The rule and its rationale are in [ARCHITECTURE.md](ARCHITECTURE.md#external-monitor-reconnect-restore-and-whole-unit-manual-values--2026-10-21) and [ADR 0006](adr/0006-keep-brightness-restore-pending-after-failed-wake-readback.md#amendment-2026-10-21-restore-a-dim-after-reconnect).
+
+### `monitor_discovered` and `monitor_disconnected`
+
+- `monitor_disconnected` bumps the monitor's connection generation, drops its pending actions and removes it from the snapshot. Before removal, a dim the core holds on it is parked: the app owns the brightness and the device value differs from the baseline by more than 0.5 raw units. The parked entry keeps the baseline (rounded) and the dimmed raw value. Parking writes no log line.
+- `monitor_discovered` for a known id bumps the connection generation and the camera generation and drops that id's pending actions, as before. A dim held by the monitor being replaced is parked first, then the rule below applies.
+- Resume rule: the parked entry for the id is consumed only when the discovered identity is `stable` and brightness is supported. If the discovered raw value is within 0.5 of the dimmed raw value, the parked baseline is restored through the normal ownership path, which reads first and then writes. Otherwise the discovered raw value becomes the baseline and nothing is restored. An ambiguous or unsupported rediscovery leaves the entry parked. A parked entry is never used for another id.
+- Log lines: `monitor_discovered` (with `raw` and `baseline`, both the device reading before any resume), `dim_resumed monitor=id-xxxxxxxx baseline=N` (only when a parked dim is restored), and `monitor_disconnected monitor=id-xxxxxxxx`.
+
+### Lifetime and limits
+
+- At most 16 parked entries. When a new entry would exceed the cap, the first id in key order is dropped, not the oldest.
+- An entry lasts until a stable, supported discovery of its id, shutdown, or eviction. `tv_shutdown` discards every entry, so a parked dim is never restored on quit. A quit before the monitor returns loses the dim, and the next launch adopts the dimmed reading.
+- A resumed monitor starts with no presence reason. If the user is still away, it dims again after two absent checks.
+- On macOS the monitor id includes the port's IORegistry location, so a monitor on another port or dock has another id and is not restored.
+
+### Whole-unit manual values
+
+`set_brightness` and `set_volume` store the mapped raw value as a whole unit (round, then clamp). The `desired` and `baseline` fields are therefore whole numbers that a DDC readback can match.
+
+### Diagnostics
+
+- `dim_resumed monitor=id-xxxxxxxx baseline=N`
+- `ownership_dropped` with `reason` `read_mismatch`, `read_failed`, `restore_failed` or `write_failed`.
+
+Hardware checks are pending on both platforms, and this section does not claim a physical reconnect restore. The Windows path applies once a Windows build includes the shared core.

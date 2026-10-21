@@ -293,7 +293,8 @@ final class MacDDCController {
                     "identity_status": transport.identityIsStable ? "stable" : "ambiguous",
                     "connection_path": transport.location,
                     "brightness": featureJSON(brightness),
-                    "volume": featureJSON(volume)
+                    "volume": featureJSON(volume),
+                    "primary": CGDisplayIsMain(transport.displayID) != 0
                 ]])
             }
         }
@@ -337,7 +338,8 @@ final class MacDDCController {
                     "identity_status": transport.identityIsStable ? "stable" : "ambiguous",
                     "connection_path": transport.location,
                     "brightness": featureJSON(brightness),
-                    "volume": featureJSON(volume)
+                    "volume": featureJSON(volume),
+                    "primary": CGDisplayIsMain(transport.displayID) != 0
                 ]])
             }
             reportDisplayState(monitorID, state: state)

@@ -31,6 +31,21 @@ private struct CameraSelectionTests {
         expect(resolveCamera(history: ["camera-a", "camera-b", "camera-a"], connected: ["camera-a"]) == "camera-a",
                "duplicate later entries must not change the match")
 
+        // Lid closed: the built-in camera is left out, so only the external camera is usable.
+        let candidates = [CameraCandidate(id: "bi", isBuiltIn: true), CameraCandidate(id: "ext", isBuiltIn: false)]
+        let closedSet = selectableCameraIDs(candidates, lidClosed: true)
+        expect(closedSet == ["ext"], "closed lid must leave only the external camera")
+        expect(resolveCamera(history: ["bi", "ext"], connected: closedSet) == "ext",
+               "closed lid must skip a built-in choice that ranks ahead of the external camera")
+        expect(resolveCamera(history: ["bi"], connected: closedSet) == nil,
+               "closed lid with only the built-in camera in history must resolve to nil")
+
+        // Lid open: the built-in camera is usable again and the remembered choice resolves to it.
+        let openSet = selectableCameraIDs(candidates, lidClosed: false)
+        expect(openSet == ["bi", "ext"], "open lid must keep both cameras")
+        expect(resolveCamera(history: ["bi"], connected: openSet) == "bi",
+               "open lid must resolve the built-in camera again")
+
         print("Camera selection resolver tests passed")
     }
 }

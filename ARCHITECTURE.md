@@ -11,9 +11,9 @@ This document records agreed intent with implementation in progress. The reposit
 - Control external monitor brightness and volume through DDC where the monitor and connection support the requested capability.
 - Offer optional webcam presence detection with a configurable 10-second default interval while the user is present; confirm absence after two valid missed checks.
 - Detect any face; do not require identifying the user or enrolling a face.
-- When no face is detected, reduce the external monitor brightness to zero and preserve the previous brightness for restoration.
+- When no face is detected, reduce the external monitor brightness to zero and preserve the previous brightness for restoration (see the 2026-10-21 section for the current levels: protection level 1–50, threshold 0–90).
 - While presence-dimmed, check for return at a configurable 1-second default interval and restore the prior brightness, subject to other active protections.
-- Offer an opt-in screensaver brightness reduction with a configurable target defaulting to zero. Apply the strongest active reduction and restore only after applicable protection reasons clear.
+- Offer an opt-in screensaver brightness reduction with a configurable target defaulting to zero (see the 2026-10-21 section for the current levels: protection level 1–50, threshold 0–90). Apply the strongest active reduction and restore only after applicable protection reasons clear.
 - Offer a configurable option to disable presence checking on battery, ON by default; stop camera acquisition and face detection while suspended.
 - Process camera data locally without storing images or video; use camera sharing where supported and validated.
 - Suspend face inference when lighting is insufficient rather than treating it as absence. The implemented core clears presence-only dimming, checks light every 10 seconds, and requires two usable-light observations before resuming inference; screensaver protection remains independent. Live-camera behavior still requires hardware validation.
@@ -51,12 +51,12 @@ The following are intended responsibility boundaries within one application, not
 
 ### Manual monitor controls
 
-The user selects an external monitor and adjusts its brightness or volume. The application uses the corresponding DDC capability when available. Discovery, unsupported-capability reporting, retry limits, and connection behavior require design and hardware validation. The retry budget is decided (3 attempts per primitive, 0.2 s then 1.0 s) and applies on both platforms; hardware validation is pending. On both platforms, drafts, coalescing and the DDC retry for these controls run on the core controls handle (see [Controls handle](#controls-handle)).
+The user selects an external monitor and adjusts its brightness or volume. The application uses the corresponding DDC capability when available. Discovery, unsupported-capability reporting, retry limits, and connection behavior require design and hardware validation. The retry budget is decided (3 attempts per primitive, 0.2 s then 1.0 s) and applies on both platforms; hardware validation is pending. On both platforms, drafts, coalescing and the DDC retry for these controls run on the core controls handle (see [Controls handle](#controls-handle)). Brightness and volume values are stored as whole raw units (see [External monitor reconnect restore and whole-unit manual values](#external-monitor-reconnect-restore-and-whole-unit-manual-values--2026-10-21)).
 
 ### Presence protection
 
 1. When presence detection is enabled and permitted by the power policy, sample the webcam at the configured N-second interval.
-2. After two valid no-face checks, preserve the monitor's previous brightness once and request brightness zero.
+2. After two valid no-face checks, preserve the monitor's previous brightness once and request brightness zero (see the 2026-10-21 section for the current levels: protection level 1–50, threshold 0–90).
 3. Distinguish absent, insufficient-light, and camera-error observations; suspend face inference for insufficient light rather than count it as absence.
 4. While presence-dimmed, check for return at a configurable 1-second default interval. On return, restore the previous brightness subject to any other active protection condition.
 
@@ -64,7 +64,7 @@ Two valid missed checks confirm absence. The confirming check is taken after the
 
 ### Screensaver protection
 
-When screensaver protection is enabled and the screensaver becomes active, reduce external monitor brightness to its configurable target (default zero). Apply the strongest active reduction and restore only after applicable protection reasons clear. Screensaver protection starts disabled; lock and display sleep are outside the initial trigger scope.
+When screensaver protection is enabled and the screensaver becomes active, reduce external monitor brightness to its configurable target (default zero; see the 2026-10-21 section for the current levels: protection level 1–50, threshold 0–90). Apply the strongest active reduction and restore only after applicable protection reasons clear. Screensaver protection starts disabled; lock and display sleep are outside the initial trigger scope.
 
 ### Battery policy
 
@@ -133,7 +133,7 @@ This macOS extension adds opt-in continuous camera capture, per-display sleep po
 
 ## camera-brightness-activation-threshold — 2026-10-17
 
-The shared core gates presence checking on a brightness threshold, `presence_min_brightness_percent` (default 20, range 10 to 90, strict "above" comparison). Presence checking runs only while at least one eligible monitor is awake and above the threshold; otherwise the camera is suspended with display status `suspended_low_brightness`, or `suspended_no_monitor` when no eligible monitor exists. The core compares the monitor's baseline while the app owns or dims its brightness, so the app's own presence or screensaver dimming does not stop the camera, and the observed level otherwise. The setting is additive to schema 1 and does not change ABI 1.
+The shared core gates presence checking on a brightness threshold, `presence_min_brightness_percent` (default 20, range 10 to 90 when it was added, strict "above" comparison; see the 2026-10-21 section for the current levels: protection level 1–50, threshold 0–90). Presence checking runs only while at least one eligible monitor is awake and above the threshold; otherwise the camera is suspended with display status `suspended_low_brightness`, or `suspended_no_monitor` when no eligible monitor exists. The core compares the monitor's baseline while the app owns or dims its brightness, so the app's own presence or screensaver dimming does not stop the camera, and the observed level otherwise. The setting is additive to schema 1 and does not change ABI 1.
 
 The macOS shell does not poll monitor brightness. Levels refresh on discovery, display change, wake, the popup refresh button and the app's own writes, so a change made with the monitor's own buttons is noticed only at the next refresh. Periodic DDC reads were not added because they add bus traffic and can disturb some monitors. Hardware behavior remains unverified, and hardware acceptance is pending.
 
@@ -350,10 +350,67 @@ An external monitor dimmed by presence protection could stay at 0 after a displa
 
 - **Wake readiness window.** After `display_power(on)` the controls dispatcher retries a transient DDC failure every 2 s for up to 30 s without using the three attempts of a primitive; permanent errors and readback mismatches are unchanged. The rule lives in the shared core, so macOS and Windows get it together ([ADR 0033](adr/0033-wait-for-ddc-readiness-after-wake.md)).
 - **Diagnostic logs.** The core keeps a bounded ring of 256 decision lines, drained through `tv_diagnostics_drain` (additive to ABI version 1), and the shells add display sleep and wake, discovery and DDC attempt lines. A monitor appears only as a hashed id. macOS writes to the unified log (subsystem `com.telaviva.oled`) and Windows to `telaviva.log` of at most about 2 MiB ([ADR 0034](adr/0034-local-diagnostic-logs.md)).
-- **Still open.** A monitor rediscovered while dimmed takes the dimmed reading as its baseline, and a display sleep during an in-flight dim write is ignored by the core. Both are owner decisions in the archived plan, and the new log shows which path happens in the field.
+- **Still open.** A monitor rediscovered while dimmed is restored to its baseline only when it returns under the same id at the dimmed level (see the [2026-10-21 section](#external-monitor-reconnect-restore-and-whole-unit-manual-values--2026-10-21)). At another level or under another id it still adopts the reading, and a display sleep during an in-flight dim write is still ignored by the core. The remaining cases are owner decisions in the archived plan, and the new log shows which path happens in the field.
 
 The archived plan is at [specs/archived/brightness-stays-at-zero-after-slow-monitor-wake/](specs/archived/brightness-stays-at-zero-after-slow-monitor-wake/). The Windows changes were not compiled on the development Mac and no hardware check of the wake behavior has been run.
 
 ## macos-inference-validator-wiring — 2026-10-19
 
 On macOS, the validator wiring in `PresenceCamera.swift` reported a passing accelerator self-test as `session_failed`, so Automatic, Neural Engine and GPU always used the CPU in 0.1.1. The fix keeps a pass, a failure and a missing owner distinct, with regression tests for the helper and for the detector host. The 250 ms self-test budget is a separate headroom change and was not the cause. The fix was checked by log analysis, an isolated Swift snippet and the regression tests, not on hardware: a hardware check of the corrected build is pending, and where CoreML places the work is still not established. See [ADR 0027](adr/0027-selectable-inference-device-and-igpu-offload.md) for the amendment.
+
+## Laptop display protection and automatic brightness — 2026-10-21
+
+The laptop's built-in screen becomes a protectable, controllable display next to the external monitors. The shared Rust core decides: it evaluates the presence and screensaver reasons for the reserved id `"builtin"` and publishes them in a level-triggered `builtin_protection` snapshot object. The macOS shell applies that decision and holds the screen dimmed until the core reports no reasons and the restore is verified. The built-in screen is not an entry in the core's `monitors` map, because the DDC path does not fit it. [ADR 0035](adr/0035-laptop-display-protection-and-auto-brightness.md) records the decision and [api.md](api.md#laptop-display-protection) the contract. The feature is implemented for macOS only. Windows is documented in [windows-handoff.md](specs/archived/laptop-display-protection-and-auto-brightness/windows-handoff.md) and is not implemented.
+
+### Components
+
+- **Core policy.** `crates/telaviva-core/src/builtin.rs` holds the runtime state of the built-in screen (`protectable`, `holding`, the absence count and the presence dim; never persisted) and the pure reason and target helpers. `crates/telaviva-core/src/core.rs` adds the `builtin_display` handler and freeze rule, the built-in branch of the presence and clear paths, camera gating through the gate display (the monitored display, or the next awake candidate when it sleeps), the follow pause, the monitored display resolver and the snapshot objects. `crates/telaviva-core/src/settings.rs` adds the settings with their validation and the clamped protection level.
+- **macOS shell.** `BuiltInProtectionController.swift` reads the baseline, dims, restores with readback and bounded retries, keeps the protection record, and runs quit and launch recovery. `BuiltInAutoBrightnessOwner.swift` is the single owner of the system's automatic brightness setting, shared with calibration. `AmbientCalibrationController.swift` takes that owner and refuses to begin while protection holds the screen. `BuiltInCardView.swift`, `MonitorPopup.swift` and `SettingsView.swift` show the built-in card (protection switch, protection level, brightness slider, no volume) and the Settings controls. `BuiltInBrightnessMonitor.swift` polls for protection as well as for follow, and `BuiltInDisplayBackend.swift` serializes DisplayServices calls with a lock.
+- **Camera and lid.** `LidStateMonitor.swift` reports the clamshell state. `PresenceCamera.swift` and `CameraSelection.swift` apply the lid-closed camera rule.
+
+### Data flow
+
+1. Two consecutive absent samples set the built-in presence dim, under the same confirmation as for monitors. The snapshot reports `reasons: ["presence"]`, the protection level as `target_percent` and, with the option on, `hold_auto_brightness`.
+2. The shell reads the baseline, writes its record, reports `holding=true`, acquires the automatic-brightness owner when the option is on, and writes `min(baseline, target)`.
+3. When a face returns or the screensaver stops, the reasons are empty. The shell writes the baseline, verifies it, releases the owner, deletes both records and reports `holding=false`. The core then accepts reports from the screen again.
+4. Quit: `applicationShouldTerminate` ends calibration, calls `restoreNow()` and only then starts `core.beginShutdown`. Once the core is closed it reports no reasons.
+5. Launch order: owner recovery, then protection recovery (which starts in holding with the stored baseline), then the built-in monitor start, then calibration recovery.
+
+### Settings
+
+- `builtin_auto_brightness_off_on_protection`: default `false`. Protection touches automatic brightness only when it is `true`.
+- `monitored_display_id` (Automatic when `null`) and the read-only `monitored_display_history` (at most 8 display ids): the display whose brightness decides the camera. The camera gate uses the first awake display in the same order, so a sleeping monitored display falls through to the next one.
+- `presence_min_brightness_by_display`: a threshold of 0 to 90 per display id, kept for displays that are disconnected. The gate display's own entry applies, or `presence_min_brightness_percent` when it has none. That global value stays the default and is now valid from 0 to 90. The Settings slider edits the monitored display's entry.
+- `screensaver_targets` holds the protection level for each screen (applied clamped to 1 to 50 percent, default 1, used for absence and for the screensaver). `protection_disabled` accepts `"builtin"`.
+
+All new keys are optional in schema 1, and the C ABI stays at revision 1.
+
+### Recovery
+
+Two shell records live in `~/Library/Application Support/TelaVivaOLED/`. Each is written atomically before the change it guards and deleted after a verified restore. `builtin-protection-session.json` keeps the unrounded baseline read before the first dim. `auto-brightness-hold.json` exists only while the app has turned automatic brightness off. A restore that fails three times keeps the restore-failed notice and the record; the next snapshot, availability change or launch tries again. If an interrupted calibration's monitor is missing at launch, its restore waits for the monitor, for 90 seconds at most, and its session record stays until then. External monitors have no on-disk record: a dim the core holds on one is kept in memory only, so a quit before the monitor returns loses it, and the next launch adopts the dimmed reading.
+
+### Testing
+
+- Core: `crates/telaviva-core/tests/builtin_protection_contract.rs` and `monitored_display_contract.rs`, plus the settings tests in `crates/telaviva-core/tests/core_contract.rs`.
+- macOS: `native/macos/Tests/BuiltInProtectionTests.swift`, `BuiltInAutoBrightnessOwnerTests.swift` and `AmbientCalibrationTests.swift`, run by `tools/tests/test-builtin-protection.sh`, `test-builtin-auto-brightness-owner.sh` and `test-ambient-calibration.sh`. `CameraSelectionTests.swift` covers the lid rule and runs through `test-camera-lifecycle.sh`. The tests use fake backends.
+- Hardware: the macOS rows of the feature hardware checklist are pending.
+
+### Verification status
+
+The macOS implementation is in the working tree, and the tests above exist. This section does not record test results. Hardware-verified: nothing. The DisplayServices writes, the automatic-brightness setter, force-quit recovery, lid transitions and the per-display thresholds have not been run on a physical Mac.
+
+### Windows status
+
+Not implemented and not verified. Windows sends neither `protectable` nor `holding`, so the built-in policy stays inert for it. It receives the shared core changes: the snapshot and settings keys its codec ignores, presence absence dimming to the protection level (1 percent by default) instead of 0, and the core accepting presence thresholds from 0 to 90 percent (the Windows slider still uses its own range). The per-display threshold map is not sent by Windows, so the core keeps it. The owner runs the ordered tasks and hardware rows in [windows-handoff.md](specs/archived/laptop-display-protection-and-auto-brightness/windows-handoff.md) on Windows 11. The shared reconnect restore of a protection dim (`parked_dims`) and the whole-unit manual values also apply to Windows DDC monitors once built; their hardware checks are pending.
+
+## External monitor reconnect restore and whole-unit manual values — 2026-10-21
+
+When the app owns the brightness of an external monitor and the device holds a value that differs from the baseline (a protection dim), the core remembers that baseline for the monitor id if the monitor disconnects, or is discovered again in place. When the same id is discovered again with stable identity and supported brightness, the entry is consumed. If the reading is within 0.5 raw units of the dimmed value, the previous baseline (rounded) is restored through the normal ownership path, which reads the device first and then writes, and the log line `dim_resumed monitor=id-xxxxxxxx baseline=N` is written. If the monitor returns at another level, nothing is restored and that level becomes the baseline. An ambiguous or unsupported rediscovery leaves the entry parked. Another id is never restored from it.
+
+The entries are runtime only and are never persisted. External monitors have no on-disk record, so a quit before the monitor returns loses the dim, and the next launch adopts the dimmed reading. Shutdown discards every entry, so quitting never restores a parked dim. At most 16 entries are kept; when a new entry would exceed the cap, the first id in key order is dropped, not the oldest. An entry lasts until a stable, supported discovery of its id, shutdown, or eviction. A resumed monitor starts with no presence reason, so if the user is still away it dims again after two absent checks. No line is logged when parking, and `monitor_discovered` logs the device reading as both raw and baseline before the resume.
+
+On macOS the monitor id includes the port's IORegistry location, which contains a `dispextN@...` segment, so a monitor moved to another port or dock has another id and is not restored. Whether the location also changes after sleep is not verified. Windows ids are EDID based and do not include a port.
+
+Manual brightness and volume values are stored as whole raw units. The slider percent is mapped to the device raw range, rounded to a whole unit and clamped, so the desired value and the baseline are whole numbers. Before this, a fractional baseline such as 45.1513 never matched the whole number that a DDC monitor reports, and the core re-read and re-wrote the monitor about every second (4753 cycles in three hours in the owner's log).
+
+The shared core changes apply to Windows DDC monitors once built. Hardware checks for the reconnect restore and the whole-unit values are pending on both platforms, and this section does not claim a physical restore. The decision is recorded in the [2026-10-21 amendment to ADR 0006](adr/0006-keep-brightness-restore-pending-after-failed-wake-readback.md#amendment-2026-10-21-restore-a-dim-after-reconnect).

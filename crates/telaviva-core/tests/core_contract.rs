@@ -198,6 +198,75 @@ fn settings_updates_enforce_new_interval_bounds() {
 }
 
 #[test]
+fn builtin_auto_brightness_setting_defaults_to_false_and_old_files_load_false() {
+    assert!(!Settings::default().builtin_auto_brightness_off_on_protection);
+    let old =
+        Settings::from_json(br#"{"schema_version":1,"presence_protection_enabled":true}"#).unwrap();
+    assert!(!old.builtin_auto_brightness_off_on_protection);
+    let explicit = Settings::from_json(
+        br#"{"schema_version":1,"builtin_auto_brightness_off_on_protection":true}"#,
+    )
+    .unwrap();
+    assert!(explicit.builtin_auto_brightness_off_on_protection);
+}
+
+#[test]
+fn builtin_auto_brightness_setting_is_persisted_reloaded_and_type_checked() {
+    let root = std::env::temp_dir().join(format!("telaviva-builtin-auto-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&root);
+    let path = root.join("settings.json");
+    std::fs::write(
+        &path,
+        br#"{"schema_version":1,"presence_protection_enabled":true}"#,
+    )
+    .unwrap();
+    let mut core = Core::new(CoreOptions {
+        config_path: Some(path.clone()),
+        ..CoreOptions::default()
+    })
+    .unwrap();
+    assert!(
+        !core
+            .settings()
+            .unwrap()
+            .builtin_auto_brightness_off_on_protection
+    );
+    assert!(core
+        .submit_json(br#"{"type":"update_settings","settings":{"builtin_auto_brightness_off_on_protection":true}}"#)
+        .is_ok());
+    assert!(
+        core.settings()
+            .unwrap()
+            .builtin_auto_brightness_off_on_protection
+    );
+    let persisted: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(persisted["schema_version"], 1);
+    assert_eq!(persisted["builtin_auto_brightness_off_on_protection"], true);
+    let reloaded = Core::new(CoreOptions {
+        config_path: Some(path.clone()),
+        ..CoreOptions::default()
+    })
+    .unwrap();
+    assert!(
+        reloaded
+            .settings()
+            .unwrap()
+            .builtin_auto_brightness_off_on_protection
+    );
+    let yes_event = br#"{"type":"update_settings","settings":{"builtin_auto_brightness_off_on_protection":"yes"}}"#;
+    assert_eq!(
+        core.submit_json(yes_event).unwrap_err(),
+        "setting must be boolean"
+    );
+    assert!(
+        core.settings()
+            .unwrap()
+            .builtin_auto_brightness_off_on_protection
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn hardware_key_setting_is_optional_default_false_persisted_and_type_checked() {
     let root = std::env::temp_dir().join(format!("telaviva-hardware-keys-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&root);
@@ -440,14 +509,7 @@ fn presence_min_brightness_defaults_to_20_is_range_checked_and_persisted() {
     );
     let before = core.settings().unwrap();
     let before_file = std::fs::read(&path).unwrap();
-    for invalid in [
-        json!(9.9),
-        json!(90.1),
-        json!(0),
-        json!(100),
-        json!(-1),
-        json!("20"),
-    ] {
+    for invalid in [json!(-0.1), json!(90.1), json!(100), json!(-1), json!("20")] {
         let event = json!({"type":"update_settings","settings":{"presence_min_brightness_percent":invalid}});
         assert!(core
             .submit_json(&serde_json::to_vec(&event).unwrap())
@@ -455,7 +517,7 @@ fn presence_min_brightness_defaults_to_20_is_range_checked_and_persisted() {
         assert_eq!(core.settings().unwrap(), before);
     }
     assert_eq!(std::fs::read(&path).unwrap(), before_file);
-    for accepted in [10.0, 90.0] {
+    for accepted in [0.0, 10.0, 90.0] {
         let event = json!({"type":"update_settings","settings":{"presence_min_brightness_percent":accepted}});
         assert!(core
             .submit_json(&serde_json::to_vec(&event).unwrap())
@@ -768,7 +830,7 @@ fn protection_requires_two_fresh_misses_and_suspends_camera_on_battery() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|a| a["kind"] == "set_brightness" && a["value"].as_f64() == Some(0.0)));
+        .any(|a| a["kind"] == "set_brightness" && a["value"].as_f64() == Some(1.0)));
     assert_eq!(s["camera"]["capture_mode"], "continuous_return");
     assert_eq!(s["monitors"][0]["presence_dimmed"], true);
     let s = send(&mut core, json!({"type":"power","on_battery":true}));
@@ -1160,7 +1222,7 @@ fn multiple_monitors_keep_camera_on_while_one_awake_protected_monitor_is_above()
     discover_monitor(&mut core, "one", json!(10));
     discover_monitor(&mut core, "two", json!(50));
     let s = enable_presence(&mut core);
-    assert_eq!(s["camera"]["mode"], "face");
+    assert_eq!(s["camera"]["mode"], "suspended");
     let s = send(
         &mut core,
         json!({"type":"monitor_observed","monitor_id":"two","generation":monitor_generation(&s,"two"),"brightness":{"raw":10}}),
@@ -1191,7 +1253,7 @@ fn bright_asleep_or_protection_disabled_monitor_does_not_count_toward_the_camera
         &mut core,
         json!({"type":"update_settings","settings":{"protection_disabled":["bright"]}}),
     );
-    assert_eq!(s["camera"]["mode"], "suspended");
+    assert_eq!(s["camera"]["mode"], "face");
     let s = send(
         &mut core,
         json!({"type":"update_settings","settings":{"protection_disabled":[]}}),
@@ -1207,8 +1269,8 @@ fn presence_dim_keeps_camera_running_and_restore_never_suspends() {
     presence_sample(&mut core, "absent", 10_000);
     let s = presence_sample(&mut core, "absent", 20_000);
     let dim = pending_action(&s, "set_brightness");
-    assert_eq!(dim["value"].as_f64(), Some(0.0));
-    let s = hardware_ok(&mut core, &dim, 0.0);
+    assert_eq!(dim["value"].as_f64(), Some(1.0));
+    let s = hardware_ok(&mut core, &dim, 1.0);
     assert_eq!(s["monitors"][0]["presence_dimmed"], true);
     assert_eq!(s["camera"]["mode"], "face");
     assert_eq!(s["camera"]["capture_mode"], "continuous_return");
@@ -1216,7 +1278,7 @@ fn presence_dim_keeps_camera_running_and_restore_never_suspends() {
     let s = presence_sample(&mut core, "present", 30_000);
     modes.push(s["camera"]["mode"].clone());
     let read = pending_action(&s, "read_brightness");
-    let s = hardware_ok(&mut core, &read, 0.0);
+    let s = hardware_ok(&mut core, &read, 1.0);
     modes.push(s["camera"]["mode"].clone());
     let restore = pending_action(&s, "set_brightness");
     assert_eq!(restore["value"].as_f64(), Some(70.0));
@@ -1795,7 +1857,7 @@ fn failed_dim_write_is_not_retried_as_a_restore() {
         );
     }
     let dim = core.snapshot_value().unwrap()["pending_actions"][0].clone();
-    assert_eq!(dim["value"].as_f64(), Some(0.0));
+    assert_eq!(dim["value"].as_f64(), Some(1.0));
     // A failed dim write is not a restore: ownership stays dropped and no restore is queued.
     let failed = send(
         &mut core,
@@ -1839,7 +1901,7 @@ fn shutdown_failed_readback_does_not_retry_the_restore() {
     let dim = core.snapshot_value().unwrap()["pending_actions"][0].clone();
     let dimmed = send(
         &mut core,
-        json!({"type":"hardware_result","action_id":dim["id"],"generation":dim["generation"],"ok":true,"value":0}),
+        json!({"type":"hardware_result","action_id":dim["id"],"generation":dim["generation"],"ok":true,"value":1}),
     );
     assert_eq!(dimmed["monitors"][0]["brightness"]["owned"], true);
     // Return the monitor and restore it, so that it owns its value but is no longer dimmed.
@@ -1856,7 +1918,7 @@ fn shutdown_failed_readback_does_not_retry_the_restore() {
         .clone();
     let verified = send(
         &mut core,
-        json!({"type":"hardware_result","action_id":returned_read["id"],"generation":returned_read["generation"],"ok":true,"value":0}),
+        json!({"type":"hardware_result","action_id":returned_read["id"],"generation":returned_read["generation"],"ok":true,"value":1}),
     );
     let restore = verified["pending_actions"]
         .as_array()
@@ -1974,7 +2036,7 @@ fn stale_camera_generation_is_ignored_across_battery_suspend_and_ac_resume() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|a| a["kind"] == "set_brightness" && a["value"] == 0.0));
+        .any(|a| a["kind"] == "set_brightness" && a["value"] == 1.0));
 }
 
 #[test]
@@ -2041,7 +2103,7 @@ fn returning_sample_restores_owned_brightness_and_cadence_is_one_second() {
     let action = core.snapshot_value().unwrap()["pending_actions"][0].clone();
     send(
         &mut core,
-        json!({"type":"hardware_result","action_id":action["id"],"generation":action["generation"],"ok":true,"value":0}),
+        json!({"type":"hardware_result","action_id":action["id"],"generation":action["generation"],"ok":true,"value":1}),
     );
     let s = send(
         &mut core,
@@ -2057,7 +2119,7 @@ fn returning_sample_restores_owned_brightness_and_cadence_is_one_second() {
         .expect("restoration must verify ownership before writing");
     send(
         &mut core,
-        json!({"type":"hardware_result","action_id":read["id"],"generation":read["generation"],"ok":true,"value":0}),
+        json!({"type":"hardware_result","action_id":read["id"],"generation":read["generation"],"ok":true,"value":1}),
     );
     let after_read = core.snapshot_value().unwrap();
     let restore = after_read["pending_actions"]
@@ -2146,7 +2208,7 @@ fn disabling_protection_during_an_unacknowledged_dim_does_not_restore_blindly() 
         );
     }
     let dim = core.snapshot_value().unwrap()["pending_actions"][0].clone();
-    assert_eq!(dim["value"].as_f64(), Some(0.0));
+    assert_eq!(dim["value"].as_f64(), Some(1.0));
     let disabled = send(
         &mut core,
         json!({"type":"update_settings","settings":{"presence_protection_enabled":false}}),
@@ -2154,7 +2216,7 @@ fn disabling_protection_during_an_unacknowledged_dim_does_not_restore_blindly() 
     assert_eq!(disabled["settings"]["presence_protection_enabled"], false);
     send(
         &mut core,
-        json!({"type":"hardware_result","action_id":dim["id"],"generation":dim["generation"],"ok":true,"value":0}),
+        json!({"type":"hardware_result","action_id":dim["id"],"generation":dim["generation"],"ok":true,"value":1}),
     );
     let followup = core.snapshot_value().unwrap();
     let read = followup["pending_actions"]
@@ -2242,11 +2304,8 @@ fn camera_failure_clears_only_presence_protection_and_checks_restoration() {
         &mut core,
         json!({"type":"hardware_result","action_id":dim["id"],"generation":dim["generation"],"ok":true,"value":50}),
     );
-    let presence_dim = core.snapshot_value().unwrap()["pending_actions"][0].clone();
-    send(
-        &mut core,
-        json!({"type":"hardware_result","action_id":presence_dim["id"],"generation":presence_dim["generation"],"ok":true,"value":0}),
-    );
+    // Presence shares the screensaver's level of 50, so the write above already covers both
+    // reasons and no separate presence write is queued.
     let failed = send(
         &mut core,
         json!({"type":"camera_status","status":"permission","generation":enabled["camera"]["generation"]}),
@@ -2256,25 +2315,34 @@ fn camera_failure_clears_only_presence_protection_and_checks_restoration() {
         failed["monitors"][0]["brightness"]["reasons"][0],
         "screensaver"
     );
-    let check = failed["pending_actions"]
+    // Presence and the screensaver share one level, so clearing presence while the screensaver
+    // still holds leaves the target at 50: no write is queued and the dim stays in place.
+    assert!(failed["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|a| a["kind"] != "set_brightness"));
+    // Restoration is checked once the screensaver clears: the owned value is read back first.
+    let cleared = send(&mut core, json!({"type":"screensaver","state":"inactive"}));
+    let check = cleared["pending_actions"]
         .as_array()
         .unwrap()
         .iter()
         .find(|a| a["kind"] == "read_brightness")
-        .unwrap_or_else(|| panic!("expected ownership read, got {failed:#}"));
-    let current_check = check.clone();
-    send(
+        .unwrap_or_else(|| panic!("expected ownership read, got {cleared:#}"))
+        .clone();
+    assert_eq!(check["target"].as_f64(), Some(70.0));
+    let verified = send(
         &mut core,
-        json!({"type":"hardware_result","action_id":current_check["id"],"generation":current_check["generation"],"ok":true,"value":0}),
+        json!({"type":"hardware_result","action_id":check["id"],"generation":check["generation"],"ok":true,"value":50}),
     );
-    let next_check = core.snapshot_value().unwrap();
-    let check_for_new_target = next_check["pending_actions"]
+    let restore = verified["pending_actions"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|a| a["kind"] == "read_brightness")
-        .unwrap();
-    assert_eq!(check_for_new_target["target"].as_f64(), Some(50.0));
+        .find(|a| a["kind"] == "set_brightness")
+        .expect("matching readback must restore the baseline");
+    assert_eq!(restore["value"].as_f64(), Some(70.0));
 }
 
 #[test]
@@ -2303,7 +2371,7 @@ fn insufficient_light_removes_presence_reason_and_requires_two_usable_samples() 
     let action = core.snapshot_value().unwrap()["pending_actions"][0].clone();
     send(
         &mut core,
-        json!({"type":"hardware_result","action_id":action["id"],"generation":action["generation"],"ok":true,"value":0}),
+        json!({"type":"hardware_result","action_id":action["id"],"generation":action["generation"],"ok":true,"value":1}),
     );
     let low = send(
         &mut core,
@@ -2840,6 +2908,63 @@ fn camera_presence_ignores_stale_generation_and_out_of_order_samples() {
 
 // Ambient follow and per-monitor protection contracts from
 // specs/archived/macbook-brightness-follow/contracts.md: settings, update_settings and snapshot fields.
+
+// Per-display presence thresholds: values 0..=90 and finite, keys 1..=512 bytes, at most 128
+// entries. A settings file without the key loads with an empty map.
+#[test]
+fn presence_thresholds_by_display_validate_and_default_to_an_empty_map() {
+    assert!(Settings::default()
+        .presence_min_brightness_by_display
+        .is_empty());
+    let old_file = br#"{"schema_version":1,"presence_protection_enabled":true}"#;
+    let old = Settings::from_json(old_file).unwrap();
+    assert!(old.presence_min_brightness_by_display.is_empty());
+    // The key takes a JSON object literal; the bounds are checked at both edges.
+    let file =
+        |map: &str| format!(r#"{{"schema_version":1,"presence_min_brightness_by_display":{map}}}"#);
+    assert!(Settings::from_json(file(r#"{"m1":0,"builtin":90}"#).as_bytes()).is_ok());
+    assert!(Settings::from_json(file(r#"{"m1":95}"#).as_bytes()).is_err());
+    assert!(Settings::from_json(file(r#"{"m1":-1}"#).as_bytes()).is_err());
+    assert!(Settings::from_json(file(r#"{"":20}"#).as_bytes()).is_err());
+    let with_key = |key: &str| Settings {
+        presence_min_brightness_by_display: [(key.to_string(), 20.0)].into(),
+        ..Default::default()
+    };
+    let longest = "x".repeat(512);
+    let oversized = "x".repeat(513);
+    assert!(with_key(longest.as_str()).validate().is_ok());
+    assert!(with_key(oversized.as_str()).validate().is_err());
+    let mut full = Settings {
+        presence_min_brightness_by_display: (0..128).map(|i| (format!("m{i}"), 20.0)).collect(),
+        ..Default::default()
+    };
+    assert!(full.validate().is_ok());
+    full.presence_min_brightness_by_display
+        .insert("m128".into(), 20.0);
+    assert!(full.validate().is_err());
+
+    // update_settings applies the same rules, and a rejected save leaves the stored map unchanged.
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    for value in [json!({"m1": 95}), json!({"m1": -1}), json!({"": 20})] {
+        let event = json!({"type": "update_settings", "settings": {"presence_min_brightness_by_display": value}});
+        assert!(core
+            .submit_json(&serde_json::to_vec(&event).unwrap())
+            .is_err());
+    }
+    let snapshot = core.snapshot_value().unwrap();
+    assert_eq!(
+        snapshot["settings"]["presence_min_brightness_by_display"],
+        json!({})
+    );
+    let event = json!({"type": "update_settings", "settings": {"presence_min_brightness_by_display": {"m1": 0, "builtin": 90}}});
+    core.submit_json(&serde_json::to_vec(&event).unwrap())
+        .unwrap();
+    let snapshot = core.snapshot_value().unwrap();
+    assert_eq!(
+        snapshot["settings"]["presence_min_brightness_by_display"],
+        json!({"m1": 0.0, "builtin": 90.0})
+    );
+}
 
 #[test]
 fn ambient_settings_default_to_follow_off_with_empty_curves_and_protection_list() {
@@ -3619,7 +3744,7 @@ fn protection_monitor_disabled_monitor_is_not_presence_dimmed() {
         .find(|a| a["monitor_id"] == "one")
         .expect("one must have a dim action");
     assert_eq!(dim["kind"], "set_brightness");
-    assert_eq!(dim["value"].as_f64(), Some(0.0));
+    assert_eq!(dim["value"].as_f64(), Some(1.0));
     // "two" is protection-disabled: no dim and no pending action.
     assert_eq!(two["presence_dimmed"], false);
     assert!(actions.iter().all(|a| a["monitor_id"] != "two"));
@@ -3677,6 +3802,110 @@ fn protection_monitor_disabled_monitor_is_not_screensaver_dimmed() {
         .all(|a| !(a["monitor_id"] == "two" && a["kind"] == "set_brightness")));
 }
 
+// Protection level: one fixed 1..=50 percent per screen, shared by presence and the screensaver.
+// Stored targets outside that range are clamped when applied, never rejected.
+fn protection_test_monitor(id: &str, raw: u32, max: u32) -> Value {
+    json!({"type":"monitor_discovered","monitor":{
+        "id":id,"name":id,"identity_status":"stable","connection_path":"usb",
+        "brightness":{"supported":true,"value":raw,"raw":raw,"min":0,"max":max},
+        "volume":{"supported":false,"value":null,"raw":null,"min":0,"max":max}
+    }})
+}
+
+fn queued_set_brightness(snapshot: &Value, id: &str) -> Option<f64> {
+    snapshot["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["monitor_id"] == id && a["kind"] == "set_brightness")
+        .and_then(|a| a["value"].as_f64())
+}
+
+#[test]
+fn protection_level_from_the_screen_target_applies_to_presence_too() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    send(&mut core, protection_test_monitor("screen", 70, 100));
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    let mut observed = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true,"screensaver_targets":{"screen":30.0}}}),
+    );
+    for offset in [10_000, 20_000] {
+        observed = send(
+            &mut core,
+            json!({"type":"presence_observation","status":"absent","captured_at_ms":capture_time(offset),"camera_generation":observed["camera"]["generation"]}),
+        );
+    }
+    // Presence dims to the screen's level of 30 percent, not to the raw minimum of 0.
+    assert_eq!(observed["monitors"][0]["presence_dimmed"], true);
+    assert_eq!(queued_set_brightness(&observed, "screen"), Some(30.0));
+}
+
+#[test]
+fn protection_level_never_raises_a_screen_already_below_it() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    send(&mut core, protection_test_monitor("screen", 20, 100));
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    // The threshold is lowered to 10 so a monitor at 20 keeps driving the camera.
+    let mut observed = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true,"presence_min_brightness_percent":10.0,"screensaver_targets":{"screen":30.0}}}),
+    );
+    for offset in [10_000, 20_000] {
+        observed = send(
+            &mut core,
+            json!({"type":"presence_observation","status":"absent","captured_at_ms":capture_time(offset),"camera_generation":observed["camera"]["generation"]}),
+        );
+    }
+    let screen = &observed["monitors"][0];
+    assert_eq!(screen["presence_dimmed"], true);
+    assert!(screen["brightness"]["reasons"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("presence")));
+    // The baseline of 20 is below the level of 30, so the dim keeps 20 and never queues a raise.
+    assert!(observed["pending_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|a| a["monitor_id"] != "screen"
+            || a["kind"] != "set_brightness"
+            || a["value"].as_f64().unwrap() <= 20.0));
+}
+
+#[test]
+fn stored_screen_targets_outside_the_range_are_clamped_when_applied() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    send(&mut core, protection_test_monitor("low", 70, 100));
+    send(&mut core, protection_test_monitor("high", 70, 100));
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    // Validation still accepts 0 and 75, so a settings file written before the range existed loads.
+    send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"screensaver_protection_enabled":true,"screensaver_targets":{"low":0.0,"high":75.0}}}),
+    );
+    let saver = send(&mut core, json!({"type":"screensaver","state":"active"}));
+    // Stored 0 is applied as the 1 percent floor and stored 75 as the 50 percent ceiling.
+    assert_eq!(queued_set_brightness(&saver, "low"), Some(1.0));
+    assert_eq!(queued_set_brightness(&saver, "high"), Some(50.0));
+}
+
+#[test]
+fn protection_level_is_a_whole_raw_unit_on_a_255_step_range() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    send(&mut core, protection_test_monitor("default", 200, 255));
+    send(&mut core, protection_test_monitor("half", 200, 255));
+    send(&mut core, json!({"type":"power","on_battery":false}));
+    send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"screensaver_protection_enabled":true,"screensaver_targets":{"half":50.0}}}),
+    );
+    let saver = send(&mut core, json!({"type":"screensaver","state":"active"}));
+    // 1 percent of 0..=255 is 2.55 and 50 percent is 127.5; both round to whole raw units.
+    assert_eq!(queued_set_brightness(&saver, "default"), Some(3.0));
+    assert_eq!(queued_set_brightness(&saver, "half"), Some(128.0));
+}
+
 #[test]
 fn protection_monitor_toggle_off_while_dimmed_restores_only_that_monitor() {
     let mut core = Core::new(CoreOptions::default()).unwrap();
@@ -3719,10 +3948,10 @@ fn protection_monitor_toggle_off_while_dimmed_restores_only_that_monitor() {
             .find(|a| a["monitor_id"] == id && a["kind"] == "set_brightness")
             .expect("both monitors must dim")
             .clone();
-        assert_eq!(dim["value"].as_f64(), Some(0.0));
+        assert_eq!(dim["value"].as_f64(), Some(1.0));
         observed = send(
             &mut core,
-            json!({"type":"hardware_result","action_id":dim["id"],"generation":dim["generation"],"ok":true,"value":0}),
+            json!({"type":"hardware_result","action_id":dim["id"],"generation":dim["generation"],"ok":true,"value":1}),
         );
     }
     let dimmed_one = monitor(&observed, "one");
@@ -3754,7 +3983,7 @@ fn protection_monitor_toggle_off_while_dimmed_restores_only_that_monitor() {
         .all(|a| !(a["monitor_id"] == "one" && a["kind"] == "set_brightness")));
     let readback = send(
         &mut core,
-        json!({"type":"hardware_result","action_id":read["id"],"generation":read["generation"],"ok":true,"value":0}),
+        json!({"type":"hardware_result","action_id":read["id"],"generation":read["generation"],"ok":true,"value":1}),
     );
     let restore = readback["pending_actions"]
         .as_array()
@@ -4324,7 +4553,7 @@ fn follow_writes_do_not_set_manual_override_so_presence_still_dims() {
     let read = follow_pending(&s, "screen", "read_brightness").expect("dim verifies ownership");
     s = follow_ack(&mut core, &read, 55.0);
     let dim = follow_pending(&s, "screen", "set_brightness").expect("presence still dims");
-    assert_eq!(dim["value"].as_f64(), Some(0.0));
+    assert_eq!(dim["value"].as_f64(), Some(1.0));
 }
 
 #[test]
@@ -4343,8 +4572,8 @@ fn follow_dimmed_monitor_defers_builtin_changes_and_restores_the_new_mapped_valu
     let read = follow_pending(&s, "screen", "read_brightness").expect("dim verifies ownership");
     s = follow_ack(&mut core, &read, 55.0);
     let dim = follow_pending(&s, "screen", "set_brightness").expect("presence dim");
-    assert_eq!(dim["value"].as_f64(), Some(0.0));
-    s = follow_ack(&mut core, &dim, 0.0);
+    assert_eq!(dim["value"].as_f64(), Some(1.0));
+    s = follow_ack(&mut core, &dim, 1.0);
     assert_eq!(follow_monitor(&s, "screen")["presence_dimmed"], true);
     // While dimmed, a built-in change only moves the baseline: nothing is queued.
     let s = follow_builtin(&mut core, json!(75.0), false);
@@ -4353,7 +4582,7 @@ fn follow_dimmed_monitor_defers_builtin_changes_and_restores_the_new_mapped_valu
     // Presence returns: read back, then restore the new mapped value (81), not the old 55.
     let mut s = follow_presence(&mut core, "present", 30_000, &s);
     let read = follow_pending(&s, "screen", "read_brightness").expect("restore verifies ownership");
-    s = follow_ack(&mut core, &read, 0.0);
+    s = follow_ack(&mut core, &read, 1.0);
     let restore =
         follow_pending(&s, "screen", "set_brightness").expect("restore after presence returns");
     assert_eq!(restore["value"].as_f64(), Some(81.0));
@@ -4544,7 +4773,7 @@ fn first_miss_shortens_the_wait_for_the_confirming_check() {
     assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(1000.0));
     assert_eq!(s["monitors"][0]["presence_dimmed"], true);
     let dim = pending_action(&s, "set_brightness");
-    assert_eq!(dim["value"].as_f64(), Some(0.0));
+    assert_eq!(dim["value"].as_f64(), Some(1.0));
 }
 
 #[test]

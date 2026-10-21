@@ -76,6 +76,8 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var activeDevice: AVCaptureDevice?
     private var lastReportedCameraStatus: String?
     private var deviceObservers: [NSObjectProtocol] = []
+    /// Last lid state from `setLidClosed`. Camera queue only.
+    private var lidClosed = false
 
     /// The effective selection history; a legacy selection without a history counts as a one-entry history.
     private var selectionHistory: [String] {
@@ -111,6 +113,35 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             guard let self, !self.stopped, self.inferenceHost.session.preference != id else { return }
             self.releaseDetector()
             self.inferenceHost.setPreference(id)
+        }
+    }
+
+    /// Called from the lid monitor and the wake handlers on any queue. While the lid is closed the built-in camera
+    /// is never used. A repeated value is ignored, so wake reads cost nothing when the lid did not change.
+    func setLidClosed(_ closed: Bool) {
+        queue.async { [weak self] in
+            guard let self, !self.stopped, self.lidClosed != closed else { return }
+            self.lidClosed = closed
+            if closed {
+                // Moves a session off the built-in camera the way a disconnect does. With no other camera,
+                // the next sample reports the camera unavailable.
+                guard self.sampling, self.activeDevice?.deviceType == .builtInWideAngleCamera else { return }
+                self.stopCapture()
+                if self.mode == "face" || self.mode == "light_only" { self.scheduleSample(after: 0) }
+            } else {
+                self.resendUnknownStatusIfNeeded()
+                if self.sampling {
+                    // The lid-open priority order may now pick a different camera, such as the built-in one that
+                    // ranks ahead of a fallback. Move the session onto it; the history is never written.
+                    if let preferred = self.pickCamera(), preferred.uniqueID != self.activeCameraID {
+                        self.stopCapture()
+                        if self.mode == "face" || self.mode == "light_only" { self.scheduleSample(after: 0) }
+                    }
+                } else if self.mode == "face" || self.mode == "light_only", self.sampleTimer == nil {
+                    // The built-in camera may be usable again, so sample now unless a timer is already pending.
+                    self.scheduleSample(after: 0)
+                }
+            }
         }
     }
 
@@ -242,15 +273,26 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
     }
 
+    /// The camera a session should use now: the first connected history entry, else the system default.
+    /// Enumerated on every call, so a reconnected camera is used without a settings change. While the lid is closed
+    /// the built-in camera is left out, as if it were disconnected, and the system default is never used because it
+    /// may be the built-in camera. Shared by a fresh start and the lid-open check, so both follow one priority order.
+    /// Reads the selection history and never writes it. Camera queue only.
+    private func pickCamera() -> AVCaptureDevice? {
+        let discovered = AVCaptureDevice.DiscoverySession(deviceTypes: [.builtInWideAngleCamera, .external], mediaType: .video, position: .unspecified).devices
+        let candidates = discovered.map { CameraCandidate(id: $0.uniqueID, isBuiltIn: $0.deviceType == .builtInWideAngleCamera) }
+        let connected = selectableCameraIDs(candidates, lidClosed: lidClosed)
+        let devices = discovered.filter { connected.contains($0.uniqueID) }
+        let resolvedID = resolveCamera(history: selectionHistory, connected: connected)
+        let selected = devices.first { $0.uniqueID == resolvedID }
+        return selected ?? (lidClosed ? devices.first : AVCaptureDevice.default(for: .video))
+    }
+
     private func startCapture() {
         guard !sampling else { return }
         let capture = AVCaptureSession()
         capture.beginConfiguration()
-        // Enumerated on every sample, so a reconnected camera is used without a settings change.
-        let devices = AVCaptureDevice.DiscoverySession(deviceTypes: [.builtInWideAngleCamera, .external], mediaType: .video, position: .unspecified).devices
-        let resolvedID = resolveCamera(history: selectionHistory, connected: Set(devices.map(\.uniqueID)))
-        let selected = devices.first { $0.uniqueID == resolvedID }
-        guard let camera = selected ?? AVCaptureDevice.default(for: .video),
+        guard let camera = pickCamera(),
               let input = try? AVCaptureDeviceInput(device: camera), capture.canAddInput(input) else {
             capture.commitConfiguration(); report(status: "unavailable", cameraStatus: "unavailable"); return
         }
@@ -614,11 +656,15 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                 if mode == "face" || mode == "light_only" { scheduleSample(after: 0) }
             }
         }
-        if let status = lastReportedCameraStatus, status == "busy" || status == "unavailable" {
-            lastReportedCameraStatus = "unknown"
-            // presence_observation rejects status "unknown", so this uses the existing camera_status command.
-            core?.submit(["type": "camera_status", "status": "unknown", "generation": generation])
-        }
+        resendUnknownStatusIfNeeded()
+    }
+
+    /// Resends an unknown camera status after a busy or unavailable report. Camera queue only.
+    private func resendUnknownStatusIfNeeded() {
+        guard let status = lastReportedCameraStatus, status == "busy" || status == "unavailable" else { return }
+        lastReportedCameraStatus = "unknown"
+        // presence_observation rejects status "unknown", so this uses the existing camera_status command.
+        core?.submit(["type": "camera_status", "status": "unknown", "generation": generation])
     }
 
     private func stopCapture() {

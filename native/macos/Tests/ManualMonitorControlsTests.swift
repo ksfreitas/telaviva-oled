@@ -47,7 +47,6 @@ private struct ManualMonitorControlsTests {
         draftStatusMapsToControlStatus()
         draftValueReplacesDisplayValue()
         draftChangedRepaintsFromBackgroundQueue()
-        protectionBrightnessMaximumFollowsPendingDrafts()
         shutdownStopsForwarding()
         print("Manual monitor control tests passed")
     }
@@ -128,23 +127,6 @@ private struct ManualMonitorControlsTests {
         let before = controls.changeToken
         DispatchQueue.global(qos: .userInitiated).async { controls.draftChanged() }
         expect(waitUntil { controls.changeToken == before &+ 1 }, "background draft change repaints on the main queue")
-    }
-
-    private static func protectionBrightnessMaximumFollowsPendingDrafts() {
-        let driver = FakeDriver()
-        let controls = ManualMonitorControls(driver: driver)
-        let monitor = display()
-        expect(controls.protectionBrightnessMaximum(monitor: monitor) == 41, "no draft keeps the confirmed cap")
-        driver.script(controlsDraft(20, .pending))
-        expect(controls.protectionBrightnessMaximum(monitor: monitor) == 20, "pending decrease lowers the cap at once")
-        driver.script(controlsDraft(60, .pending))
-        expect(controls.protectionBrightnessMaximum(monitor: monitor) == 41,
-               "pending increase does not widen the cap before confirmation")
-        driver.script(controlsDraft(20, .failed))
-        expect(controls.protectionBrightnessMaximum(monitor: monitor) == 41, "failed draft does not lower the cap")
-        let unsupported = display(brightness: VcpValue(supported: false, value: nil, raw: nil, min: nil, max: nil,
-                                                       desired: nil, status: "unsupported"))
-        expect(controls.protectionBrightnessMaximum(monitor: unsupported) == nil, "unsupported brightness has no cap")
     }
 
     private static func shutdownStopsForwarding() {

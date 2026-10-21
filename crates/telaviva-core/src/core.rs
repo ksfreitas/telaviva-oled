@@ -1,3 +1,4 @@
+use crate::builtin;
 use crate::diagnostics::{self, Diagnostics};
 use crate::settings::{self, AmbientCurve, Settings};
 use serde::{
@@ -14,6 +15,8 @@ use std::{
 const MAX_ACTIONS: usize = 128;
 const MAX_MONITORS: usize = 64;
 const MAX_RESTORE_FAILURES: u8 = 3;
+// Dims kept for disconnected or replaced monitors. Runtime only, never persisted.
+const MAX_PARKED_DIMS: usize = 16;
 // First face sample after a resume edge (display wake, battery to AC, protection re-enabled).
 const RESUME_FIRST_SAMPLE_MS: f64 = 1000.0;
 
@@ -57,6 +60,16 @@ struct Monitor {
     restore_failures: u8,
     manual_override: bool,
     wake_ownership_check: bool,
+    // Main display flag from the shell (macOS CGDisplayIsMain). Only Automatic monitored display
+    // reads it; re-discovery replaces it with the reported value.
+    primary: bool,
+}
+
+// The screen that represents "I am looking at it" for the camera. Resolved on every snapshot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Monitored {
+    BuiltIn,
+    Monitor(String),
 }
 
 #[derive(Clone, Debug)]
@@ -67,6 +80,15 @@ struct Action {
     kind: String,
     value: Option<f64>,
     target: Option<f64>,
+}
+
+// A dim this core left on a monitor that was disconnected or replaced. Runtime only, never persisted.
+#[derive(Clone, Debug)]
+struct ParkedDim {
+    // The user's level, rounded to a whole raw unit.
+    baseline: f64,
+    // The raw value this core wrote, which the device still held when the monitor went away.
+    dimmed_raw: f64,
 }
 
 pub struct Core {
@@ -95,8 +117,12 @@ pub struct Core {
     builtin_available: bool,
     builtin_percent: Option<f64>,
     calibrating: bool,
+    // Built-in protection opt-in and hold state from the shell. Runtime only, never persisted.
+    builtin: builtin::BuiltIn,
     // Monitors at or below the presence brightness threshold. Runtime only, never persisted.
     below_threshold: BTreeSet<String>,
+    // Dims left on monitors that were disconnected or replaced, keyed by monitor id. Runtime only.
+    parked_dims: BTreeMap<String, ParkedDim>,
     // Decision lines for the shell to drain. Runtime only, never persisted.
     diagnostics: Diagnostics,
 }
@@ -131,7 +157,9 @@ impl Core {
             builtin_available: false,
             builtin_percent: None,
             calibrating: false,
+            builtin: Default::default(),
             below_threshold: BTreeSet::new(),
+            parked_dims: BTreeMap::new(),
             diagnostics: Diagnostics::default(),
         })
     }
@@ -175,7 +203,14 @@ impl Core {
                 ],
                 "update_settings" => &["type", "settings", "revision"],
                 "hardware_result" => &["type", "action_id", "generation", "ok", "value", "error"],
-                "builtin_display" => &["type", "available", "brightness", "calibrating"],
+                "builtin_display" => &[
+                    "type",
+                    "available",
+                    "brightness",
+                    "calibrating",
+                    "protectable",
+                    "holding",
+                ],
                 "shutdown" => &["type"],
                 _ => return Err(format!("unknown command type: {kind}")),
             },
@@ -206,6 +241,7 @@ impl Core {
                         m.presence_dimmed = false;
                         m.misses = 0;
                     }
+                    self.builtin.clear_presence();
                 }
                 if was_on_battery
                     && self.on_battery == Some(false)
@@ -244,6 +280,7 @@ impl Core {
                         monitor.presence_dimmed = false;
                         monitor.misses = 0;
                     }
+                    self.builtin.clear_presence();
                     self.reconcile_all()?;
                 }
             }
@@ -267,6 +304,7 @@ impl Core {
             _ => return Err(format!("unknown command type: {kind}")),
         }
         self.sync_brightness_gate();
+        self.sync_builtin_diagnostics();
         self.revision = self.revision.saturating_add(1);
         Ok(())
     }
@@ -282,6 +320,7 @@ impl Core {
                 "connection_path",
                 "brightness",
                 "volume",
+                "primary",
             ],
         )?;
         let id = string(m, "id")?;
@@ -294,9 +333,14 @@ impl Core {
         if !self.monitors.contains_key(id) && self.monitors.len() >= MAX_MONITORS {
             return Err("monitor limit reached".into());
         }
-        let brightness = feature(m.get("brightness"), identity)?;
+        let mut brightness = feature(m.get("brightness"), identity)?;
         let volume = feature(m.get("volume"), identity)?;
-        let baseline = brightness.raw;
+        // Absent means not the main display. Validated before any state changes.
+        let primary = match m.get("primary") {
+            None => false,
+            Some(flag) => flag.as_bool().ok_or("primary must be boolean")?,
+        };
+        let mut baseline = brightness.raw;
         let discovered_fields = format!(
             "raw={} baseline={}",
             diagnostics::number_or_none(brightness.raw),
@@ -313,6 +357,26 @@ impl Core {
         self.actions.retain(|a| a.monitor_id != id);
         self.camera_generation = self.camera_generation.saturating_add(1);
         self.last_presence = None;
+        // A replacement drops the old Monitor, so a dim it still holds is parked before it goes.
+        self.park_dim(id);
+        // A dim this core left on the device resumes only when the monitor returns at the same
+        // dimmed level. Any other level is the monitor's or the user's, so it is adopted as before.
+        // Only a stable, supported rediscovery consumes the entry. An ambiguous or unsupported
+        // report cannot tell whether the device still holds the dim, so the entry stays parked.
+        let resumed = if identity == "stable" && brightness.supported {
+            self.parked_dims.remove(id).filter(|p| {
+                brightness
+                    .raw
+                    .is_some_and(|raw| (raw - p.dimmed_raw).abs() <= 0.5)
+            })
+        } else {
+            None
+        };
+        if let Some(p) = &resumed {
+            baseline = Some(p.baseline);
+            // Ownership makes reconcile read the device first, then write the baseline back.
+            brightness.owned = true;
+        }
         self.monitors.insert(
             id.into(),
             Monitor {
@@ -332,16 +396,25 @@ impl Core {
                 restore_failures: 0,
                 manual_override: false,
                 wake_ownership_check: false,
+                primary,
             },
         );
         self.diagnostics
             .push("monitor_discovered", Some(id), &discovered_fields);
+        if resumed.is_some() {
+            self.diagnostics.push(
+                "dim_resumed",
+                Some(id),
+                &format!("baseline={}", diagnostics::number_or_none(baseline)),
+            );
+        }
         // Follow runs after discovery sets the baseline, so the response carries the write.
         self.recompute_follow(Some(id));
-        if self
-            .monitors
-            .get(id)
-            .is_some_and(|m| m.follow_raw.is_some())
+        if resumed.is_some()
+            || self
+                .monitors
+                .get(id)
+                .is_some_and(|m| m.follow_raw.is_some())
         {
             self.reconcile_all()?;
         }
@@ -352,12 +425,45 @@ impl Core {
         let id = string(v, "monitor_id")?.to_owned();
         let generation = self.connection_generations.entry(id.clone()).or_default();
         *generation = generation.saturating_add(1);
+        // The Monitor is about to be dropped, so a dim it still holds is parked before its state goes.
+        self.park_dim(&id);
         self.monitors.remove(&id);
         self.diagnostics
             .push("monitor_disconnected", Some(id.as_str()), "");
         self.actions.retain(|a| a.monitor_id != id);
         self.reconcile_camera();
         Ok(())
+    }
+
+    // Remembers a dim this core still holds on a monitor, so that losing the Monitor does not adopt
+    // the dimmed level as the user's choice. Only a value this core wrote that differs from the
+    // baseline is parked. Called before the Monitor is dropped or replaced.
+    fn park_dim(&mut self, id: &str) {
+        let Some(m) = self.monitors.get(id) else {
+            return;
+        };
+        if !m.brightness.owned {
+            return;
+        }
+        let (Some(baseline), Some(dimmed_raw)) = (m.baseline, m.brightness.raw) else {
+            return;
+        };
+        if (dimmed_raw - baseline).abs() <= 0.5 {
+            return;
+        }
+        if !self.parked_dims.contains_key(id) && self.parked_dims.len() >= MAX_PARKED_DIMS {
+            // BTreeMap keeps no insertion order, so the first id in key order is dropped.
+            if let Some(first) = self.parked_dims.keys().next().cloned() {
+                self.parked_dims.remove(&first);
+            }
+        }
+        self.parked_dims.insert(
+            id.to_owned(),
+            ParkedDim {
+                baseline: baseline.round(),
+                dimmed_raw,
+            },
+        );
     }
 
     fn observe_monitor(&mut self, v: &Value) -> Result<(), String> {
@@ -487,7 +593,11 @@ impl Core {
             feature.status = "suspended_display_sleep".into();
             return Ok(());
         }
-        let raw = map_normalized(value, feature.min, feature.max);
+        // DDC devices report whole raw units, so the stored level is rounded like the write. An
+        // unrounded baseline never matches the readback and makes ownership checks loop.
+        let raw = map_normalized(value, feature.min, feature.max)
+            .round()
+            .clamp(feature.min, feature.max);
         // Reserve the action before changing desired values or brightness ownership. A full
         // bounded queue must leave keyboard intent and protection state untouched.
         enqueue(
@@ -505,6 +615,9 @@ impl Core {
             m.baseline = Some(raw);
             m.manual_override = true;
             m.restore_failures = 0;
+            // Defensive: clears a stale entry if a shell ever sets brightness for a parked id. A
+            // parked id never has a stable, supported Monitor, so the checks above return first.
+            self.parked_dims.remove(&id);
             self.diagnostics
                 .push("manual_set", Some(id.as_str()), &format!("raw={raw}"));
         }
@@ -589,8 +702,34 @@ impl Core {
                     }
                 }
                 "camera_history" => return Err("camera_history is read-only".into()),
+                // Same rules as the webcam selection: null is Automatic, a string moves to the front.
+                "monitored_display_id" => {
+                    if val.is_null() {
+                        next.monitored_display_id = None;
+                        next.monitored_display_history.clear();
+                    } else {
+                        let id = val
+                            .as_str()
+                            .ok_or("monitored_display_id must be string or null")?;
+                        next.monitored_display_history
+                            .retain(|known| known.as_str() != id);
+                        next.monitored_display_history.insert(0, id.to_owned());
+                        next.monitored_display_history
+                            .truncate(settings::MAX_MONITORED_HISTORY);
+                        next.monitored_display_id = Some(id.to_owned());
+                    }
+                }
+                "monitored_display_history" => {
+                    return Err("monitored_display_history is read-only".into())
+                }
                 "screensaver_targets" => {
                     next.screensaver_targets =
+                        serde_json::from_value(val.clone()).map_err(|e| e.to_string())?
+                }
+                // Replaces the whole map, like screensaver_targets. Entries for displays that are
+                // not connected are kept and checked by validate().
+                "presence_min_brightness_by_display" => {
+                    next.presence_min_brightness_by_display =
                         serde_json::from_value(val.clone()).map_err(|e| e.to_string())?
                 }
                 "ambient_follow_enabled" => {
@@ -604,6 +743,10 @@ impl Core {
                     next.protection_disabled =
                         serde_json::from_value(val.clone()).map_err(|e| e.to_string())?
                 }
+                "builtin_auto_brightness_off_on_protection" => {
+                    next.builtin_auto_brightness_off_on_protection =
+                        val.as_bool().ok_or("setting must be boolean")?
+                }
                 _ => return Err(format!("unknown setting: {key}")),
             }
         }
@@ -616,7 +759,12 @@ impl Core {
             !self.settings.presence_protection_enabled && next.presence_protection_enabled;
         // A save that changes nothing (for example reselecting the current front) keeps the
         // camera generation, so in-flight samples and the camera session are not restarted.
-        let settings_changed = next != self.settings;
+        // The monitored display is not camera input until its gating step, so changing it must not
+        // restart the camera. It is left out of the comparison.
+        let mut camera_next = next.clone();
+        camera_next.monitored_display_id = self.settings.monitored_display_id.clone();
+        camera_next.monitored_display_history = self.settings.monitored_display_history.clone();
+        let settings_changed = camera_next != self.settings;
         // Per-monitor protection: a monitor that becomes unprotected drops its dims (reconcile_all
         // restores it), and any change of its protection restarts the presence miss count.
         for m in self.monitors.values_mut() {
@@ -629,6 +777,17 @@ impl Core {
                 m.presence_dimmed = false;
                 m.saver_dimmed = false;
             }
+        }
+        let b_was = !self
+            .settings
+            .protection_disabled
+            .contains(builtin::BUILTIN_ID);
+        let b_now = !next.protection_disabled.contains(builtin::BUILTIN_ID);
+        if b_was != b_now {
+            self.builtin.misses = 0;
+        }
+        if b_was && !b_now {
+            self.builtin.presence_dimmed = false;
         }
         self.settings = next;
         if settings_changed {
@@ -702,6 +861,7 @@ impl Core {
                         m.manual_override = false;
                     }
                 }
+                self.builtin.clear_presence();
                 self.reconcile_all()?;
             }
             "absent" => {
@@ -723,6 +883,17 @@ impl Core {
                         m.presence_dimmed = true;
                     }
                 }
+                // Only a shell that reported the built-in as adjustable counts its misses.
+                if self.builtin.protectable && self.builtin_available {
+                    self.builtin.misses = self.builtin.misses.saturating_add(1);
+                    if self.builtin.misses >= 2 && self.builtin_protected() {
+                        if !self.builtin.presence_dimmed {
+                            self.diagnostics
+                                .push("presence_dim", Some(builtin::BUILTIN_ID), "");
+                        }
+                        self.builtin.presence_dimmed = true;
+                    }
+                }
                 self.reconcile_all()?;
             }
             "insufficient_light" => {
@@ -732,6 +903,7 @@ impl Core {
                 for m in self.monitors.values_mut() {
                     clear_presence_dim(&mut self.diagnostics, m);
                 }
+                self.builtin.clear_presence();
                 self.reconcile_camera();
                 self.reconcile_all()?;
             }
@@ -745,6 +917,7 @@ impl Core {
                 for m in self.monitors.values_mut() {
                     clear_presence_dim(&mut self.diagnostics, m);
                 }
+                self.builtin.clear_presence();
                 self.reconcile_camera();
                 self.reconcile_all()?;
             }
@@ -771,6 +944,7 @@ impl Core {
                 monitor.presence_dimmed = false;
                 monitor.misses = 0;
             }
+            self.builtin.clear_presence();
         } else if self.all_eligible_displays_asleep() {
             if !["unavailable", "busy", "permission", "error"]
                 .contains(&self.camera_status.as_str())
@@ -782,6 +956,7 @@ impl Core {
                 monitor.presence_dimmed = false;
                 monitor.misses = 0;
             }
+            self.builtin.clear_presence();
         }
         // A busy or permission status suspends the camera without a generation change.
         if matches!(self.camera_mode(), "disabled" | "suspended") {
@@ -806,10 +981,7 @@ impl Core {
         if self.closed || !self.settings.presence_protection_enabled {
             "disabled"
         } else if (self.settings.suspend_presence_on_battery && self.on_battery != Some(false))
-            || !self
-                .monitors
-                .values()
-                .any(|m| self.monitor_is_camera_active(m))
+            || !self.camera_gate_active()
             || (self.camera_status != "unknown"
                 && ["unavailable", "busy", "permission", "error"]
                     .contains(&self.camera_status.as_str()))
@@ -827,6 +999,100 @@ impl Core {
         !self.settings.protection_disabled.contains(id)
     }
 
+    fn builtin_protected(&self) -> bool {
+        self.builtin.protectable && self.is_protected(builtin::BUILTIN_ID)
+    }
+
+    fn builtin_reasons(&self) -> Vec<&'static str> {
+        builtin::reasons(
+            self.builtin_protected(),
+            self.builtin_available,
+            self.calibrating,
+            self.closed,
+            self.builtin.presence_dimmed,
+            self.settings.screensaver_protection_enabled && self.saver_state == "active",
+        )
+    }
+
+    fn builtin_target_percent(&self) -> Option<f64> {
+        builtin::target_percent(
+            &self.builtin_reasons(),
+            self.settings.protection_percent(builtin::BUILTIN_ID),
+        )
+    }
+
+    // While frozen, builtin_percent keeps the last undimmed level and follow pauses.
+    fn builtin_frozen(&self) -> bool {
+        self.builtin.holding || !self.builtin_reasons().is_empty()
+    }
+
+    // Level of the monitored display on the threshold's scale. A built-in screen uses its reported
+    // level, which the freeze keeps at the last undimmed value while protection holds.
+    fn monitored_level_percent(&self, m: &Monitored) -> Option<f64> {
+        match m {
+            Monitored::BuiltIn => self.builtin_percent,
+            Monitored::Monitor(id) => self.monitors.get(id).and_then(Self::monitor_level_percent),
+        }
+    }
+
+    // A built-in screen is awake while it is available; a monitor while it is not asleep.
+    fn monitored_awake(&self, m: &Monitored) -> bool {
+        match m {
+            Monitored::BuiltIn => self.builtin_available,
+            Monitored::Monitor(id) => self
+                .monitors
+                .get(id)
+                .is_some_and(|monitor| monitor.display_state != "asleep"),
+        }
+    }
+
+    // Only the gate display decides whether the camera is below the threshold. A dimmed gate
+    // display counts as above, so its return check keeps running. Other dimmed displays keep the
+    // camera running through camera_gate_active. An unknown level is not below, so protection
+    // stays on.
+    fn monitored_below_threshold(&self) -> bool {
+        let Some(gate) = self.gate_display() else {
+            return false;
+        };
+        let dimmed = match &gate {
+            Monitored::BuiltIn => self.builtin.presence_dimmed,
+            Monitored::Monitor(id) => self.monitors.get(id).is_some_and(|m| m.presence_dimmed),
+        };
+        // The gate display's own entry applies, so a display with no entry keeps the global value.
+        let threshold = self.settings.presence_threshold(Self::gate_id(&gate));
+        !dimmed
+            && self
+                .monitored_level_percent(&gate)
+                .is_some_and(|level| level <= threshold)
+    }
+
+    // The id that keys the per-display threshold: the monitor id, or the reserved built-in id.
+    fn gate_id(gate: &Monitored) -> &str {
+        match gate {
+            Monitored::BuiltIn => builtin::BUILTIN_ID,
+            Monitored::Monitor(id) => id.as_str(),
+        }
+    }
+
+    // The camera runs while at least one protected camera-eligible display exists, and either the
+    // gate display is awake and above the threshold or some display is presence-dimmed. A dimmed
+    // display needs samples to return: only a present sample clears its dim, and samples come only
+    // while the camera runs. So a dimmed display keeps the camera running even when the gate is
+    // below the threshold. Nothing to protect keeps it off.
+    fn camera_gate_active(&self) -> bool {
+        let protected_exists = self.builtin_protected()
+            || self
+                .monitors
+                .values()
+                .any(|m| Self::monitor_is_camera_eligible(m, self.is_protected(&m.id)));
+        let gate_above = self.gate_display().is_some() && !self.monitored_below_threshold();
+        (gate_above || self.any_presence_dimmed()) && protected_exists
+    }
+
+    fn any_presence_dimmed(&self) -> bool {
+        self.builtin.presence_dimmed || self.monitors.values().any(|m| m.presence_dimmed)
+    }
+
     fn monitor_is_camera_eligible(m: &Monitor, protected: bool) -> bool {
         protected && m.identity == "stable" && m.brightness.supported && m.baseline.is_some()
     }
@@ -842,44 +1108,52 @@ impl Core {
         Some(normalized(raw, m.brightness.min, m.brightness.max))
     }
 
-    // A dimmed monitor counts as above: it was dimmed only because it was above, and its return
-    // check must keep running. An unknown level is not below, so protection stays on.
-    fn monitor_below_threshold(&self, m: &Monitor) -> bool {
-        Self::monitor_is_camera_eligible(m, self.is_protected(&m.id))
-            && !m.presence_dimmed
-            && Self::monitor_level_percent(m)
-                .is_some_and(|level| level <= self.settings.presence_min_brightness_percent)
-    }
-
-    fn monitor_is_camera_active(&self, m: &Monitor) -> bool {
-        Self::monitor_is_camera_eligible(m, self.is_protected(&m.id))
-            && m.display_state != "asleep"
-            && !self.monitor_below_threshold(m)
-    }
-
-    // One no-face check is on record and the confirming check is still due. A monitor that does
-    // not drive the camera (unprotected, asleep, ineligible, below the threshold) is excluded, so
-    // its miss count never speeds up the sampling.
+    // One no-face check is on record and the confirming check is still due, while the camera runs.
+    // Every protected awake screen counts, since absence dims them all.
+    // An unprotected, asleep or ineligible screen is excluded so its misses never speed up sampling.
     fn absence_confirmation_pending(&self) -> bool {
-        self.monitors
-            .values()
-            .any(|m| m.misses == 1 && !m.presence_dimmed && self.monitor_is_camera_active(m))
+        if !self.camera_gate_active() {
+            return false;
+        }
+        let monitor_pending = self.monitors.values().any(|m| {
+            Self::monitor_is_camera_eligible(m, self.is_protected(&m.id))
+                && m.display_state != "asleep"
+                && m.misses == 1
+                && !m.presence_dimmed
+        });
+        let builtin_pending = self.builtin_protected()
+            && self.builtin_available
+            && self.builtin.misses == 1
+            && !self.builtin.presence_dimmed;
+        monitor_pending || builtin_pending
     }
 
     // Runs after each accepted command. Entering the below-threshold set resets that monitor's
     // miss count; a still-connected monitor leaving it starts a clean camera resume.
     fn sync_brightness_gate(&mut self) {
-        let below: BTreeSet<String> = self
-            .monitors
-            .values()
-            .filter(|m| self.monitor_below_threshold(m))
-            .map(|m| m.id.clone())
-            .collect();
+        // The set holds only the gate display, so a change of the gate display (a display sleeping
+        // or waking, or a new selection) or of its level moves the set and goes through the same
+        // entered/left handling below.
+        let below: BTreeSet<String> = match self.gate_display() {
+            Some(monitored) if self.monitored_below_threshold() => {
+                let id = match monitored {
+                    Monitored::BuiltIn => builtin::BUILTIN_ID.to_owned(),
+                    Monitored::Monitor(id) => id,
+                };
+                BTreeSet::from([id])
+            }
+            _ => BTreeSet::new(),
+        };
         let entered: Vec<String> = below.difference(&self.below_threshold).cloned().collect();
         let left: Vec<String> = self
             .below_threshold
             .difference(&below)
-            .filter(|id| self.monitors.contains_key(id.as_str()))
+            .filter(|id| {
+                self.monitors.contains_key(id.as_str())
+                    || (id.as_str() == builtin::BUILTIN_ID
+                        && self.builtin_protected()
+                        && self.builtin_available)
+            })
             .cloned()
             .collect();
         self.below_threshold = below;
@@ -892,11 +1166,36 @@ impl Core {
             if let Some(monitor) = self.monitors.get_mut(id) {
                 monitor.misses = 0;
             }
+            if id.as_str() == builtin::BUILTIN_ID {
+                self.builtin.misses = 0;
+            }
         }
         if !left.is_empty() {
             self.begin_camera_resume();
         }
         self.reconcile_camera();
+    }
+
+    // Logs the built-in reasons when their set changes. Runs after each accepted command.
+    fn sync_builtin_diagnostics(&mut self) {
+        let reasons = self.builtin_reasons().join(",");
+        if reasons == self.builtin.last_reasons {
+            return;
+        }
+        let reasons_field = if reasons.is_empty() {
+            "none"
+        } else {
+            reasons.as_str()
+        };
+        self.diagnostics.push(
+            "builtin_protection",
+            None,
+            &format!(
+                "reasons={reasons_field} target={}",
+                diagnostics::number_or_none(self.builtin_target_percent())
+            ),
+        );
+        self.builtin.last_reasons = reasons;
     }
 
     fn all_eligible_displays_asleep(&self) -> bool {
@@ -907,7 +1206,12 @@ impl Core {
                 Self::monitor_is_camera_eligible(monitor, self.is_protected(&monitor.id))
             })
             .peekable();
-        eligible.peek().is_some() && eligible.all(|monitor| monitor.display_state == "asleep")
+        let monitors_exist = eligible.peek().is_some();
+        let monitors_asleep = eligible.all(|monitor| monitor.display_state == "asleep");
+        // A protected built-in is an eligible display that is asleep only when unavailable.
+        let builtin_exists = self.builtin_protected();
+        let builtin_asleep = !self.builtin_available;
+        (monitors_exist || builtin_exists) && monitors_asleep && (!builtin_exists || builtin_asleep)
     }
 
     fn camera_display_status(&self, mode: &str) -> &'static str {
@@ -925,10 +1229,11 @@ impl Core {
                     "suspended_power_unknown"
                 }
                 _ if self.all_eligible_displays_asleep() => "suspended_display_sleep",
-                _ if self
-                    .monitors
-                    .values()
-                    .any(|m| Self::monitor_is_camera_eligible(m, self.is_protected(&m.id))) =>
+                _ if self.builtin_protected()
+                    || self
+                        .monitors
+                        .values()
+                        .any(|m| Self::monitor_is_camera_eligible(m, self.is_protected(&m.id))) =>
                 {
                     "suspended_low_brightness"
                 }
@@ -944,7 +1249,6 @@ impl Core {
     fn reconcile_all(&mut self) -> Result<(), String> {
         let saver_active =
             self.settings.screensaver_protection_enabled && self.saver_state == "active";
-        let targets = self.settings.screensaver_targets.clone();
         let protection_disabled = &self.settings.protection_disabled;
         let action_generation = self.revision.saturating_add(1);
         for m in self.monitors.values_mut() {
@@ -985,15 +1289,17 @@ impl Core {
             let target = if !m.brightness.reasons.is_empty() {
                 let base = m.baseline.unwrap_or(m.brightness.observed.unwrap_or(0.0));
                 let mut desired = base;
-                if presence_dimmed {
-                    desired = desired.min(m.brightness.min);
-                }
-                if m.saver_dimmed {
-                    desired = desired.min(map_normalized(
-                        *targets.get(&m.id).unwrap_or(&0.0),
-                        m.brightness.min,
-                        m.brightness.max,
-                    ));
+                // Presence and the screensaver share one level, so the strongest reason is the
+                // level itself. Rounded to a whole raw unit so the readback can match it exactly.
+                let level = map_normalized(
+                    self.settings.protection_percent(&m.id),
+                    m.brightness.min,
+                    m.brightness.max,
+                )
+                .round()
+                .clamp(m.brightness.min, m.brightness.max);
+                if m.presence_dimmed || m.saver_dimmed {
+                    desired = desired.min(level);
                 }
                 Some(desired)
             } else if following.is_some() {
@@ -1303,6 +1609,9 @@ impl Core {
 
     fn shutdown_policy(&mut self) -> Result<(), String> {
         let action_generation = self.revision.saturating_add(1);
+        self.builtin.clear_presence();
+        // Nothing can resume a parked dim once the core is closed.
+        self.parked_dims.clear();
         for m in self.monitors.values_mut() {
             m.presence_dimmed = false;
             m.saver_dimmed = false;
@@ -1342,9 +1651,26 @@ impl Core {
                 _ => return Err("brightness must be a number in 0..=100 or null".into()),
             },
         };
+        let protectable = match v.get("protectable") {
+            None => false,
+            Some(flag) => flag.as_bool().ok_or("protectable must be boolean")?,
+        };
+        let holding = match v.get("holding") {
+            None => false,
+            Some(flag) => flag.as_bool().ok_or("holding must be boolean")?,
+        };
         self.builtin_available = available;
-        self.builtin_percent = percent;
         self.calibrating = calibrating;
+        self.builtin.protectable = protectable;
+        // A shell that did not opt in cannot hold the screen, so a stray flag never freezes follow.
+        self.builtin.holding = protectable && holding;
+        if !available {
+            self.builtin.clear_presence();
+        }
+        // A dimmed or restoring screen reports the dimmed level; keep the last undimmed one.
+        if !self.builtin_frozen() {
+            self.builtin_percent = percent;
+        }
         self.recompute_follow(None);
         self.reconcile_all()
     }
@@ -1381,6 +1707,7 @@ impl Core {
         if !self.settings.ambient_follow_enabled
             || !self.builtin_available
             || self.calibrating
+            || self.builtin_frozen()
             || self.follow_eligibility(m) != "eligible"
         {
             return None;
@@ -1410,6 +1737,67 @@ impl Core {
         }
     }
 
+    // The monitored display is the first entry of monitored_candidates: the first connected entry
+    // of the selection history, otherwise Automatic. A closed lid falls through to the next choice.
+    fn resolve_monitored(&self) -> Option<Monitored> {
+        self.monitored_candidates().into_iter().next()
+    }
+
+    // Every display the camera may follow, in the order the selection tries them: connected
+    // history entries first, then Automatic (the flagged main external, the other usable externals
+    // by id, the built-in screen). A screen counts only when the core can read and dim it: stable
+    // identity and supported brightness. The built-in screen counts only when protectable and
+    // available, so a closed lid falls through to the next choice. The reported main flag is a
+    // hint, not a requirement. The first entry is the one the snapshot shows as monitored. A
+    // duplicate keeps its first position.
+    fn monitored_candidates(&self) -> Vec<Monitored> {
+        fn usable(m: &Monitor) -> bool {
+            m.identity == "stable" && m.brightness.supported
+        }
+        let builtin_usable = self.builtin.protectable && self.builtin_available;
+        let mut ordered: Vec<Monitored> = Vec::new();
+        for id in &self.settings.monitored_display_history {
+            if id.as_str() == builtin::BUILTIN_ID {
+                if builtin_usable {
+                    ordered.push(Monitored::BuiltIn);
+                }
+            } else if self.monitors.get(id).is_some_and(usable) {
+                ordered.push(Monitored::Monitor(id.clone()));
+            }
+        }
+        ordered.extend(
+            self.monitors
+                .values()
+                .filter(|&m| m.primary && usable(m))
+                .map(|m| Monitored::Monitor(m.id.clone())),
+        );
+        ordered.extend(
+            self.monitors
+                .values()
+                .filter(|&m| usable(m))
+                .map(|m| Monitored::Monitor(m.id.clone())),
+        );
+        if builtin_usable {
+            ordered.push(Monitored::BuiltIn);
+        }
+        let mut candidates: Vec<Monitored> = Vec::with_capacity(ordered.len());
+        for candidate in ordered {
+            if !candidates.contains(&candidate) {
+                candidates.push(candidate);
+            }
+        }
+        candidates
+    }
+
+    // The display that drives the camera: the first candidate that is awake. A sleeping display
+    // falls through to the next candidate, so the camera keeps running on a screen that is on.
+    // None means every candidate sleeps, or none exists, and the camera gate is inactive.
+    fn gate_display(&self) -> Option<Monitored> {
+        self.monitored_candidates()
+            .into_iter()
+            .find(|candidate| self.monitored_awake(candidate))
+    }
+
     /// Revision of the next snapshot; one increment per accepted command.
     pub fn revision(&self) -> u64 {
         self.revision
@@ -1423,7 +1811,7 @@ impl Core {
     pub fn snapshot_value(&self) -> Result<Value, String> {
         let monitors:Vec<Value>=self.monitors.values().map(|m|json!({"id":m.id,"name":m.name,"identity_status":m.identity,"connection_path":m.path,"generation":m.generation,"display_state":m.display_state,
             "presence_dimmed":m.presence_dimmed,"brightness":feature_json(&m.brightness),"volume":feature_json(&m.volume),
-            "follow":self.follow_eligibility(m),"protected":!self.settings.protection_disabled.contains(&m.id)})).collect();
+            "follow":self.follow_eligibility(m),"protected":!self.settings.protection_disabled.contains(&m.id),"primary":m.primary})).collect();
         let mut scheduled_monitors = BTreeSet::new();
         let actions: Vec<Value> = self.actions.iter()
             .filter(|a| scheduled_monitors.insert(a.monitor_id.as_str()))
@@ -1434,22 +1822,21 @@ impl Core {
         let cadence = if camera_mode == "face" && self.resume_pending {
             RESUME_FIRST_SAMPLE_MS
         } else if camera_mode == "face"
-            && (self.monitors.values().any(|m| m.presence_dimmed)
-                || self.absence_confirmation_pending())
+            && (self.any_presence_dimmed() || self.absence_confirmation_pending())
         {
             self.settings.return_sampling_interval_s * 1000.0
         } else if camera_mode == "face" {
             self.settings.presence_sampling_interval_s * 1000.0
         } else if camera_mode == "light_only" {
             10000.0
-        } else if self.monitors.values().any(|m| m.presence_dimmed) {
+        } else if self.any_presence_dimmed() {
             self.settings.return_sampling_interval_s * 1000.0
         } else {
             self.settings.presence_sampling_interval_s * 1000.0
         };
         let capture_mode = if camera_mode == "disabled" || camera_mode == "suspended" {
             "stopped"
-        } else if camera_mode == "face" && self.monitors.values().any(|m| m.presence_dimmed) {
+        } else if camera_mode == "face" && self.any_presence_dimmed() {
             "continuous_return"
         } else if self.settings.always_on_camera {
             "continuous_monitoring"
@@ -1462,8 +1849,16 @@ impl Core {
             "face" => json!(self.last_presence),
             _ => Value::Null,
         };
+        let builtin_reasons = self.builtin_reasons();
+        let monitored_id = match self.resolve_monitored() {
+            Some(Monitored::BuiltIn) => json!(builtin::BUILTIN_ID),
+            Some(Monitored::Monitor(id)) => json!(id),
+            None => Value::Null,
+        };
         let value = json!({"revision":self.revision,"settings":self.settings,"monitors":monitors,"pending_actions":actions,
             "ambient":{"enabled":self.settings.ambient_follow_enabled,"available":self.builtin_available,"active":self.settings.ambient_follow_enabled&&self.builtin_available,"calibrating":self.calibrating,"builtin_percent":self.builtin_percent},
+            "builtin_protection":{"protectable":self.builtin.protectable,"protected":self.builtin.protectable&&!self.settings.protection_disabled.contains(builtin::BUILTIN_ID),"available":self.builtin_available,"reasons":builtin_reasons,"target_percent":self.builtin_target_percent(),"hold_auto_brightness":self.settings.builtin_auto_brightness_off_on_protection&&!builtin_reasons.is_empty(),"holding":self.builtin.holding},
+            "monitored_display":{"id":monitored_id,"automatic":self.settings.monitored_display_history.is_empty()},
             "camera":{"mode":camera_mode,"capture_mode":capture_mode,"status":self.camera_status,"display_status":display_status,"next_sample_in_ms":if camera_mode=="disabled"||camera_mode=="suspended"{Value::Null}else{json!(cadence)},"generation":self.camera_generation,"presence":presence},
             "power":{"on_battery":self.on_battery},"screensaver":{"state":self.saver_state},"status":"ready"});
         let bytes = serde_json::to_vec(&value).map_err(|e| e.to_string())?;

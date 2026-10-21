@@ -14,6 +14,8 @@ private struct CoreBridgeTests {
         stateChangeAfterSubmitIsVisibleWithoutExtraRefresh()
         coreSettingsKeyStepJSON()
         coreSettingsPresenceThresholdJSON()
+        presenceThresholdByDisplayDecodes()
+        presenceThresholdByDisplayJSON()
         coreSettingsInferenceDeviceJSON()
         cameraHistoryDecodesAndStaysOutOfSaves()
         inferenceDeviceRoundTripsThroughCore()
@@ -22,7 +24,13 @@ private struct CoreBridgeTests {
         ambientCurvePointsJSON()
         monitorFollowAndProtectionDecode()
         ambientSnapshotDecodes()
+        builtInProtectionSnapshotDecodes()
+        builtInAutoBrightnessSettingDecodes()
+        builtInAutoBrightnessSettingJSON()
         builtInDisplayReportReachesTheSnapshot()
+        builtInDisplayCommandCarriesProtection()
+        monitoredDisplaySnapshotDecodes()
+        monitoredDisplayCommandCarriesSelection()
         updateCheckerUsesRealCore()
         print("Core bridge asynchronous tests passed")
     }
@@ -154,7 +162,8 @@ private struct CoreBridgeTests {
             "locale": "auto", "presence_sampling_interval_s": 10.0, "return_sampling_interval_s": 1.0,
             "suspend_presence_on_battery": true, "presence_protection_enabled": false,
             "screensaver_protection_enabled": false, "launch_at_login": false,
-            "screensaver_targets": [String: Double]()
+            "screensaver_targets": [String: Double](),
+            "builtin_auto_brightness_off_on_protection": false
         ]
         object.merge(extra) { _, new in new }
         let data = try! JSONSerialization.data(withJSONObject: object)
@@ -188,6 +197,30 @@ private struct CoreBridgeTests {
                "absent presence brightness threshold decodes as nil")
         expect((withoutThreshold.json["presence_min_brightness_percent"] as? Double) == 20,
                "absent presence brightness threshold is emitted as the default of 20")
+    }
+
+    /// The per-display thresholds decode from a snapshot that carries them, and read as nil when it lacks them.
+    private static func presenceThresholdByDisplayDecodes() {
+        let withMap = decodeSettings(["presence_min_brightness_by_display": ["monitor-a": 12, "builtin": 40]])
+        expect(withMap.presenceMinBrightnessByDisplay == ["monitor-a": 12, "builtin": 40],
+               "presence_min_brightness_by_display decodes from a snapshot that carries it")
+
+        let withoutMap = decodeSettings([:])
+        expect(withoutMap.presenceMinBrightnessByDisplay == nil,
+               "a snapshot without presence_min_brightness_by_display decodes with it absent")
+    }
+
+    /// The map is emitted only when set, so an unrelated save leaves the core's stored thresholds untouched.
+    private static func presenceThresholdByDisplayJSON() {
+        let unset = CoreSettings()
+        expect(unset.json["presence_min_brightness_by_display"] == nil,
+               "an unset per-display threshold map is omitted from the payload")
+
+        var settings = CoreSettings()
+        settings.presenceMinBrightnessByDisplay = ["monitor-a": 12, "builtin": 40]
+        expect(JSONSerialization.isValidJSONObject(settings.json), "settings payload with the per-display map is valid JSON")
+        expect((settings.json["presence_min_brightness_by_display"] as? [String: Double]) == ["monitor-a": 12, "builtin": 40],
+               "the per-display threshold map is emitted as its id-to-percent pairs when set")
     }
 
     private static func coreSettingsInferenceDeviceJSON() {
@@ -369,6 +402,27 @@ private struct CoreBridgeTests {
         expect((emittedEmpty?["points"] as? [Any])?.isEmpty == true, "a curve with no points emits an empty list")
     }
 
+    /// The built-in auto-brightness setting decodes from a settings payload with either value kept.
+    private static func builtInAutoBrightnessSettingDecodes() {
+        let enabled = decodeSettings(["builtin_auto_brightness_off_on_protection": true])
+        expect(enabled.builtinAutoBrightnessOffOnProtection == true,
+               "builtin_auto_brightness_off_on_protection decodes as true when the core stores it")
+        let disabled = decodeSettings(["builtin_auto_brightness_off_on_protection": false])
+        expect(disabled.builtinAutoBrightnessOffOnProtection == false,
+               "builtin_auto_brightness_off_on_protection decodes as false when the core stores it")
+    }
+
+    /// The setting is always emitted, so an update carries the draft's value whether it is true or false.
+    private static func builtInAutoBrightnessSettingJSON() {
+        var settings = CoreSettings()
+        settings.builtinAutoBrightnessOffOnProtection = true
+        expect((settings.json["builtin_auto_brightness_off_on_protection"] as? Bool) == true,
+               "builtin_auto_brightness_off_on_protection is emitted as true when set")
+        settings.builtinAutoBrightnessOffOnProtection = false
+        expect((settings.json["builtin_auto_brightness_off_on_protection"] as? Bool) == false,
+               "builtin_auto_brightness_off_on_protection is emitted as false when cleared")
+    }
+
     private static func monitorFollowAndProtectionDecode() {
         let snapshot = decodeSnapshot(["monitors": [
             ["id": "screen", "name": "Display", "follow": "eligible", "protected": true],
@@ -403,6 +457,26 @@ private struct CoreBridgeTests {
         expect(decodeSnapshot([:]).ambient == nil, "snapshots without ambient still decode with it absent")
     }
 
+    /// The built-in protection section decodes from a snapshot that carries it, and reads as `none` when it is absent.
+    private static func builtInProtectionSnapshotDecodes() {
+        let withProtection = decodeSnapshot(["builtin_protection": [
+            "protectable": true, "protected": true, "available": true, "reasons": ["presence"],
+            "target_percent": 0.0, "hold_auto_brightness": true, "holding": false
+        ]])
+        expect(withProtection.builtinProtection == CoreBuiltInProtection(
+                   protectable: true, protected: true, available: true, reasons: ["presence"], targetPercent: 0,
+                   holdAutoBrightness: true, holding: false),
+               "builtin_protection decodes from a snapshot that carries it")
+
+        // Snapshots from before the built-in display protection existed must still decode, as not protectable.
+        let withoutProtection = decodeSnapshot([:]).builtinProtection
+        expect(withoutProtection == CoreBuiltInProtection.none,
+               "a snapshot without builtin_protection decodes as the none value")
+        expect(withoutProtection.protectable == false && withoutProtection.protected == false &&
+               withoutProtection.reasons.isEmpty && withoutProtection.targetPercent == nil,
+               "a snapshot without builtin_protection is not protectable, with no reasons or target")
+    }
+
     private static func builtInDisplayReportReachesTheSnapshot() {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("telaviva-core-bridge-tests-\(UUID().uuidString)", isDirectory: true)
@@ -428,6 +502,55 @@ private struct CoreBridgeTests {
         var shutdownFinished = false
         bridge.beginShutdown { shutdownFinished = true }
         expect(waitUntil { shutdownFinished }, "shutdown completes before the temporary directory is removed")
+    }
+
+    /// The built-in report carries the protection flags, and both are false when a shell does not send them.
+    private static func builtInDisplayCommandCarriesProtection() {
+        let reported = CoreBridge.builtInDisplayCommand(available: true, brightness: 44, calibrating: false,
+                                                        protectable: true, holding: true)
+        expect(JSONSerialization.isValidJSONObject(reported), "the built-in display command is valid JSON")
+        expect((reported["type"] as? String) == "builtin_display", "the built-in display command keeps its type")
+        expect((reported["protectable"] as? Bool) == true && (reported["holding"] as? Bool) == true,
+               "a report with protectable and holding sends both as true")
+
+        let legacy = CoreBridge.builtInDisplayCommand(available: true, brightness: 44, calibrating: false)
+        expect((legacy["protectable"] as? Bool) == false && (legacy["holding"] as? Bool) == false,
+               "a report without the protection arguments sends protectable and holding as false")
+        expect((legacy["available"] as? Bool) == true && (legacy["calibrating"] as? Bool) == false,
+               "the existing built-in report fields are unchanged")
+    }
+
+    /// The monitored display decodes from a snapshot that carries it, and reads as automatic when the snapshot lacks it.
+    private static func monitoredDisplaySnapshotDecodes() {
+        let selected = decodeSnapshot(["monitored_display": ["id": "builtin", "automatic": false]])
+        expect(selected.monitoredDisplay == CoreMonitoredDisplay(id: "builtin", automatic: false),
+               "monitored_display decodes the resolved id and the automatic flag from a snapshot that carries it")
+
+        // A remembered choice with no connected display resolves to a null id, and it is not automatic.
+        let unresolved = decodeSnapshot(["monitored_display": ["id": NSNull(), "automatic": false]])
+        expect(unresolved.monitoredDisplay == CoreMonitoredDisplay(id: nil, automatic: false),
+               "a null id decodes as nil and stays distinct from automatic")
+
+        // Snapshots from before the monitored display existed must still decode, as automatic with no id.
+        let withoutMonitored = decodeSnapshot([:]).monitoredDisplay
+        expect(withoutMonitored == CoreMonitoredDisplay.automatic && withoutMonitored.id == nil,
+               "a snapshot without monitored_display decodes as automatic with no id")
+    }
+
+    /// The selection command sends only `monitored_display_id`: the display's id as a string, or null for Automatic.
+    private static func monitoredDisplayCommandCarriesSelection() {
+        let selected = CoreBridge.monitoredDisplayCommand("monitor-a")
+        expect(JSONSerialization.isValidJSONObject(selected), "the monitored display command is valid JSON")
+        expect((selected["type"] as? String) == "update_settings", "the monitored display command is an update_settings command")
+        let selectedSettings = selected["settings"] as? [String: Any]
+        expect(selectedSettings?.count == 1 && (selectedSettings?["monitored_display_id"] as? String) == "monitor-a",
+               "a selected display sends its id as monitored_display_id and nothing else")
+
+        let automatic = CoreBridge.monitoredDisplayCommand(nil)
+        expect(JSONSerialization.isValidJSONObject(automatic), "the Automatic command is valid JSON")
+        let automaticSettings = automatic["settings"] as? [String: Any]
+        expect(automaticSettings?.count == 1 && automaticSettings?["monitored_display_id"] is NSNull,
+               "Automatic sends monitored_display_id as null and nothing else")
     }
 
     private static func updateCheckerUsesRealCore() {

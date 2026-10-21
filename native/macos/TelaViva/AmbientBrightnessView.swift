@@ -253,6 +253,7 @@ private struct CalibrationNoticeView: View {
         case .builtInUnreadable: return "calibration.notice.builtInUnreadable"
         case .builtInWriteFailed: return "calibration.notice.builtInWriteFailed"
         case .builtInUnavailable: return "calibration.notice.builtInUnavailable"
+        case .protectionActive: return "calibration.notice.protectionActive"
         case .autoBrightnessUnknown: return "calibration.notice.autoUnknown"
         case .autoBrightnessNotChanged: return "calibration.notice.autoNotChanged"
         case .recoveryFailed: return "calibration.notice.recoveryFailed"

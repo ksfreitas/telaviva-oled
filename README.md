@@ -23,6 +23,7 @@
 - **Screensaver protection (optional).** Dim each monitor to a brightness you choose while the screensaver runs.
 - **Battery aware.** Presence checks pause on battery by default and while every eligible monitor is asleep.
 - **Follow your laptop (optional).** On a MacBook or a Windows laptop, external monitors can follow the built-in panel's brightness, including its automatic brightness, through calibration points you manage.
+- **Protect the laptop screen.** The built-in screen of a MacBook or a Windows laptop dims like an external monitor when you step away or the screensaver starts, and is restored afterwards. An optional setting turns off the system's automatic brightness while the screen is protected. A **Monitored display** choice (Automatic by default, remembered by priority like the camera) decides when the camera runs, and the built-in camera is ignored while the lid is closed.
 - **Hardware keys (optional).** Volume, mute and (on macOS) brightness keys can drive the external monitor.
 - **Selectable inference device.** Automatic uses a validated integrated GPU on Windows or validated CoreML on Apple Silicon, with CPU fallback on both platforms. Neural Engine and GPU selections on macOS are preferences; CoreML may run unsupported operations on the CPU.
 - **Private by design.** Everything runs on your device, with no telemetry and no stored camera images. See [Privacy](#privacy).
@@ -37,15 +38,16 @@
 | Distribution | Zip from GitHub Releases, ad-hoc signed and not notarized, or built locally | Per-user zip with an installer script, unsigned |
 | Not supported yet | Intel Macs | Windows 10, ARM64 |
 | Laptop follow | MacBook | Laptop (called Notebook in Portuguese) |
+| Built-in screen protection | MacBook | Laptop (called Notebook in Portuguese) |
 
 Both apps are native shells over one shared Rust core, with face detection by the YuNet model through ONNX Runtime. The design is recorded in [`ARCHITECTURE.md`](ARCHITECTURE.md) and the [architecture decision records](adr/).
 
 ## Status
 
-This checkout reports application version 0.1.2 and remains under active development. The CI badges above show workflow status; hardware validation is still partial on both platforms:
+This checkout reports application version 0.1.3 and remains under active development. The CI badges above show workflow status; hardware validation is still partial on both platforms:
 
 - DDC support depends on the monitor, the port, the cable, any adapter or dock, and the graphics hardware. It is not uniform, and a passing check on one setup says nothing about another.
-- Only a small number of monitors and computers have been used for physical checks. Many checks are still pending, among them camera sharing with video calls, multi-monitor and dock setups, monitor sleep and wake, Laptop follow on real laptops, and keyboard routing on other keyboards.
+- Only a small number of monitors and computers have been used for physical checks. Many checks are still pending, among them camera sharing with video calls, multi-monitor and dock setups, monitor sleep and wake, Laptop follow on real laptops, laptop screen protection and its automatic brightness option (the Windows laptop checks are not yet recorded), and keyboard routing on other keyboards.
 - The Windows build is not code-signed, and the macOS app is ad-hoc signed and not notarized, so each system may warn the first time you open a downloaded copy.
 - Setting brightness to zero does not guarantee that an OLED panel turns completely off, and it does not prevent all burn-in.
 
@@ -93,7 +95,7 @@ Both the release and the local build are ad-hoc signed. Developer ID signing and
 5. Optionally turn on **screensaver protection** and pick a **Protection brightness** for each monitor. Each monitor also has a switch that includes it in or excludes it from OLED protection.
 6. Open **Settings > About** to see the version and whether a newer release exists. The app only informs you; it never downloads or installs an update.
 
-The [user guide](docs/user-guide.md) covers presence timing, protection reasons, Laptop follow and calibration, keyboard routing, Windows specifics and limits.
+The [user guide](docs/user-guide.md) covers presence timing, protection reasons, laptop screen protection and the monitored display, Laptop follow and calibration, keyboard routing, Windows specifics and limits.
 
 ## Privacy
 
