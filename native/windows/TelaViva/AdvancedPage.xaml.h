@@ -28,6 +28,8 @@ namespace winrt::TelaViva::implementation
         void edit(const std::function<void(telaviva::SettingsDraft&)>& change);
         // Refills the device picker and selects the stored choice. Runs on show, host set and language change, not on the poll.
         void fillDeviceBox();
+        // Sets the camera switch from the stored setting without submitting the change.
+        void syncAlwaysOn();
         // Starts the one-second poll that updates the in-use line and the notice.
         void startPolling();
         void updateReport();
@@ -38,6 +40,7 @@ namespace winrt::TelaViva::implementation
         // Id of each picker item in item order. A stored id missing from the device list is the last item.
         std::vector<std::string> deviceIds_;
 
+        winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch alwaysOnSwitch_{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::ComboBox deviceBox_{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::TextBlock inUseText_{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::InfoBar noticeBar_{ nullptr };

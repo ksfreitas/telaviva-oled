@@ -110,7 +110,7 @@ fn ffi_transports_display_state_and_always_on_setting_without_abi_change() {
         for cmd in [
             br#"{"type":"monitor_discovered","monitor":{"id":"screen","name":"Display","identity_status":"stable","connection_path":"usb","brightness":{"supported":true,"value":70,"raw":70,"min":0,"max":100},"volume":{"supported":false,"value":null,"raw":null,"min":0,"max":100}}}"#.as_slice(),
             br#"{"type":"power","on_battery":false}"#.as_slice(),
-            br#"{"type":"update_settings","settings":{"presence_protection_enabled":true,"always_on_camera":true,"hardware_keys_enabled":true}}"#.as_slice(),
+            br#"{"type":"update_settings","settings":{"presence_protection_enabled":true,"always_on_camera":false,"hardware_keys_enabled":true}}"#.as_slice(),
             br#"{"type":"update_settings","settings":{"presence_min_brightness_percent":35}}"#.as_slice(),
             br#"{"type":"monitor_display_state","monitor_id":"screen","generation":1,"state":"asleep"}"#.as_slice(),
         ] {
@@ -123,7 +123,7 @@ fn ffi_transports_display_state_and_always_on_setting_without_abi_change() {
         assert_eq!(ffi::tv_snapshot(core, &mut buffer), ffi::TV_OK);
         let snapshot: serde_json::Value =
             serde_json::from_slice(std::slice::from_raw_parts(buffer.data, buffer.len)).unwrap();
-        assert_eq!(snapshot["settings"]["always_on_camera"], true);
+        assert_eq!(snapshot["settings"]["always_on_camera"], false);
         assert_eq!(snapshot["settings"]["hardware_keys_enabled"], true);
         assert_eq!(
             snapshot["settings"]["presence_min_brightness_percent"],

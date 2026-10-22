@@ -155,7 +155,7 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         // A history change counts as a camera change, like a changed selected_camera_id. With no history,
         // the legacy ID is the key, which matches the one-entry history it implies.
         let nextCameraKey = nextCameraHistory.isEmpty ? nextCameraID : nextCameraHistory.joined(separator: "\n")
-        let nextAlwaysOn = snapshot.settings?.always_on_camera ?? false
+        let nextAlwaysOn = snapshot.settings?.always_on_camera ?? true
         queue.async { [weak self] in
             guard let self, !self.stopped else { return }
             if let revision = snapshot.revision {

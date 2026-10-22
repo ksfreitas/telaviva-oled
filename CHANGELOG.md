@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Changed
+
+- Keep camera on is now on by default and moved to Settings > Advanced on macOS and Windows, with a note that turning it off can cause detection problems, depending on the camera, and "insufficient light" events. Hardware checks are pending.
+- Upgrade note: existing installs keep their saved value; turn the option on in Settings > Advanced.
+
 ## 0.1.3 - 2026-10-21
 
 ### Added

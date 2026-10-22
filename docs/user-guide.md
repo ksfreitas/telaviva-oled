@@ -37,12 +37,12 @@ Settings has General, Keyboard, Automatic brightness, Advanced and About pages o
 - **Camera:** the app remembers the cameras you select, up to eight, most recent first, and uses the first one that is connected, so reconnecting a camera or plugging in a preferred one is picked up without changing settings. When none is connected, it falls back to the system default camera. On Windows, infrared cameras are hidden from selection.
 - **Monitored display:** the display whose brightness decides whether the camera runs. See [Laptop screen protection](#laptop-screen-protection).
 - **Sampling intervals:** the presence sampling interval defaults to 10 seconds (5 to 300 seconds). While dimmed, return checks default to 1 second (0.25 to 5 seconds).
-- **Keep camera on:** off by default. See [Presence protection](#presence-protection).
 - **Battery behavior:** presence checking pauses on battery by default.
 - **Check presence only above brightness:** the presence brightness threshold. It is a slider from 0 to 90%, 20% by default. Each display keeps its own value. See [Laptop screen protection](#laptop-screen-protection).
 - **Launch at login:** off by default.
 - **Hardware-key steps:** see [Keyboard and hardware keys](#keyboard-and-hardware-keys).
 - **Inference device** (Advanced page): where face detection runs. See [Inference device](#inference-device).
+- **Keep camera on** (Advanced page): on by default. Turning it off can cause detection problems, depending on the camera, and can produce insufficient-light events. See [Presence protection](#presence-protection).
 
 ## Presence protection
 
@@ -57,7 +57,7 @@ Presence protection is off until you enable it, and enabling it requests camera 
 
 ### Camera use
 
-Normal presence checks use one-frame sessions. With **Keep camera on** enabled (off by default), capture is retained between checks without increasing the inference frequency.
+With **Keep camera on** turned off, normal presence checks use one-frame sessions. When it is enabled (on by default, in Settings > Advanced), capture is retained between checks without increasing the inference frequency.
 
 Capture stops when:
 
@@ -74,7 +74,7 @@ With the laptop lid closed, the built-in camera is not used. See [Laptop screen 
 
 ### Low light
 
-Insufficient light suspends face detection instead of counting as absence. Recovery waits 10 seconds, keeps capture running for five seconds to allow exposure adjustment, then checks a fresh frame. Two usable-light checks are required before face detection resumes.
+Insufficient light suspends face detection instead of counting as absence. Recovery waits 10 seconds, keeps capture running for five seconds to allow exposure adjustment, then checks a fresh frame. Two usable-light checks are required before face detection resumes. With **Keep camera on** turned off, one-frame sessions are more likely to see a dark frame while the camera adjusts its exposure, depending on the camera.
 
 ### Combined reasons and sleep
 

@@ -49,7 +49,7 @@ struct SettingsSnapshot {
     double return_sampling_interval_s = 1.0;
     bool suspend_presence_on_battery = true;
     double presence_min_brightness_percent = 20.0;
-    bool always_on_camera = false;
+    bool always_on_camera = true;
     bool screensaver_protection_enabled = false;
     bool launch_at_login = false;
     int brightness_key_step = 5;

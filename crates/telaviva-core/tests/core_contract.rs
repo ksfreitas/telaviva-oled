@@ -22,7 +22,7 @@ fn settings_defaults_validate_and_reject_future_schema_and_bad_ranges() {
     assert_eq!(defaults.presence_sampling_interval_s, 10.0);
     assert_eq!(defaults.return_sampling_interval_s, 1.0);
     assert!(defaults.suspend_presence_on_battery);
-    assert!(!defaults.always_on_camera);
+    assert!(defaults.always_on_camera);
     assert!(!defaults.hardware_keys_enabled);
     assert_eq!(defaults.brightness_key_step, 5);
     assert_eq!(defaults.volume_key_step, 5);
@@ -47,10 +47,15 @@ fn settings_defaults_validate_and_reject_future_schema_and_bad_ranges() {
     )
     .unwrap();
     assert!(old_schema.presence_protection_enabled);
-    assert!(!old_schema.always_on_camera);
+    assert!(old_schema.always_on_camera);
     assert!(!old_schema.hardware_keys_enabled);
     assert!(
         Settings::from_json(br#"{"schema_version":1,"always_on_camera":true}"#)
+            .unwrap()
+            .always_on_camera
+    );
+    assert!(
+        !Settings::from_json(br#"{"schema_version":1,"always_on_camera":false}"#)
             .unwrap()
             .always_on_camera
     );
@@ -126,7 +131,7 @@ fn old_valid_interval_settings_are_clamped_without_losing_other_preferences() {
     assert!(settings.launch_at_login);
     assert_eq!(settings.selected_camera_id.as_deref(), Some("camera-1"));
     assert_eq!(settings.screensaver_targets.get("display-1"), Some(&27.0));
-    assert!(!settings.always_on_camera);
+    assert!(settings.always_on_camera);
     assert!(path.exists());
     assert!(!root.join("settings.json.corrupt").exists());
     let _ = std::fs::remove_dir_all(root);
@@ -903,7 +908,7 @@ fn camera_display_status_tracks_capture_success_and_policy_states() {
 }
 
 #[test]
-fn always_on_capture_is_opt_in_and_keeps_return_mode() {
+fn always_on_capture_is_default_and_keeps_return_mode() {
     let mut core = Core::new(CoreOptions::default()).unwrap();
     send(
         &mut core,
@@ -918,7 +923,12 @@ fn always_on_capture_is_opt_in_and_keeps_return_mode() {
         &mut core,
         json!({"type":"update_settings","settings":{"presence_protection_enabled":true}}),
     );
-    assert_eq!(normal["camera"]["capture_mode"], "single_frame");
+    assert_eq!(normal["camera"]["capture_mode"], "continuous_monitoring");
+    let single = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"always_on_camera":false}}),
+    );
+    assert_eq!(single["camera"]["capture_mode"], "single_frame");
     let always = send(
         &mut core,
         json!({"type":"update_settings","settings":{"always_on_camera":true}}),
@@ -2085,7 +2095,7 @@ fn returning_sample_restores_owned_brightness_and_cadence_is_one_second() {
     send(&mut core, json!({"type":"power","on_battery":false}));
     let s = send(
         &mut core,
-        json!({"type":"update_settings","settings":{"presence_protection_enabled":true}}),
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true,"always_on_camera":false}}),
     );
     assert_eq!(s["camera"]["capture_mode"], "single_frame");
     for offset in [10_000, 20_000] {
@@ -4068,7 +4078,7 @@ fn protection_monitor_unprotected_only_camera_matches_no_monitor_state() {
     send(&mut empty, json!({"type":"power","on_battery":false}));
     let none = send(
         &mut empty,
-        json!({"type":"update_settings","settings":{"presence_protection_enabled":true}}),
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true,"always_on_camera":false}}),
     );
     assert_eq!(none["camera"]["mode"], "suspended");
     let mut core = Core::new(CoreOptions::default()).unwrap();
@@ -4084,7 +4094,7 @@ fn protection_monitor_unprotected_only_camera_matches_no_monitor_state() {
     // Positive control: a protected monitor keeps the camera in face mode.
     let protected = send(
         &mut core,
-        json!({"type":"update_settings","settings":{"presence_protection_enabled":true}}),
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":true,"always_on_camera":false}}),
     );
     assert_eq!(protected["camera"]["mode"], "face");
     let unprotected = send(

@@ -20,7 +20,7 @@ struct SettingsView: View {
     var builtIn: BuiltInControls? = nil
     @State private var locale = "auto"
     @State private var presence = false
-    @State private var alwaysOnCamera = false
+    @State private var alwaysOnCamera = true
     @State private var screensaver = false
     @State private var battery = true
     @State private var login = false
@@ -166,8 +166,6 @@ struct SettingsView: View {
                 }
                 Text(AppText.string("monitored.help", locale: locale))
                     .font(.caption).foregroundStyle(.secondary)
-                Toggle(AppText.string("alwaysOnCamera", locale: locale), isOn: $alwaysOnCamera)
-                    .help(AppText.string("alwaysOnCameraHelp", locale: locale))
                 Toggle(AppText.string("saver", locale: locale), isOn: $screensaver)
                 Toggle(AppText.string("battery", locale: locale), isOn: $battery)
                 LabeledContent(AppText.string("check", locale: locale)) {
@@ -227,9 +225,20 @@ struct SettingsView: View {
         .padding(20)
     }
 
-    /// Advanced tab: CoreML compute-unit preference and the current inference route.
+    /// Advanced tab: the camera option (keeping the camera on between checks, with its warning), then the CoreML
+    /// compute-unit preference and the current inference route.
     private var advancedTab: some View {
-        InferenceSettingsView(selection: $inferenceDevice, report: inferenceReport, locale: locale)
+        Form {
+            Section(AppText.string("camera", locale: locale)) {
+                Toggle(AppText.string("alwaysOnCamera", locale: locale), isOn: $alwaysOnCamera)
+                    .help(AppText.string("alwaysOnCameraHelp", locale: locale))
+                Text(AppText.string("alwaysOnCameraWarning", locale: locale))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            InferenceSettingsView(selection: $inferenceDevice, report: inferenceReport, locale: locale)
+        }
+        .formStyle(.grouped)
+        .padding(20)
     }
 
     /// Keyboard tab: hardware keys, step sizes, and the permissions they need.
@@ -302,7 +311,7 @@ struct SettingsView: View {
         guard let value = core.snapshot.settings else { return }
         didLoad = true
         locale = value.locale; presence = value.presence_protection_enabled
-        alwaysOnCamera = value.always_on_camera ?? false
+        alwaysOnCamera = value.always_on_camera ?? true
         screensaver = value.screensaver_protection_enabled; battery = value.suspend_presence_on_battery
         login = value.launch_at_login; presentInterval = Double(value.presence_sampling_interval_s)
         hardwareKeys = value.hardware_keys_enabled ?? false
@@ -394,38 +403,35 @@ private struct InferenceSettingsView: View {
     @ObservedObject var report: InferenceDeviceSelection.Report
     let locale: String
 
+    /// Only the section: the Advanced tab's Form supplies the grouping, formatting and padding.
     var body: some View {
-        Form {
-            Section(AppText.string("inference.title", locale: locale)) {
-                Picker(AppText.string("inference.title", locale: locale), selection: $selection) {
-                    ForEach(InferenceDeviceSelection.options) { option in
-                        Text(AppText.string(option.labelKey, locale: locale)).tag(option.id)
-                    }
-                    if !InferenceDeviceSelection.options.contains(where: { $0.id == selection }) {
-                        Text(AppText.inferenceUnavailableLabel(id: selection, locale: locale))
-                            .tag(selection)
-                    }
+        Section(AppText.string("inference.title", locale: locale)) {
+            Picker(AppText.string("inference.title", locale: locale), selection: $selection) {
+                ForEach(InferenceDeviceSelection.options) { option in
+                    Text(AppText.string(option.labelKey, locale: locale)).tag(option.id)
                 }
-                Text(AppText.string("inference.help", locale: locale))
-                    .font(.caption).foregroundStyle(.secondary)
-                Text(AppText.string("inference.discreteHelp", locale: locale))
-                    .font(.caption).foregroundStyle(.secondary)
-                if report.decided {
-                    let active = AppText.inferenceActiveLabel(id: report.value.activeId,
-                                                             fallback: report.value.activeLabel, locale: locale)
-                    Text(AppText.string("inference.inUse", locale: locale)
-                        .replacingOccurrences(of: "{0}", with: active))
-                } else {
-                    Text(AppText.string("inference.notDecided", locale: locale))
-                }
-                if let noticeKey = inferenceNoticeKey {
-                    Label(AppText.string(noticeKey, locale: locale), systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.orange)
+                if !InferenceDeviceSelection.options.contains(where: { $0.id == selection }) {
+                    Text(AppText.inferenceUnavailableLabel(id: selection, locale: locale))
+                        .tag(selection)
                 }
             }
+            Text(AppText.string("inference.help", locale: locale))
+                .font(.caption).foregroundStyle(.secondary)
+            Text(AppText.string("inference.discreteHelp", locale: locale))
+                .font(.caption).foregroundStyle(.secondary)
+            if report.decided {
+                let active = AppText.inferenceActiveLabel(id: report.value.activeId,
+                                                         fallback: report.value.activeLabel, locale: locale)
+                Text(AppText.string("inference.inUse", locale: locale)
+                    .replacingOccurrences(of: "{0}", with: active))
+            } else {
+                Text(AppText.string("inference.notDecided", locale: locale))
+            }
+            if let noticeKey = inferenceNoticeKey {
+                Label(AppText.string(noticeKey, locale: locale), systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+            }
         }
-        .formStyle(.grouped)
-        .padding()
     }
 
     private var inferenceNoticeKey: String? {

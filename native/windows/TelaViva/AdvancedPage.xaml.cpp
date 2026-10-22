@@ -88,6 +88,16 @@ winrt::hstring optionLabel(const telaviva::DeviceOption& option)
     return utf8(option.description);
 }
 
+// Switch with empty On and Off text; the row header already names the setting.
+xc::ToggleSwitch makeSwitch(winrt::hstring const& name)
+{
+    xc::ToggleSwitch toggle;
+    toggle.OnContent(winrt::box_value(winrt::hstring{}));
+    toggle.OffContent(winrt::box_value(winrt::hstring{}));
+    xaml::Automation::AutomationProperties::SetName(toggle, name);
+    return toggle;
+}
+
 }  // namespace
 
 namespace winrt::TelaViva::implementation
@@ -113,6 +123,7 @@ namespace winrt::TelaViva::implementation
     {
         host_ = host;
         fillDeviceBox();
+        syncAlwaysOn();
         updateReport();
     }
 
@@ -122,6 +133,20 @@ namespace winrt::TelaViva::implementation
 
         // Rebuilt rather than edited in place, as on the General page. The list is refilled below.
         RowsPanel().Children().Clear();
+
+        // Camera: the keep-alive switch and its warning. Built here so it follows the same rebuild as the rows below.
+        RowsPanel().Children().Append(telaviva::host::MakeSectionHeader(loc("camera")));
+        alwaysOnSwitch_ = makeSwitch(loc("alwaysOnCamera"));
+        alwaysOnSwitch_.Toggled([this](auto const& sender, auto const&) {
+            if (suppress_ || !host_) {
+                return;
+            }
+            const bool enabled = sender.as<xc::ToggleSwitch>().IsOn();
+            edit([enabled](telaviva::SettingsDraft& draft) { draft.alwaysOnCamera = enabled; });
+        });
+        RowsPanel().Children().Append(telaviva::host::MakeSettingRow(loc("alwaysOnCamera"), loc("alwaysOnCameraHelp"), alwaysOnSwitch_));
+        RowsPanel().Children().Append(telaviva::host::MakeCaption(loc("alwaysOnCameraWarning")));
+
         RowsPanel().Children().Append(telaviva::host::MakeSectionHeader(loc("inference.title")));
 
         const winrt::hstring deviceHeader = loc("inference.title");
@@ -154,6 +179,7 @@ namespace winrt::TelaViva::implementation
         RowsPanel().Children().Append(noticeBar_);
 
         fillDeviceBox();
+        syncAlwaysOn();
         updateReport();
     }
 
@@ -191,6 +217,17 @@ namespace winrt::TelaViva::implementation
         }
         const auto found = std::find(deviceIds_.begin(), deviceIds_.end(), stored);
         deviceBox_.SelectedIndex(static_cast<int>(found - deviceIds_.begin()));
+        suppress_ = false;
+    }
+
+    void AdvancedPage::syncAlwaysOn()
+    {
+        if (!alwaysOnSwitch_ || !host_) {
+            return;
+        }
+        // suppress_ keeps the programmatic toggle from submitting a change.
+        suppress_ = true;
+        alwaysOnSwitch_.IsOn(host_->currentSettings().always_on_camera);
         suppress_ = false;
     }
 

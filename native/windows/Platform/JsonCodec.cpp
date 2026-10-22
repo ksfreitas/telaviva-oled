@@ -873,7 +873,7 @@ Snapshot parseSnapshot(const std::string& text)
         snapshot.settings.return_sampling_interval_s = numberOr(*settings, "return_sampling_interval_s", 1.0);
         snapshot.settings.suspend_presence_on_battery = boolOr(*settings, "suspend_presence_on_battery", true);
         snapshot.settings.presence_min_brightness_percent = numberOr(*settings, "presence_min_brightness_percent", 20.0);
-        snapshot.settings.always_on_camera = boolOr(*settings, "always_on_camera", false);
+        snapshot.settings.always_on_camera = boolOr(*settings, "always_on_camera", true);
         snapshot.settings.screensaver_protection_enabled = boolOr(*settings, "screensaver_protection_enabled", false);
         snapshot.settings.launch_at_login = boolOr(*settings, "launch_at_login", false);
         snapshot.settings.brightness_key_step = intOr(*settings, "brightness_key_step", 5);

@@ -39,7 +39,7 @@ pub struct Settings {
     // kept, so a display that returns gets its threshold back.
     #[serde(default)]
     pub presence_min_brightness_by_display: std::collections::BTreeMap<String, f64>,
-    #[serde(default)]
+    #[serde(default = "yes")]
     pub always_on_camera: bool,
     #[serde(default)]
     pub screensaver_protection_enabled: bool,
@@ -258,7 +258,7 @@ impl Default for Settings {
             presence_protection_enabled: false,
             presence_min_brightness_percent: 20.0,
             presence_min_brightness_by_display: Default::default(),
-            always_on_camera: false,
+            always_on_camera: true,
             screensaver_protection_enabled: false,
             launch_at_login: false,
             hardware_keys_enabled: false,

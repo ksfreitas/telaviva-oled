@@ -181,6 +181,9 @@
   <data name="alwaysOnCameraHelp" xml:space="preserve">
     <value>Keeps the camera on between checks while respecting battery and display sleep pauses.</value>
   </data>
+  <data name="alwaysOnCameraWarning" xml:space="preserve">
+    <value>Turning this off can cause detection problems, depending on the camera, and can produce "insufficient light" events, because the camera is then opened only for each check.</value>
+  </data>
   <data name="saver" xml:space="preserve">
     <value>Dim while the screensaver is active</value>
   </data>

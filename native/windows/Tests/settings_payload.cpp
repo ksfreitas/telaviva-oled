@@ -209,7 +209,7 @@ TEST(settings_payload_default_values)
     CHECK_EQ(scalarFor(draft, "suspend_presence_on_battery"), std::string("true"));
     CHECK_EQ(scalarFor(draft, "presence_protection_enabled"), std::string("false"));
     CHECK_EQ(scalarFor(draft, "presence_min_brightness_percent"), std::string("20"));
-    CHECK_EQ(scalarFor(draft, "always_on_camera"), std::string("false"));
+    CHECK_EQ(scalarFor(draft, "always_on_camera"), std::string("true"));
     CHECK_EQ(scalarFor(draft, "screensaver_protection_enabled"), std::string("false"));
     CHECK_EQ(scalarFor(draft, "launch_at_login"), std::string("false"));
     CHECK_EQ(scalarFor(draft, "hardware_keys_enabled"), std::string("false"));
@@ -428,7 +428,7 @@ TEST(settings_payload_round_trip_non_default_values)
     const std::string snapshot = R"({"settings":{"locale":"pt-BR","presence_sampling_interval_s":30,)"
                                  R"("return_sampling_interval_s":2.5,"suspend_presence_on_battery":false,)"
                                  R"("presence_protection_enabled":true,"presence_min_brightness_percent":35,)"
-                                 R"("always_on_camera":true,"screensaver_protection_enabled":true,)"
+                                 R"("always_on_camera":false,"screensaver_protection_enabled":true,)"
                                  R"("launch_at_login":true,"hardware_keys_enabled":true,)"
                                  R"("brightness_key_step":3,"volume_key_step":7,)"
                                  R"("screensaver_targets":{"win-a":25},"ambient_follow_enabled":true,)"
@@ -439,10 +439,18 @@ TEST(settings_payload_round_trip_non_default_values)
              std::string(R"({"type":"update_settings","settings":{"locale":"pt-BR",)"
                          R"("presence_sampling_interval_s":30,"return_sampling_interval_s":2.5,)"
                          R"("suspend_presence_on_battery":false,"presence_protection_enabled":true,)"
-                         R"("presence_min_brightness_percent":35,"always_on_camera":true,)"
+                         R"("presence_min_brightness_percent":35,"always_on_camera":false,)"
                          R"("screensaver_protection_enabled":true,"launch_at_login":true,)"
                          R"("hardware_keys_enabled":true,"brightness_key_step":3,"volume_key_step":7,)"
                          R"("inference_device":"auto",)"
                          R"("screensaver_targets":{"win-a":25},"ambient_follow_enabled":true,)"
                          R"("protection_disabled":["win-b"]}})"));
+}
+
+TEST(settings_payload_always_on_camera_missing_key_defaults_to_true)
+{
+    // A settings file without the key, such as one written before the default changed, must read as true.
+    const telaviva::Snapshot s = telaviva::parseSnapshot(R"({"settings":{"locale":"auto"}})");
+    const telaviva::SettingsDraft draft = telaviva::draftFromSnapshotSettings(s.settings);
+    CHECK(draft.alwaysOnCamera);
 }

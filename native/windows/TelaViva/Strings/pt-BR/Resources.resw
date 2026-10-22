@@ -181,6 +181,9 @@
   <data name="alwaysOnCameraHelp" xml:space="preserve">
     <value>Mantém a câmera ligada entre as verificações, respeitando as pausas por bateria e tela desligada.</value>
   </data>
+  <data name="alwaysOnCameraWarning" xml:space="preserve">
+    <value>Desmarcar esta opção pode causar problemas de detecção, dependendo da câmera, e gerar eventos de "pouca iluminação", porque a câmera passa a ser aberta só a cada verificação.</value>
+  </data>
   <data name="saver" xml:space="preserve">
     <value>Reduzir durante o protetor de tela</value>
   </data>

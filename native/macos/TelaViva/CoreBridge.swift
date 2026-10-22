@@ -456,7 +456,7 @@ struct CoreSettings: Decodable {
             "return_sampling_interval_s": return_sampling_interval_s,
             "suspend_presence_on_battery": suspend_presence_on_battery,
             "presence_protection_enabled": presence_protection_enabled,
-            "always_on_camera": always_on_camera ?? false,
+            "always_on_camera": always_on_camera ?? true,
             "screensaver_protection_enabled": screensaver_protection_enabled,
             "launch_at_login": launch_at_login, "screensaver_targets": screensaver_targets,
             "hardware_keys_enabled": hardware_keys_enabled ?? false,

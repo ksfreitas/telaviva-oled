@@ -19,7 +19,7 @@ struct SettingsDraft {
     double returnSamplingIntervalS = 1;
     bool suspendPresenceOnBattery = true;
     double presenceMinBrightnessPercent = 20;
-    bool alwaysOnCamera = false;
+    bool alwaysOnCamera = true;
     bool screensaverProtectionEnabled = false;
     bool hardwareKeysEnabled = false;
     int brightnessKeyStep = 5;

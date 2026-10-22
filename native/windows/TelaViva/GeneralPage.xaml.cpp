@@ -404,14 +404,6 @@ namespace winrt::TelaViva::implementation
         RowsPanel().Children().Append(telaviva::host::MakeSettingRow(
             loc("presenceMinBrightness"), loc("presenceMinBrightnessHelp"), withUnit(thresholdBox_, L"%")));
 
-        const winrt::hstring alwaysOnHeader = loc("alwaysOnCamera");
-        xc::ToggleSwitch alwaysOnSwitch = makeSwitch(settings.always_on_camera, alwaysOnHeader);
-        alwaysOnSwitch.Toggled([this](auto const& sender, auto const&) {
-            const bool enabled = sender.as<xc::ToggleSwitch>().IsOn();
-            edit([enabled](telaviva::SettingsDraft& draft) { draft.alwaysOnCamera = enabled; });
-        });
-        RowsPanel().Children().Append(telaviva::host::MakeSettingRow(alwaysOnHeader, loc("alwaysOnCameraHelp"), alwaysOnSwitch));
-
         const winrt::hstring saverHeader = loc("saver");
         xc::ToggleSwitch saverSwitch = makeSwitch(settings.screensaver_protection_enabled, saverHeader);
         saverSwitch.Toggled([this](auto const& sender, auto const&) {

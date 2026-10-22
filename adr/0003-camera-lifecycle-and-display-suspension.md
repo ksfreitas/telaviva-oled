@@ -13,18 +13,20 @@ The macOS presence adapter previously used one-frame capture for ordinary checks
 
 Add an opt-in `always_on_camera` setting, defaulting to false. When enabled, retain a healthy camera session between scheduled checks without increasing inference frequency. Keep capture subordinate to shared core eligibility and suspend it when all eligible external displays are confirmed asleep. Track per-monitor display state with connection generations, suppress DDC writes to sleeping targets, and reconcile after wake using fresh brightness readback and existing ownership checks.
 
+Superseded for the default by the 2026-10-22 amendment.
+
 For low-light recovery, retain the 10-second retry delay, then ignore frames during a five-second monotonic exposure-settling window before assessing a fresh frame. Keep the two usable-light threshold and independent bounded acquisition watchdog. Warmup frames do not enter inference or absence counting. The feature remains macOS-scoped; Windows work is deferred.
 
 ## Alternatives Considered
 
-- Keep one-frame sessions for all ordinary checks: this remains the default and is selected when the opt-in setting is off.
+- Keep one-frame sessions for all ordinary checks: this was the original default and is selected when the setting is off (it is on by default since the 2026-10-22 amendment).
 - Suspend whenever any external display sleeps: this would stop monitoring even when another eligible display remains awake; the selected policy suspends only when all eligible displays are confirmed asleep.
 - Treat brightness zero as display sleep: brightness is not a reliable display-power signal, so the implementation uses OS-reported sleep state.
 - Count warmup frames toward presence or absence: this could make exposure transitions produce invalid observations, so warmup frames are ignored.
 
 ## Consequences
 
-The setting and display-state contract are additive to settings schema 1 and ABI version 1. Keeping the session open does not change inference cadence. Automated Rust and native fake-session checks can verify policy and scheduling without physical devices; actual camera behavior, display sleep reporting, DDC suppression and restoration, and energy use remain hardware acceptance work. The physical checklist is archived with status not run. Existing setting files default the new option to off; older binaries may reject the newly serialized field.
+The setting and display-state contract are additive to settings schema 1 and ABI version 1. Keeping the session open does not change inference cadence. Automated Rust and native fake-session checks can verify policy and scheduling without physical devices; actual camera behavior, display sleep reporting, DDC suppression and restoration, and energy use remain hardware acceptance work. The physical checklist is archived with status not run. Setting files without the key default the option to on since the 2026-10-22 amendment (it was off when the option was introduced); a saved value is always kept. Older binaries may reject the newly serialized field.
 
 ## Non-Obvious Constraints
 
@@ -94,3 +96,27 @@ The decisions in this record remain in force. The earlier statements that the ch
 - The brightness-zero row was corrected: since [ADR 0011](0011-camera-brightness-activation-threshold.md) the camera suspends as low brightness at or below the threshold. Brightness zero still does not mean display sleep.
 - A low-light report with a bright window behind the user was not explained and stays open.
 - Results are owner-observed, not instrumented, and cover one monitor and one connection. Energy use is still unmeasured.
+
+## Amendment 2026-10-22: on by default
+
+**Feature:** keep-camera-on-by-default-in-advanced
+**Spec:** [Archived plan](../specs/archived/keep-camera-on-by-default-in-advanced/plan.md)
+
+This dated amendment changes the default of the `always_on_camera` setting that the Decision above made opt-in. The accepted decisions in this record remain in force.
+
+### Decision
+
+- **The default is true** for new settings and for settings files without the key. Existing saved values are kept, so an install that saved `false` stays off.
+- **No migration.** A one-time migration would need a schema bump or a marker field, and older builds reject unknown fields (`deny_unknown_fields`) and reset settings when they back up the file as corrupt on downgrade. The change therefore needs no schema or ABI change. The CHANGELOG upgrade note tells existing installs where to turn the option on.
+- **The setting moved to the Advanced page** on macOS and Windows, in a Camera section above the inference device, with a warning under the toggle: turning it off can cause detection problems, depending on the camera, and can produce "insufficient light" events.
+
+### Consequences
+
+- Energy trade-off: the default keeps the camera session and its LED open between checks, at the capped low frame rate from the 2026-10-16 capture frame rate amendment. Inference cadence does not change, and battery suspension still applies by default. This works against the project's minimal CPU, memory, camera and battery priority, and it is not measured.
+- The owner observed that one-frame sessions can, depending on the camera, hurt detection and produce insufficient-light results. This is an owner observation, not a measured result. The five-second dark settle for single-frame face samples (2026-10-16 amendment) was meant to prevent false low-light events; this amendment does not claim that it resolves the camera-dependent problems.
+- Hardware is not measured. The default, the Advanced page and the warning have no physical acceptance run on either platform, and the manual checks are pending.
+
+### Non-Obvious Constraints
+
+- A saved `false` is never rewritten to `true`. Only a missing key takes the new default.
+- Battery suspension, display sleep, camera errors and shutdown still take priority over the retained session.
