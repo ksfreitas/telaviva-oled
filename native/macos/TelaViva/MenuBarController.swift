@@ -341,11 +341,12 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                 self?.requestHardwareKeyPermission()
             }, ambientAvailability: ambientAvailability, inferenceReport: camera.inferenceReport, calibration: calibration,
                                             builtIn: builtInControls)
-                .frame(minWidth: 760, minHeight: 560)
-            let created = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 720),
-                                   styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                .fixedSettingsWindowSize()
+            let created = NSWindow(contentRect: NSRect(origin: .zero, size: SettingsWindowLayout.contentSize),
+                                   styleMask: SettingsWindowLayout.styleMask,
                                    backing: .buffered, defer: false)
-            created.contentMinSize = NSSize(width: 760, height: 560)
+            created.contentMinSize = SettingsWindowLayout.contentSize
+            created.contentMaxSize = SettingsWindowLayout.contentSize
             created.title = "TelaViva OLED"
             created.contentViewController = NSHostingController(rootView: settingsView)
             created.isReleasedWhenClosed = false

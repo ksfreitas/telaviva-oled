@@ -47,8 +47,9 @@ struct TelaVivaApp: App {
                          updateChecker: appDelegate.updateChecker, installedVersion: appDelegate.installedVersion,
                          inferenceReport: appDelegate.camera.inferenceReport,
                          builtIn: appDelegate.builtInControls)
-                .frame(minWidth: 760, minHeight: 560)
+                .fixedSettingsWindowSize()
         }
+        .windowResizability(.contentSize)
         .commands { CommandGroup(replacing: .newItem) {} }
     }
 }

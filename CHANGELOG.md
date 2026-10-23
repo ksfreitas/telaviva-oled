@@ -7,6 +7,7 @@
 - Keep camera on is now on by default and moved to Settings > Advanced on macOS and Windows, with a note that turning it off can cause detection problems, depending on the camera, and "insufficient light" events. Hardware checks are pending.
 - Upgrade note: existing installs keep their saved value; turn the option on in Settings > Advanced.
 - The camera status "busy" (Portuguese "ocupada") now reads "no image" (Portuguese "sem imagem") on macOS and Windows. It is shown when no frame arrives in time or the camera fails to start while the device is present, not when another app holds the camera. Hardware checks are pending.
+- The macOS Settings window is now a fixed size (760 by 720 points) and can no longer be resized; content that does not fit scrolls. Hardware checks are pending.
 
 ### Fixed
 

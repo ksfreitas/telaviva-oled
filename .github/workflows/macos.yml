@@ -41,6 +41,8 @@ jobs:
         run: tools/tests/test-manual-monitor-controls.sh
       - name: Test popup layout
         run: tools/tests/test-popup-layout.sh
+      - name: Test settings window layout
+        run: tools/tests/test-settings-window-layout.sh
       - name: Test update checker
         run: tools/tests/test-update-checker.sh
       - name: Test built-in brightness monitor
