@@ -54,6 +54,7 @@ Presence protection is off until you enable it, and enabling it requests camera 
 - Checks run at the sampling interval. While a monitor is dimmed, return checks run faster.
 - After the first no-face check, the confirming check runs after the short return interval (1 second by default, range 0.25 to 5 seconds) instead of a full sampling interval, so the monitor dims about one sampling interval plus about a second after you leave. A present, insufficient-light or unavailable result clears that first miss.
 - The camera stays open during return checks, while inference still follows the configured interval.
+- If the camera stops delivering images, its status shows "no image" (on Windows, `Camera: no image` in the footer). The app retries the camera by itself after 30 seconds, then after 1 minute, then every 5 minutes for as long as it keeps failing, and presence protection resumes as soon as the camera answers, without restarting the app. A camera that is not connected ("unavailable") is retried the same way. "permission required" and "error" are not retried, because they need your action. "No image" does not mean that another app is using the camera: a stalled USB camera can cause it.
 
 ### Camera use
 
@@ -66,6 +67,7 @@ Capture stops when:
 - no protected display that the app can read and dim remains;
 - every eligible display is asleep and none is dimmed by presence;
 - the gate display is at or below its brightness threshold and no display is dimmed by presence (20% by default; the slider goes down to 0%);
+- the camera reports "no image" or "unavailable", until its next automatic retry (see [How it works](#how-it-works));
 - the app exits.
 
 The gate display is the monitored display, or the next awake display when the monitored one sleeps. A display that presence has dimmed keeps the camera running, so that its return is detected.
@@ -228,6 +230,8 @@ TelaViva OLED keeps a local log of its brightness decisions and of each DDC atte
 - **Windows:** the lines go to `%LOCALAPPDATA%\TelaVivaOLED\telaviva.log`. When the file reaches 1 MiB it is renamed to `telaviva.log.1`, and one previous generation is kept, so at most about 2 MiB remain. The default level is Notice. Set `TELAVIVA_LOG_LEVEL` to `info` or `debug` before you start the app to log more, or to `error` to log less. Uninstalling keeps these files unless you run the uninstaller with `-RemoveUserData`.
 
 A wake leaves these events: the display sleep and wake lines, `display_power`, `display_state` with `state=awake`, one `attempt_failed` line for each failed DDC attempt and `attempt_recovered` once a later attempt succeeds, then `read_result`, `ownership_verified` and `restore_enqueued`. If the restore gives up, `restore_failure` counts up to `failures=3/3` and `ownership_dropped` follows. A monitor that left and came back shows `monitor_disconnected` and then `monitor_discovered`. If that monitor was dimmed by protection and returns at the dimmed level, the log shows `dim_resumed` after `monitor_discovered`, then `read_result`, `ownership_verified` and `restore_enqueued`. A return at another level shows no `dim_resumed`.
+
+A camera that stops delivering images leaves `camera_failure status=busy failures=1 retry_in_ms=30000` (with `status=unavailable` when the camera is not connected). The retry then leaves `camera_retry failures=1`, and a probe that fails again leaves `camera_failure status=busy failures=2 retry_in_ms=60000`. The wait is 30000 ms after the first failure, 60000 ms after the second, and 300000 ms after every later one. These lines name no monitor, camera or device: they show only the status, the count and the wait.
 
 ## Privacy
 

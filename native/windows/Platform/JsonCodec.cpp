@@ -913,6 +913,7 @@ Snapshot parseSnapshot(const std::string& text)
         snapshot.camera.status = stringOr(*camera, "status", "unknown");
         snapshot.camera.displayStatus = stringOr(*camera, "display_status", "");
         snapshot.camera.nextSampleInMs = numberField(*camera, "next_sample_in_ms");
+        snapshot.camera.retryInMs = numberField(*camera, "retry_in_ms");
         snapshot.camera.generation = unsignedOr(*camera, "generation");
         snapshot.camera.presence = stringField(*camera, "presence");
     }

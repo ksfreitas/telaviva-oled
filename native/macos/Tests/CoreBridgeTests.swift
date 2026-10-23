@@ -31,6 +31,7 @@ private struct CoreBridgeTests {
         builtInDisplayCommandCarriesProtection()
         monitoredDisplaySnapshotDecodes()
         monitoredDisplayCommandCarriesSelection()
+        cameraRetryDelaySnapshotDecodes()
         updateCheckerUsesRealCore()
         print("Core bridge asynchronous tests passed")
     }
@@ -535,6 +536,16 @@ private struct CoreBridgeTests {
         let withoutMonitored = decodeSnapshot([:]).monitoredDisplay
         expect(withoutMonitored == CoreMonitoredDisplay.automatic && withoutMonitored.id == nil,
                "a snapshot without monitored_display decodes as automatic with no id")
+    }
+
+    /// The camera retry delay decodes from a snapshot that carries it, and reads as nil when it is absent.
+    private static func cameraRetryDelaySnapshotDecodes() {
+        let withRetry = decodeSnapshot(["camera": ["mode": "suspended", "status": "busy", "retry_in_ms": 30000]])
+        expect(withRetry.camera?.retry_in_ms == 30000, "camera.retry_in_ms decodes from a snapshot that carries it")
+
+        // Snapshots from before the retry delay existed must still decode, with it absent.
+        let withoutRetry = decodeSnapshot(["camera": ["mode": "face", "status": "ready"]])
+        expect(withoutRetry.camera?.retry_in_ms == nil, "a snapshot without camera.retry_in_ms decodes with it absent")
     }
 
     /// The selection command sends only `monitored_display_id`: the display's id as a string, or null for Automatic.

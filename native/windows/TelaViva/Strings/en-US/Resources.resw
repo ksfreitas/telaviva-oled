@@ -461,7 +461,7 @@
     <value>unavailable</value>
   </data>
   <data name="cameraStatus.busy" xml:space="preserve">
-    <value>busy</value>
+    <value>no image</value>
   </data>
   <data name="cameraStatus.permission" xml:space="preserve">
     <value>permission required</value>

@@ -108,6 +108,7 @@ struct CameraSnapshot {
     std::string status;
     std::string displayStatus;
     std::optional<double> nextSampleInMs;
+    std::optional<double> retryInMs;
     uint64_t generation = 0;
     std::optional<std::string> presence;
 };

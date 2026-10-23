@@ -2762,6 +2762,197 @@ fn resume_clears_low_light_and_busy_status_but_keeps_permission() {
 }
 
 #[test]
+fn busy_report_exposes_a_growing_retry_delay() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    discover_monitor(&mut core, "screen", json!(70));
+    let enabled = enable_presence(&mut core);
+    let generation = enabled["camera"]["generation"].clone();
+    for expected in [30_000.0, 60_000.0, 300_000.0, 300_000.0] {
+        let busy = send(
+            &mut core,
+            json!({"type":"camera_status","status":"busy","generation":generation}),
+        );
+        assert_eq!(busy["camera"]["mode"], "suspended");
+        assert_eq!(busy["camera"]["next_sample_in_ms"], Value::Null);
+        assert_eq!(busy["camera"]["retry_in_ms"].as_f64(), Some(expected));
+        send(
+            &mut core,
+            json!({"type":"camera_status","status":"unknown","generation":generation}),
+        );
+    }
+}
+
+#[test]
+fn retry_clears_busy_and_samples_after_one_second() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    discover_monitor(&mut core, "screen", json!(70));
+    let enabled = enable_presence(&mut core);
+    let generation = enabled["camera"]["generation"].clone();
+    let busy = send(
+        &mut core,
+        json!({"type":"camera_status","status":"busy","generation":generation}),
+    );
+    assert_eq!(busy["camera"]["retry_in_ms"].as_f64(), Some(30_000.0));
+    let retried = send(
+        &mut core,
+        json!({"type":"camera_status","status":"unknown","generation":generation}),
+    );
+    assert_eq!(retried["camera"]["mode"], "face");
+    assert_eq!(retried["camera"]["retry_in_ms"], Value::Null);
+    assert_eq!(
+        retried["camera"]["next_sample_in_ms"].as_f64(),
+        Some(1000.0)
+    );
+}
+
+#[test]
+fn unavailable_observation_also_schedules_a_retry() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    discover_monitor(&mut core, "screen", json!(70));
+    let enabled = enable_presence(&mut core);
+    let reported = send(
+        &mut core,
+        json!({"type":"presence_observation","status":"unavailable","captured_at_ms":capture_time(10_000),"camera_generation":enabled["camera"]["generation"],"camera_status":"unavailable"}),
+    );
+    assert_eq!(reported["camera"]["status"], "unavailable");
+    assert_eq!(reported["camera"]["mode"], "suspended");
+    assert_eq!(reported["camera"]["retry_in_ms"].as_f64(), Some(30_000.0));
+}
+
+#[test]
+fn accepted_sample_resets_the_retry_backoff() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    discover_monitor(&mut core, "screen", json!(70));
+    let enabled = enable_presence(&mut core);
+    let generation = enabled["camera"]["generation"].clone();
+    for _ in 0..2 {
+        send(
+            &mut core,
+            json!({"type":"camera_status","status":"busy","generation":generation}),
+        );
+        send(
+            &mut core,
+            json!({"type":"camera_status","status":"unknown","generation":generation}),
+        );
+    }
+    let sampled = presence_sample(&mut core, "present", 10_000);
+    assert_eq!(sampled["camera"]["status"], "ready");
+    let busy = send(
+        &mut core,
+        json!({"type":"camera_status","status":"busy","generation":generation}),
+    );
+    assert_eq!(busy["camera"]["retry_in_ms"].as_f64(), Some(30_000.0));
+
+    // A display sleep and wake is also a real resume, so it restarts the backoff too.
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    discover_monitor(&mut core, "screen", json!(70));
+    let enabled = enable_presence(&mut core);
+    let generation = enabled["camera"]["generation"].clone();
+    let screen_generation = enabled["monitors"][0]["generation"].as_u64().unwrap();
+    send(
+        &mut core,
+        json!({"type":"camera_status","status":"busy","generation":generation}),
+    );
+    send(
+        &mut core,
+        json!({"type":"camera_status","status":"unknown","generation":generation}),
+    );
+    let second = send(
+        &mut core,
+        json!({"type":"camera_status","status":"busy","generation":generation}),
+    );
+    assert_eq!(second["camera"]["retry_in_ms"].as_f64(), Some(60_000.0));
+    send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"screen","generation":screen_generation,"state":"asleep"}),
+    );
+    let woke = send(
+        &mut core,
+        json!({"type":"monitor_display_state","monitor_id":"screen","generation":screen_generation,"state":"awake"}),
+    );
+    assert_eq!(woke["camera"]["status"], "unknown");
+    let busy = send(
+        &mut core,
+        json!({"type":"camera_status","status":"busy","generation":woke["camera"]["generation"]}),
+    );
+    assert_eq!(busy["camera"]["retry_in_ms"].as_f64(), Some(30_000.0));
+}
+
+#[test]
+fn permission_and_error_do_not_schedule_a_retry() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    discover_monitor(&mut core, "screen", json!(70));
+    let enabled = enable_presence(&mut core);
+    let generation = enabled["camera"]["generation"].clone();
+    for status in ["permission", "error"] {
+        let reported = send(
+            &mut core,
+            json!({"type":"camera_status","status":status,"generation":generation}),
+        );
+        assert_eq!(reported["camera"]["status"], status);
+        assert_eq!(reported["camera"]["mode"], "suspended");
+        assert_eq!(reported["camera"]["retry_in_ms"], Value::Null);
+    }
+}
+
+#[test]
+fn retry_is_null_when_presence_is_off_or_battery_suspended() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    discover_monitor(&mut core, "screen", json!(70));
+    let enabled = enable_presence(&mut core);
+    let busy = send(
+        &mut core,
+        json!({"type":"camera_status","status":"busy","generation":enabled["camera"]["generation"]}),
+    );
+    assert_eq!(busy["camera"]["retry_in_ms"].as_f64(), Some(30_000.0));
+    // Switching presence off clears the busy status, so no retry stays scheduled.
+    let off = send(
+        &mut core,
+        json!({"type":"update_settings","settings":{"presence_protection_enabled":false}}),
+    );
+    assert_eq!(off["camera"]["mode"], "disabled");
+    assert_eq!(off["camera"]["retry_in_ms"], Value::Null);
+
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    discover_monitor(&mut core, "screen", json!(70));
+    let enabled = enable_presence(&mut core);
+    let busy = send(
+        &mut core,
+        json!({"type":"camera_status","status":"busy","generation":enabled["camera"]["generation"]}),
+    );
+    assert_eq!(busy["camera"]["retry_in_ms"].as_f64(), Some(30_000.0));
+    // Battery suspends the camera, and the power change clears the busy status as well.
+    let battery = send(&mut core, json!({"type":"power","on_battery":true}));
+    assert_eq!(battery["camera"]["mode"], "suspended");
+    assert_eq!(battery["camera"]["retry_in_ms"], Value::Null);
+}
+
+#[test]
+fn camera_failure_and_retry_lines_are_logged_without_identifiers() {
+    let mut core = Core::new(CoreOptions::default()).unwrap();
+    discover_monitor(&mut core, "screen", json!(70));
+    let enabled = enable_presence(&mut core);
+    let generation = enabled["camera"]["generation"].clone();
+    // Only the failure and retry lines are checked, so the setup lines are dropped here.
+    core.drain_diagnostics();
+    send(
+        &mut core,
+        json!({"type":"camera_status","status":"busy","generation":generation}),
+    );
+    send(
+        &mut core,
+        json!({"type":"camera_status","status":"unknown","generation":generation}),
+    );
+    let lines = core.drain_diagnostics();
+    let failure = "camera_failure status=busy failures=1 retry_in_ms=30000";
+    let retry = "camera_retry failures=1";
+    assert!(lines.iter().any(|line| line == failure));
+    assert!(lines.iter().any(|line| line == retry));
+    assert!(!lines.iter().any(|line| line.contains("monitor=")));
+    assert!(!lines.iter().any(|line| line.contains("screen")));
+}
+
+#[test]
 fn camera_presence_is_null_when_presence_protection_is_disabled() {
     let mut core = Core::new(CoreOptions::default()).unwrap();
     send(

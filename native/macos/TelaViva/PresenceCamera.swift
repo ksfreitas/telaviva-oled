@@ -68,6 +68,9 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var sampleGeneration: UInt64 = 0
     private var timeoutEpoch: UInt64 = 0
     private var sampleTimerEpoch: UInt64 = 0
+    private var retryTimer: DispatchSourceTimer?
+    private var retryTimerEpoch: UInt64 = 0
+    private var retryTimerGeneration: UInt64 = 0
     private var sampleStartedAt: TimeInterval = 0
     private var timeoutAssessmentToken: UInt64?
     private var latestSnapshotRevision: UInt64?
@@ -184,6 +187,16 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             self.mode = nextMode
             self.captureMode = nextCaptureMode
             self.generation = nextGeneration
+            // The core owns the retry schedule; the shell only obeys retry_in_ms.
+            if let retryMs = snapshot.camera?.retry_in_ms {
+                if self.retryTimer == nil || self.retryTimerGeneration != nextGeneration {
+                    self.scheduleRetry(after: Double(retryMs) / 1000.0)
+                }
+            } else {
+                self.retryTimer?.cancel()
+                self.retryTimer = nil
+                self.retryTimerEpoch &+= 1
+            }
             self.selectedCameraID = nextCameraID
             self.cameraHistory = nextCameraHistory
             if self.mode == "face" {
@@ -225,6 +238,26 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             self.requestSample()
         }
         sampleTimer = timer
+        timer.resume()
+    }
+
+    /// Arms the one-shot retry requested by the core, on the same pattern as scheduleSample. Camera queue only.
+    private func scheduleRetry(after delay: TimeInterval) {
+        retryTimerEpoch &+= 1
+        let expectedTimerEpoch = retryTimerEpoch
+        let expectedGeneration = generation
+        retryTimerGeneration = generation
+        retryTimer?.cancel()
+        let clamped = max(0, delay)
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + clamped, leeway: .milliseconds(Int(min(0.1 * clamped, 1.0) * 1000)))
+        timer.setEventHandler { [weak self] in
+            guard let self, !self.stopped, self.retryTimerEpoch == expectedTimerEpoch,
+                  self.generation == expectedGeneration else { return }
+            self.retryTimer = nil
+            self.resendUnknownStatusIfNeeded()
+        }
+        retryTimer = timer
         timer.resume()
     }
 
@@ -685,6 +718,8 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         queue.sync {
             stopped = true
             stopCapture()
+            retryTimer?.cancel()
+            retryTimer = nil
             cancelDetectorRelease()
             releaseDetector()
         }

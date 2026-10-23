@@ -332,6 +332,22 @@ TEST(json_codec_parses_snapshot_with_action)
     CHECK_EQ(s.settings.locale, std::string("auto"));
 }
 
+TEST(json_codec_camera_retry_in_ms_is_parsed)
+{
+    const telaviva::Snapshot s = telaviva::parseSnapshot(R"({"camera":{"status":"busy","retry_in_ms":30000}})");
+    CHECK(nearlyOpt(s.camera.retryInMs, 30000.0));
+}
+
+TEST(json_codec_camera_retry_in_ms_is_empty_when_missing_or_null)
+{
+    const telaviva::Snapshot missing = telaviva::parseSnapshot(R"({"camera":{"status":"ready"}})");
+    CHECK(!missing.camera.retryInMs.has_value());
+
+    const telaviva::Snapshot explicitNull =
+        telaviva::parseSnapshot(R"({"camera":{"status":"busy","retry_in_ms":null}})");
+    CHECK(!explicitNull.camera.retryInMs.has_value());
+}
+
 TEST(json_codec_inference_device_defaults_to_auto_when_missing)
 {
     CHECK_EQ(telaviva::parseSnapshot(R"({"settings":{"locale":"auto"}})").settings.inference_device,

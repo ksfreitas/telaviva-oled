@@ -6,6 +6,11 @@
 
 - Keep camera on is now on by default and moved to Settings > Advanced on macOS and Windows, with a note that turning it off can cause detection problems, depending on the camera, and "insufficient light" events. Hardware checks are pending.
 - Upgrade note: existing installs keep their saved value; turn the option on in Settings > Advanced.
+- The camera status "busy" (Portuguese "ocupada") now reads "no image" (Portuguese "sem imagem") on macOS and Windows. It is shown when no frame arrives in time or the camera fails to start while the device is present, not when another app holds the camera. Hardware checks are pending.
+
+### Fixed
+
+- The camera is retried after it stops delivering images, after 30 s, then 1 min, then every 5 min, on macOS and Windows. Before, a camera left "busy" or "unavailable" stayed off until the app was restarted. Presence protection resumes by itself when the camera answers. Hardware checks are pending.
 
 ## 0.1.3 - 2026-10-21
 

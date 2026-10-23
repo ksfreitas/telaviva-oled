@@ -34,3 +34,10 @@ Presence detection must not interfere with video calls. Infrared cameras must no
 ## Non-Obvious Constraints
 
 - The core reads no clock. The shell passes `now` in `steady_clock` seconds on every time-dependent camera event.
+
+## Amendment 2026-10-23: status text for busy
+
+**Feature:** camera-stuck-busy-after-usb-stall
+**Plan:** [Bug plan](../specs/archived/camera-stuck-busy-after-usb-stall/spec.md)
+
+This dated amendment corrects the Consequences line above. The text "could not start" never matched the shipped build: the shells showed `busy` as "busy" in English and "ocupada" in Portuguese. From 2026-10-23 it reads "no image" in English and "sem imagem" in Portuguese on macOS and Windows, because the status is reported whenever no frame arrives in time or the start fails with the device present, and it does not mean that another app holds the camera. The core status code stays `busy`. The retry for `busy` and `unavailable` is recorded in [ADR 0036](0036-camera-failure-retry-in-the-core.md). The accepted decisions in this record remain in force.

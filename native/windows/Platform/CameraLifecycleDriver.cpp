@@ -169,6 +169,14 @@ struct CameraLifecycleDriver::Impl final : ICameraBackendCallbacks {
         captureMode_ = snapshot.camera.captureMode;
         generation_ = snapshot.camera.generation;
         armDetectorRelease(fx);
+        // The core owns the retry schedule; the driver only obeys it. Same-generation snapshots keep the timer.
+        if (policyChanged || !snapshot.camera.retryInMs) {
+            retire(retryTimer_, fx);
+            ++retryEpoch_;
+        }
+        if (snapshot.camera.retryInMs && (retryTimer_ == kInvalidTimerId || retryGeneration_ != generation_)) {
+            scheduleRetry(millisFrom(*snapshot.camera.retryInMs));
+        }
         if (!eligible()) {
             stopCapture(fx);
         } else if (sampleTimer_ == kInvalidTimerId && (continuous() ? !inferenceRequested_ : !sampling_)) {
@@ -196,10 +204,7 @@ struct CameraLifecycleDriver::Impl final : ICameraBackendCallbacks {
             }
         }
         // A busy or unavailable camera is re-sent as unknown, so a re-enumerated camera is not held back.
-        if (lastCameraStatus_ == "busy" || lastCameraStatus_ == "unavailable") {
-            lastCameraStatus_ = "unknown";
-            submitter_.submit(buildCameraStatus("unknown", generation_));
-        }
+        resendUnknownStatusIfNeeded();
         lock.unlock();
         flush(fx);
     }
@@ -215,6 +220,8 @@ struct CameraLifecycleDriver::Impl final : ICameraBackendCallbacks {
         stopCapture(fx);
         retire(releaseTimer_, fx);
         ++releaseEpoch_;
+        retire(retryTimer_, fx);
+        ++retryEpoch_;
         fx.releaseDetector = true;
         lock.unlock();
         flush(fx);
@@ -333,9 +340,12 @@ private:
     TimerId timeoutTimer_ = kInvalidTimerId;
     TimerId settleTimer_ = kInvalidTimerId;
     TimerId releaseTimer_ = kInvalidTimerId;
+    TimerId retryTimer_ = kInvalidTimerId;
     uint64_t sampleEpoch_ = 0;
     uint64_t timeoutEpoch_ = 0;
     uint64_t releaseEpoch_ = 0;
+    uint64_t retryEpoch_ = 0;
+    uint64_t retryGeneration_ = 0;  // The generation the pending retry was armed for.
     std::string lastCameraStatus_ = "ready";
 
     bool eligible() const { return mode_ == "face" || mode_ == "light_only"; }
@@ -391,6 +401,15 @@ private:
         submitter_.submit(buildPresenceObservation(status, clock_.epochMillis(), sampleGeneration_, field));
     }
 
+    // Under the mutex. Sends unknown only when busy or unavailable was the last status reported.
+    void resendUnknownStatusIfNeeded()
+    {
+        if (lastCameraStatus_ == "busy" || lastCameraStatus_ == "unavailable") {
+            lastCameraStatus_ = "unknown";
+            submitter_.submit(buildCameraStatus("unknown", generation_));
+        }
+    }
+
     void cancelPolicyTimers(Effects& fx)
     {
         retire(sampleTimer_, fx);
@@ -439,6 +458,28 @@ private:
         fx.releaseDetector = true;
         lock.unlock();
         flush(fx);
+    }
+
+    // Under the mutex. Arms the core's retry for the current generation.
+    void scheduleRetry(std::chrono::milliseconds delay)
+    {
+        ++retryEpoch_;
+        const uint64_t epoch = retryEpoch_;
+        const uint64_t generation = generation_;
+        retryGeneration_ = generation;
+        retryTimer_ = scheduler_.scheduleOnce(delay, toleranceFor(delay),
+                                              [this, epoch, generation] { onRetryTimer(epoch, generation); });
+    }
+
+    // The retry delay elapsed: asks the core to probe the camera again, as a device change does.
+    void onRetryTimer(uint64_t epoch, uint64_t generation)
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (stopped_ || epoch != retryEpoch_ || generation != generation_) {
+            return;
+        }
+        retryTimer_ = kInvalidTimerId;
+        resendUnknownStatusIfNeeded();
     }
 
     void scheduleSample(std::chrono::milliseconds delay)

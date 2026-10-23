@@ -41,6 +41,9 @@ public:
     //  - In face or light_only mode, one sample timer is armed after camera.nextSampleInMs
     //    (null counts as 0). Continuous capture arms it only when no check is in flight.
     //  - Outside face mode the analyzer is asked to release its detector after 30 s.
+    //  - If camera.retryInMs is set, one retry is armed for the generation. When it elapses and the
+    //    last reported status was busy or unavailable, camera_status "unknown" is submitted. A null
+    //    retryInMs, a policy change or shutdown cancels it; other same-generation snapshots keep it.
     //  - Once the driver has shut down, later snapshots are ignored.
     void onSnapshot(const Snapshot& snapshot);
 

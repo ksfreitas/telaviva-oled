@@ -213,6 +213,24 @@ void startDarkFaceSample(Rig& rig)
     deliverFrame(rig);
 }
 
+// A suspended snapshot that carries the core's retry delay, as the core reports after busy.
+Snapshot suspendedWithRetry(uint64_t generation, double retryMs)
+{
+    Snapshot snapshot = snapshotFor("suspended", "stopped", generation, std::nullopt, false);
+    snapshot.camera.retryInMs = retryMs;
+    return snapshot;
+}
+
+// Makes the driver report busy for generation 5, the way a camera that fails to start does.
+void reportBusy(Rig& rig)
+{
+    CameraFailure startFailure;
+    startFailure.startFailed = true;
+    rig.camera.setOpenFailure(startFailure);
+    rig.driver.onSnapshot(snapshotFor("face", "single_frame", 5, 1000.0, false));
+    advanceSeconds(rig, 1);
+}
+
 }  // namespace
 
 TEST(lifecycle_driver_single_frame_face_reports_present_and_closes)
@@ -516,6 +534,77 @@ TEST(lifecycle_driver_shutdown_closes_the_camera_and_stops_timers)
     rig.driver.onSnapshot(snapshotFor("face", "single_frame", 4, 1000.0, false));
     advanceSeconds(rig, 2);
     CHECK_EQ(openCount(rig), 1);
+}
+
+TEST(lifecycle_driver_busy_retry_sends_camera_status_unknown_when_the_core_delay_elapses)
+{
+    Rig rig;
+    reportBusy(rig);
+    CHECK(hasPresence(rig.submitter, "unavailable", "busy"));
+
+    rig.driver.onSnapshot(suspendedWithRetry(5, 30000.0));
+    advanceSeconds(rig, 29);
+    CHECK_EQ(countCommands(rig.submitter, "camera_status"), 0);
+
+    advanceSeconds(rig, 1);   // 30 s after the snapshot
+    CHECK_EQ(countCommands(rig.submitter, "camera_status", "\"status\":\"unknown\",\"generation\":5"), 1);
+
+    // The retry is one-shot.
+    advanceSeconds(rig, 60);
+    CHECK_EQ(countCommands(rig.submitter, "camera_status"), 1);
+}
+
+TEST(lifecycle_driver_repeated_snapshot_does_not_postpone_the_busy_retry)
+{
+    Rig rig;
+    reportBusy(rig);
+    rig.driver.onSnapshot(suspendedWithRetry(5, 30000.0));
+    advanceSeconds(rig, 20);
+    rig.driver.onSnapshot(suspendedWithRetry(5, 30000.0));   // the same generation, 20 s later
+
+    advanceSeconds(rig, 9);   // 29 s after the first snapshot
+    CHECK_EQ(countCommands(rig.submitter, "camera_status"), 0);
+    advanceSeconds(rig, 1);   // 30 s after the first snapshot
+    CHECK_EQ(countCommands(rig.submitter, "camera_status", "\"status\":\"unknown\",\"generation\":5"), 1);
+}
+
+TEST(lifecycle_driver_busy_retry_is_cancelled_when_the_core_reports_no_delay)
+{
+    Rig rig;
+    reportBusy(rig);
+    rig.driver.onSnapshot(suspendedWithRetry(5, 30000.0));
+    advanceSeconds(rig, 10);
+    rig.driver.onSnapshot(snapshotFor("suspended", "stopped", 5, std::nullopt, false));
+
+    advanceSeconds(rig, 30);
+    CHECK_EQ(countCommands(rig.submitter, "camera_status"), 0);
+}
+
+TEST(lifecycle_driver_shutdown_cancels_the_busy_retry)
+{
+    Rig rig;
+    reportBusy(rig);
+    rig.driver.onSnapshot(suspendedWithRetry(5, 30000.0));
+    advanceSeconds(rig, 10);
+    rig.driver.shutdown();
+
+    advanceSeconds(rig, 30);
+    CHECK_EQ(countCommands(rig.submitter, "camera_status"), 0);
+}
+
+TEST(lifecycle_driver_new_generation_rearms_the_busy_retry_from_that_snapshot)
+{
+    Rig rig;
+    reportBusy(rig);
+    rig.driver.onSnapshot(suspendedWithRetry(5, 30000.0));
+    advanceSeconds(rig, 20);
+    rig.driver.onSnapshot(suspendedWithRetry(6, 30000.0));   // new generation at t+20
+
+    advanceSeconds(rig, 10);   // t+30, when the old generation's retry would have fired
+    CHECK_EQ(countCommands(rig.submitter, "camera_status"), 0);
+    advanceSeconds(rig, 20);   // t+50, 30 s after the new snapshot
+    CHECK_EQ(countCommands(rig.submitter, "camera_status", "\"status\":\"unknown\",\"generation\":6"), 1);
+    CHECK_EQ(countCommands(rig.submitter, "camera_status", "\"generation\":5"), 0);
 }
 
 TEST(lifecycle_core_api_steps_the_real_core)

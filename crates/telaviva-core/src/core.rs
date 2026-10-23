@@ -19,6 +19,8 @@ const MAX_RESTORE_FAILURES: u8 = 3;
 const MAX_PARKED_DIMS: usize = 16;
 // First face sample after a resume edge (display wake, battery to AC, protection re-enabled).
 const RESUME_FIRST_SAMPLE_MS: f64 = 1000.0;
+// Waits before each camera retry after busy or unavailable; the last one repeats.
+const CAMERA_RETRY_MS: [f64; 3] = [30_000.0, 60_000.0, 300_000.0];
 
 #[derive(Clone, Debug, Default)]
 pub struct CoreOptions {
@@ -104,6 +106,8 @@ pub struct Core {
     next_id: u64,
     camera_generation: u64,
     camera_status: String,
+    // Consecutive busy or unavailable reports. Runtime only; reset by a sample or a resume.
+    camera_failures: u32,
     on_battery: Option<bool>,
     saver_state: String,
     low_light: bool,
@@ -146,6 +150,7 @@ impl Core {
             next_id: 1,
             camera_generation: 1,
             camera_status: "unknown".into(),
+            camera_failures: 0,
             on_battery: None,
             saver_state: "unknown".into(),
             low_light: false,
@@ -271,7 +276,21 @@ impl Core {
                 {
                     return Err("invalid camera status".into());
                 }
+                let previous_status = self.camera_status.clone();
                 self.camera_status = status;
+                if ["unavailable", "busy"].contains(&self.camera_status.as_str()) {
+                    self.note_camera_failure();
+                } else if self.camera_status == "unknown"
+                    && ["unavailable", "busy"].contains(&previous_status.as_str())
+                {
+                    // Retry probe: sample after the resume delay, not the normal interval.
+                    self.resume_pending = true;
+                    self.diagnostics.push(
+                        "camera_retry",
+                        None,
+                        &format!("failures={}", self.camera_failures),
+                    );
+                }
                 self.reconcile_camera();
                 if ["unavailable", "busy", "permission", "error"]
                     .contains(&self.camera_status.as_str())
@@ -849,6 +868,7 @@ impl Core {
         self.resume_pending = false;
         if status != "unavailable" {
             self.camera_status = "ready".into();
+            self.camera_failures = 0;
         }
         match status {
             "present" => {
@@ -914,6 +934,9 @@ impl Core {
                     .and_then(Value::as_str)
                     .unwrap_or("unavailable")
                     .into();
+                if ["unavailable", "busy"].contains(&self.camera_status.as_str()) {
+                    self.note_camera_failure();
+                }
                 for m in self.monitors.values_mut() {
                     clear_presence_dim(&mut self.diagnostics, m);
                 }
@@ -969,12 +992,27 @@ impl Core {
         if !self.settings.presence_protection_enabled {
             return;
         }
+        self.camera_failures = 0;
         self.low_light = false;
         if ["busy", "unavailable"].contains(&self.camera_status.as_str()) {
             self.camera_status = "unknown".into();
             self.last_presence = None;
         }
         self.resume_pending = true;
+    }
+
+    // Counts a busy or unavailable report and logs the wait before the next retry.
+    fn note_camera_failure(&mut self) {
+        self.camera_failures = self.camera_failures.saturating_add(1);
+        let retry_ms = CAMERA_RETRY_MS[(self.camera_failures.max(1) as usize - 1).min(2)];
+        self.diagnostics.push(
+            "camera_failure",
+            None,
+            &format!(
+                "status={} failures={} retry_in_ms={}",
+                self.camera_status, self.camera_failures, retry_ms as u64
+            ),
+        );
     }
 
     fn camera_mode(&self) -> &'static str {
@@ -1855,11 +1893,19 @@ impl Core {
             Some(Monitored::Monitor(id)) => json!(id),
             None => Value::Null,
         };
+        let retry_in_ms = if ["busy", "unavailable"].contains(&self.camera_status.as_str())
+            && self.settings.presence_protection_enabled
+            && !self.closed
+        {
+            json!(CAMERA_RETRY_MS[(self.camera_failures.max(1) as usize - 1).min(2)])
+        } else {
+            Value::Null
+        };
         let value = json!({"revision":self.revision,"settings":self.settings,"monitors":monitors,"pending_actions":actions,
             "ambient":{"enabled":self.settings.ambient_follow_enabled,"available":self.builtin_available,"active":self.settings.ambient_follow_enabled&&self.builtin_available,"calibrating":self.calibrating,"builtin_percent":self.builtin_percent},
             "builtin_protection":{"protectable":self.builtin.protectable,"protected":self.builtin.protectable&&!self.settings.protection_disabled.contains(builtin::BUILTIN_ID),"available":self.builtin_available,"reasons":builtin_reasons,"target_percent":self.builtin_target_percent(),"hold_auto_brightness":self.settings.builtin_auto_brightness_off_on_protection&&!builtin_reasons.is_empty(),"holding":self.builtin.holding},
             "monitored_display":{"id":monitored_id,"automatic":self.settings.monitored_display_history.is_empty()},
-            "camera":{"mode":camera_mode,"capture_mode":capture_mode,"status":self.camera_status,"display_status":display_status,"next_sample_in_ms":if camera_mode=="disabled"||camera_mode=="suspended"{Value::Null}else{json!(cadence)},"generation":self.camera_generation,"presence":presence},
+            "camera":{"mode":camera_mode,"capture_mode":capture_mode,"status":self.camera_status,"display_status":display_status,"next_sample_in_ms":if camera_mode=="disabled"||camera_mode=="suspended"{Value::Null}else{json!(cadence)},"generation":self.camera_generation,"presence":presence,"retry_in_ms":retry_in_ms},
             "power":{"on_battery":self.on_battery},"screensaver":{"state":self.saver_state},"status":"ready"});
         let bytes = serde_json::to_vec(&value).map_err(|e| e.to_string())?;
         if bytes.len() > 8 * 1024 * 1024 {
