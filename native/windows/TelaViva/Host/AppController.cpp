@@ -11,6 +11,7 @@
 #include "Platform/AmbientCalibrationController.h"
 #include "Platform/AppPaths.h"
 #include "Platform/AudioOwner.h"
+#include "Platform/BuiltInProtection.h"
 #include "Platform/CalibrationSession.h"
 #include "Platform/CameraLifecycleDriver.h"
 #include "Platform/CameraSelection.h"
@@ -243,6 +244,8 @@ std::optional<std::string> noticeKey(const std::optional<CalibrationNotice>& not
     case CalibrationNotice::AutoBrightnessUnknown: return std::string{ "autoBrightnessUnknown" };
     case CalibrationNotice::AutoBrightnessNotChanged: return std::string{ "autoBrightnessNotChanged" };
     case CalibrationNotice::RecoveryFailed: return std::string{ "recoveryFailed" };
+    case CalibrationNotice::ProtectionActive: return std::string{ "protectionActive" };
+    case CalibrationNotice::MonitorRecoveryGaveUp: return std::string{ "monitorRecoveryGaveUp" };
     }
     return std::nullopt;
 }
@@ -291,9 +294,9 @@ public:
         return std::nullopt;
     }
 
-    void setPercent(const std::string& monitorId, double percent) override
+    bool setPercent(const std::string& monitorId, double percent) override
     {
-        controls_.slider(monitorId, "brightness", percent);
+        return controls_.slider(monitorId, "brightness", percent).has_value();
     }
 
 private:
@@ -396,8 +399,7 @@ MonitorCardState buildCard(const Snapshot& snapshot, const MonitorSnapshot& moni
     card.id = monitor.id;
     card.name = toWide(monitor.name);
     card.controllable = stable && awake && anySupported;
-    // Protection controls. A followed monitor is driven by the ambient sensor, so the
-    // protection cap ignores any leftover brightness draft for it, as on macOS.
+    // Protection controls.
     const SettingsSnapshot& settings = snapshot.settings;
     const bool followed = snapshot.ambient.active && monitor.follow == "eligible";
     card.followed = followed;
@@ -405,15 +407,9 @@ MonitorCardState buildCard(const Snapshot& snapshot, const MonitorSnapshot& moni
     card.protectionToggleVisible =
         showProtectionToggle(settings.presence_protection_enabled, settings.screensaver_protection_enabled);
     card.protectionOn = monitorProtected;
-    card.protectionRowVisible = showProtectionBrightnessRow(settings.screensaver_protection_enabled, monitorProtected);
-    const std::optional<double> confirmed = monitor.brightness.supported
-        ? std::optional<double>{ observedPercent(monitor.brightness) }
-        : std::nullopt;
-    const telaviva::DraftView brightnessView = controls.queryDraft(monitor.id, "brightness");
-    const std::optional<double> draft = followed ? std::nullopt
-        : (brightnessView.hasDraft ? std::optional<double>(brightnessView.draft) : std::nullopt);
-    card.protectionCap = protectionBrightnessCap(confirmed, draft);
-    card.protectionCapKnown = confirmed.has_value();
+    card.protectionRowVisible = showProtectionBrightnessRow(
+        settings.presence_protection_enabled, settings.screensaver_protection_enabled, monitorProtected);
+    card.protectionBrightnessSupported = monitor.brightness.supported;
     const auto target = settings.screensaver_targets.find(monitor.id);
     card.protectionValue = target == settings.screensaver_targets.end() ? 0.0 : target->second;
 
@@ -437,12 +433,71 @@ MonitorCardState buildCard(const Snapshot& snapshot, const MonitorSnapshot& moni
     return card;
 }
 
-FlyoutState buildFlyoutState(const Snapshot& snapshot, const telaviva::ControlsDriver& controls)
+// The id of the built-in (Laptop) screen card. It is not a DDC monitor id.
+constexpr const char* kBuiltinCardId = "builtin";
+
+// The built-in screen card: protection and brightness only, no volume. Its brightness is the Laptop level the
+// snapshot carries (ambient.builtin_percent). The slider is disabled while protection holds the screen, while
+// the core reports reasons, and while no level is known.
+// The note under the Laptop slider. One note at a time, in this order: the restore that failed, the automatic
+// brightness setting, then the lock note while the slider is disabled.
+std::wstring builtinNoticeText(BuiltInNotice notice, bool locked)
+{
+    switch (notice) {
+    case BuiltInNotice::restoreFailed:
+        return Str("builtin.notice.restoreFailed");
+    case BuiltInNotice::autoBrightnessUnknown:
+        return Str("builtin.notice.autoBrightnessUnknown");
+    case BuiltInNotice::autoBrightnessNotChanged:
+        return Str("builtin.notice.autoBrightnessNotChanged");
+    case BuiltInNotice::none:
+        break;
+    }
+    return locked ? Str("builtin.slider.disabledWhileProtected") : std::wstring();
+}
+
+MonitorCardState buildBuiltinCard(const Snapshot& snapshot, bool holding, BuiltInNotice notice)
+{
+    const BuiltinProtectionSnapshot& builtin = snapshot.builtinProtection;
+    const SettingsSnapshot& settings = snapshot.settings;
+
+    MonitorCardState card;
+    card.id = kBuiltinCardId;
+    card.name = Str("builtin.name");
+    card.isBuiltin = true;
+    card.hideVolume = true;
+    card.controllable = true;
+
+    // Protection switch and protection brightness, as for a monitor. The switch writes the whole set (setMonitorProtected).
+    const bool protectedOn = isMonitorProtected(settings.protection_disabled, kBuiltinCardId);
+    card.protectionToggleVisible =
+        showProtectionToggle(settings.presence_protection_enabled, settings.screensaver_protection_enabled);
+    card.protectionOn = protectedOn;
+    card.protectionRowVisible = showProtectionBrightnessRow(
+        settings.presence_protection_enabled, settings.screensaver_protection_enabled, protectedOn);
+    card.protectionBrightnessSupported = true;
+    const auto target = settings.screensaver_targets.find(kBuiltinCardId);
+    card.protectionValue = target == settings.screensaver_targets.end() ? 0.0 : target->second;
+
+    const std::optional<double> level = snapshot.ambient.builtinPercent;
+    const bool locked = holding || !builtin.reasons.empty() || !builtin.available;
+    card.brightness.available = !locked && level.has_value();
+    card.brightness.value = level ? std::clamp(*level, 0.0, 100.0) : 0.0;
+    card.notice = builtinNoticeText(notice, locked);
+    return card;
+}
+
+FlyoutState buildFlyoutState(const Snapshot& snapshot, const telaviva::ControlsDriver& controls, bool builtinHolding,
+    BuiltInNotice builtinNotice)
 {
     FlyoutState state;
     state.monitors.reserve(snapshot.monitors.size());
     for (const auto& monitor : snapshot.monitors) {
         state.monitors.push_back(buildCard(snapshot, monitor, controls));
+    }
+    // The built-in screen is listed only while it is protectable and available (the visibility rule).
+    if (builtinCardVisible(snapshot.builtinProtection)) {
+        state.monitors.push_back(buildBuiltinCard(snapshot, builtinHolding, builtinNotice));
     }
 
     state.presence = presenceFor(snapshot);
@@ -504,6 +559,67 @@ struct AppController::Services {
     uint64_t protectionToken = 0;  // bumped on every arm and flush, so a stale callback does nothing
     bool protectionAccepting = true;
 
+    // ---- Laptop slider (setBuiltinBrightness). Only the newest value is kept. One worker on the scheduler thread
+    // writes it, and writes again when a newer value arrived meanwhile, so at most one write is in flight.
+    // builtinMutex is never held across a write, and a timer is cancelled outside it. ----
+    std::mutex builtinMutex;
+    std::optional<double> builtinPending;
+    // True while the worker is scheduled or running, so no second timer is armed.
+    bool builtinArmed = false;
+    bool builtinAccepting = true;
+    // The armed timer. The worker clears it when it stops, so only a timer that may still run is held here.
+    std::optional<TimerId> builtinTimer;
+
+    // Scheduler thread. Writes the newest value until none is pending, then disarms.
+    void writeBuiltinPending()
+    {
+        for (;;) {
+            double value = 0.0;
+            {
+                std::lock_guard<std::mutex> lock(builtinMutex);
+                if (!builtinAccepting || !builtinPending) {
+                    builtinPending.reset();
+                    builtinArmed = false;
+                    builtinTimer.reset();
+                    return;
+                }
+                value = *builtinPending;
+                builtinPending.reset();
+            }
+            if (!builtinWritable()) {
+                continue;
+            }
+            wmiPanel->setPercent(value);
+        }
+    }
+
+    // Checked at write time, not only when the slider moves: a hold or a reason may have started since.
+    bool builtinWritable()
+    {
+        if (builtInProtection->isHolding()) {
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(settingsMutex);
+        const BuiltinProtectionSnapshot& builtin = latestSnapshot.builtinProtection;
+        return builtinCardVisible(builtin) && builtin.reasons.empty();
+    }
+
+    // Stops the Laptop slider: later values are dropped, and a write already running finishes before this returns
+    // (cancel waits for a running callback). Called before the panel's restore and before the panel is destroyed.
+    void stopBuiltinWrites()
+    {
+        std::optional<TimerId> timer;
+        {
+            std::lock_guard<std::mutex> lock(builtinMutex);
+            builtinAccepting = false;
+            builtinPending.reset();
+            timer = builtinTimer;
+        }
+        if (timer.has_value()) {
+            scheduler.cancel(*timer);
+        }
+    }
+
     // ---- Laptop follow and ambient calibration (T117-T132, T164-T168). Built after the controls and before
     // the session and power callbacks, which refer to them. Used by publish() and by the UI thread. ----
     Win32LaptopEnvironment laptopEnvironment;
@@ -511,6 +627,9 @@ struct AppController::Services {
     std::unique_ptr<LaptopPanelFollower> laptopFollower;
     Win32PowerSettings powerSettings;
     std::unique_ptr<AdaptiveBrightness> adaptive;
+    std::unique_ptr<AutoBrightnessOwner> autoBrightness;
+    // Declared after the panel, the follower and the owner it uses, so it is destroyed before all of them.
+    std::unique_ptr<BuiltInProtection> builtInProtection;
     std::unique_ptr<CalibrationSession> calibrationSession;
     std::unique_ptr<PanelAdapter> calibrationPanel;
     std::unique_ptr<FollowPauseAdapter> calibrationFollow;
@@ -535,6 +654,9 @@ struct AppController::Services {
     // The camera cache is written by refreshCameras on a worker thread.
     std::mutex settingsMutex;
     SettingsSnapshot latestSettings;
+    // Set by the first publish under settingsMutex. Until then latestSettings is the default, whose
+    // empty protection_disabled would clear every opt-out if a page saved it.
+    bool settingsPublished = false;
     Snapshot latestSnapshot;
     std::vector<CameraInfo> cameraCache;
     // Declared before launchAtLogin, which refers to it.
@@ -627,6 +749,7 @@ struct AppController::Services {
             std::lock_guard<std::mutex> lock(settingsMutex);
             latestSettings = snapshot.settings;
             latestSnapshot = snapshot;
+            settingsPublished = true;
             inferenceDevice = latestSettings.inference_device;
         }
         applyInferenceDevice(inferenceDevice);
@@ -641,7 +764,11 @@ struct AppController::Services {
                 screensaver->setEnabled(enabled);
             }
         }
-        // Laptop follow. Gated like the screensaver: shutdown() clears laptopAccepting before it stops the follower.
+        // Laptop follow and built-in protection. Gated like the screensaver: shutdown() clears laptopAccepting
+        // before it stops the follower, and the protection and calibration objects are not touched after that.
+        bool builtinHolding = false;
+        BuiltInNotice builtinNotice = BuiltInNotice::none;
+        bool calibrationLive = false;
         {
             std::lock_guard<std::mutex> lock(laptopMutex);
             if (laptopAccepting && laptopFollower) {
@@ -650,6 +777,12 @@ struct AppController::Services {
                     laptopFollowSent = follow;
                     laptopFollower->setFollowEnabled(follow);
                 }
+                const BuiltinProtectionSnapshot& builtin = snapshot.builtinProtection;
+                laptopFollower->setProtectionEnabled(builtin.protectable && builtin.protected_);
+                builtInProtection->reconcile(builtin);
+                builtinHolding = builtInProtection->isHolding();
+                builtinNotice = builtInProtection->notice();
+                calibrationLive = true;
                 const LaptopReason reason = laptopFollower->reason();
                 const bool available = reason == LaptopReason::None;
                 // The lid and display callbacks run on the UI thread, so a drop seen here is posted, not acted on.
@@ -666,6 +799,10 @@ struct AppController::Services {
                 std::lock_guard<std::mutex> settingsLock(settingsMutex);
                 latestLaptop = std::move(status);
             }
+        }
+        // Completes a pending monitor restore of the calibration. Outside every lock, as its header requires.
+        if (calibrationLive) {
+            calibration->onSnapshot();
         }
         // Volume keys. The hook follows the setting; the route and the monitor list follow the snapshot.
         std::vector<std::string> monitorIds;
@@ -706,7 +843,7 @@ struct AppController::Services {
 
         setLanguage(snapshot.settings.locale);
         if (onFlyoutState) {
-            onFlyoutState(buildFlyoutState(snapshot, *controls));
+            onFlyoutState(buildFlyoutState(snapshot, *controls, builtinHolding, builtinNotice));
         }
     }
 
@@ -1053,7 +1190,8 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
             std::lock_guard<std::mutex> lock(s.settingsMutex);
             snapshot = s.latestSnapshot;
         }
-        s.onFlyoutState(buildFlyoutState(snapshot, *s.controls));
+        s.onFlyoutState(buildFlyoutState(snapshot, *s.controls, s.builtInProtection->isHolding(),
+            s.builtInProtection->notice()));
     });
     // Trace lines reach the log only at Debug level. Otherwise the sinks stay empty and nothing is formatted.
     // Set before any traffic: nothing calls into these controllers until start() or the bridge sink below.
@@ -1073,13 +1211,35 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
     s.laptopFollower = std::make_unique<LaptopPanelFollower>(*s.wmiPanel, s.laptopEnvironment, *s.submitter,
         s.scheduler, s.clock);
     s.adaptive = std::make_unique<AdaptiveBrightness>(s.powerSettings);
+    s.autoBrightness = std::make_unique<AutoBrightnessOwner>(*s.adaptive, s.paths.autoBrightnessHoldFile(), &s.diagnostics);
+    // Built-in protection dims the panel the follower reads, and reports its holding back to the follower.
+    LaptopPanelFollower* follower = s.laptopFollower.get();
+    s.builtInProtection = std::make_unique<BuiltInProtection>(*s.wmiPanel, *s.autoBrightness, s.scheduler, s.clock,
+        s.paths.builtinProtectionSessionFile(), &s.diagnostics,
+        [follower](bool holding) { follower->setHolding(holding); },
+        // A notice change from the retry timer is not in a snapshot, so the flyout is rebuilt from the latest one,
+        // as a draft change is. notice() is read after the lock is released, so this may call it.
+        [&s] {
+            if (!s.onFlyoutState || !s.bridge->isOpen()) {
+                return;
+            }
+            Snapshot snapshot;
+            {
+                std::lock_guard<std::mutex> lock(s.settingsMutex);
+                snapshot = s.latestSnapshot;
+            }
+            s.onFlyoutState(buildFlyoutState(snapshot, *s.controls, s.builtInProtection->isHolding(),
+                s.builtInProtection->notice()));
+        });
     s.calibrationSession = std::make_unique<CalibrationSession>(s.paths.root());
     s.calibrationPanel = std::make_unique<PanelAdapter>(*s.wmiPanel);
     s.calibrationFollow = std::make_unique<FollowPauseAdapter>(*s.laptopFollower);
     s.calibrationMonitors = std::make_unique<MonitorsAdapter>(s.settingsMutex, s.latestSnapshot, *s.controls);
     s.calibrationSettings = std::make_unique<SettingsAdapter>(s.settingsMutex, s.latestSettings, *s.bridge);
     s.calibration = std::make_unique<AmbientCalibrationController>(*s.calibrationPanel, *s.calibrationSettings,
-        *s.calibrationFollow, *s.calibrationMonitors, *s.adaptive, *s.calibrationSession);
+        *s.calibrationFollow, *s.calibrationMonitors, *s.autoBrightness, *s.adaptive, *s.calibrationSession, s.scheduler);
+    // Calibration is refused while built-in protection holds the screen; the controller raises the notice.
+    s.calibration->setProtectionHolds([&s] { return s.builtInProtection->isHolding(); });
 
     // The unavailable message is handled here on the UI thread. The window keeps the handler, so it holds
     // the target weakly; shutdown() resets the target before the calibration goes.
@@ -1216,6 +1376,7 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
     powerCallbacks.onLid = [&s](bool open) {
         s.laptopEnvironment.recordLidState(open);
         s.laptopFollower->onLidChanged(open);
+        s.driver->setLidClosed(!open);
         if (!open && s.calibration->isActive()) {
             PostMessageW(s.uiWindow, kLaptopUnavailableMessage, 0, 0);
         }
@@ -1232,8 +1393,10 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
     PowerEvents::registerFor(window.hwnd());
     // Reports the power source once at startup; later changes arrive as messages.
     s.power->publishCurrent();
+    // The camera driver starts with the lid state the Laptop logic uses. Unknown counts as open.
+    s.driver->setLidClosed(!s.laptopEnvironment.lidOpen().value_or(true));
 
-    s.screensaver = std::make_unique<ScreensaverMonitor>(s.scheduler, s.screensaverProbe,
+    s.screensaver =std::make_unique<ScreensaverMonitor>(s.scheduler, s.screensaverProbe,
         [bridge](ScreensaverState state) { bridge->submit(buildScreensaver(screensaverStateString(state))); });
 
     // ---- Efficiency mode (T101). Requested once, here on the UI thread, which is the thread the
@@ -1270,7 +1433,9 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
     }
 
     // Crash recovery before the sink is added: no snapshot can enable the follower until a record
-    // left by a previous run has been restored or kept.
+    // left by a previous run has been restored or kept. The owner goes first, since both holders use it.
+    s.autoBrightness->recoverIfNeeded();
+    s.builtInProtection->recoverIfNeeded();
     if (!s.calibration->recoverPending()) {
         s.diagnostics.log(LogLevel::Error, "calibration recovery failed; record kept for the next launch");
     }
@@ -1290,20 +1455,25 @@ AppController::~AppController()
     // The monitor is already disabled, and publish() no longer touches it. Its destructor
     // waits for a running tick, which may submit through the bridge, so it goes before the bridge.
     s.screensaver.reset();
-    // The calibration and the follower run on the UI thread, and a follower read may submit through
-    // the bridge, so they go before it drains. The panel goes last, since both refer to it.
+    // The Laptop slider worker writes the panel, so it is stopped and waited for before the panel goes.
+    s.stopBuiltinWrites();
+    // Built-in protection goes first: its retry timer uses the panel, and it reports holding to the follower.
+    s.builtInProtection.reset();
+    // The follower runs on the UI thread, and a follower read may submit through the bridge, so it goes before
+    // the bridge drains. The panel goes last, since the follower refers to it.
+    s.laptopFollower.reset();
+    s.wmiPanel.reset();
+    // Joins the snapshot thread, which still calls ddc, controls, driver and calibration. The driver and the
+    // controls must outlive this join, because publish() calls them on that thread.
+    s.bridge.reset();
+    // The calibration is reset after the join, because publish() calls its onSnapshot until the join completes.
     s.calibration.reset();
     s.calibrationSettings.reset();
     s.calibrationMonitors.reset();
     s.calibrationFollow.reset();
     s.calibrationPanel.reset();
-    s.laptopFollower.reset();
-    s.wmiPanel.reset();
     s.calibrationSession.reset();
     s.adaptive.reset();
-    // Joins the snapshot thread, which still calls ddc, controls and driver. The driver and the
-    // controls must outlive this join, because publish() calls them on that thread.
-    s.bridge.reset();
     // The driver is shut down, so later snapshots do nothing. It goes before the camera and
     // analyzer it refers to, and the lifecycle last.
     s.driver.reset();
@@ -1340,12 +1510,17 @@ void AppController::shutdown()
         return;
     }
     s.stopped = true;
+    // The Laptop slider stops before the restores below, so a late slider value cannot overwrite the restored level.
+    s.stopBuiltinWrites();
 
     // Calibration ends first, while the bridge, DDC and the follower still run: it restores adaptive
     // brightness, the monitor and the Laptop panel, then deletes the record.
     if (s.calibration->isActive()) {
         s.calibration->end(CalibrationEndReason::AppQuit);
     }
+    // Built-in protection restores the Laptop panel and the automatic brightness setting. It runs after the
+    // calibration and before the follower stops, since its restore reports holding back to the follower.
+    s.builtInProtection->restoreNow();
     // Drops the window's route to the calibration, so a message still queued does nothing.
     s.laptopTarget.reset();
 
@@ -1422,6 +1597,29 @@ void AppController::setProtectionBrightness(const std::string& monitorId, double
     services_->queueProtectionBrightness(monitorId, value);
 }
 
+void AppController::setBuiltinBrightness(double value)
+{
+    Services& s = *services_;
+    // Keeps only the newest value and arms one timer for the worker, so the UI thread never waits on the panel
+    // (WmiPanel may take up to 2 s per write). The worker re-checks the hold and the reasons before it writes.
+    std::lock_guard<std::mutex> lock(s.builtinMutex);
+    if (!s.builtinAccepting) {
+        return;
+    }
+    s.builtinPending = value;
+    if (s.builtinArmed) {
+        return;
+    }
+    s.builtinArmed = true;
+    const std::chrono::milliseconds delay{ 0 };
+    const TimerId timer = s.scheduler.scheduleOnce(delay, toleranceFor(delay), [&s] { s.writeBuiltinPending(); });
+    if (timer == kInvalidTimerId) {
+        s.builtinArmed = false;
+        return;
+    }
+    s.builtinTimer = timer;
+}
+
 void AppController::onFlyoutHidden()
 {
     services_->flushProtection(false);
@@ -1440,7 +1638,8 @@ void AppController::refresh()
         s.onFlyoutState(unavailableState());
         return;
     }
-    s.onFlyoutState(buildFlyoutState(s.bridge->snapshot(), *s.controls));
+    s.onFlyoutState(buildFlyoutState(s.bridge->snapshot(), *s.controls, s.builtInProtection->isHolding(),
+        s.builtInProtection->notice()));
 }
 
 void AppController::openSettings()
@@ -1503,7 +1702,16 @@ void AppController::refreshCameras()
 
 int AppController::submit(const std::string& json)
 {
-    return services_->bridge->submit(json);
+    Services& s = *services_;
+    {
+        std::lock_guard<std::mutex> lock(s.settingsMutex);
+        if (!s.settingsPublished) {
+            // Returns -1 like a stopped controller, so the page sees the request as not accepted.
+            s.diagnostics.log(LogLevel::Notice, "settings save ignored before the first snapshot");
+            return -1;
+        }
+    }
+    return s.bridge->submit(json);
 }
 
 telaviva::LaunchResult AppController::setLaunchAtLogin(bool enable)

@@ -221,7 +221,8 @@ bool invokeSetBrightness(IWbemServices* services, IWbemClassObject* instance, in
     return ok;
 }
 
-bool writeNearestLevel(IWbemServices* services, double target)
+// `supported` receives the level list whenever the panel reports one, even when the write fails.
+bool writeNearestLevel(IWbemServices* services, double target, std::vector<int>& supported)
 {
     IWbemClassObject* brightness = firstObject(services, L"SELECT Level FROM WmiMonitorBrightness");
     if (brightness == nullptr) {
@@ -231,6 +232,10 @@ bool writeNearestLevel(IWbemServices* services, double target)
     brightness->Release();
     if (levels.empty()) {
         return false;
+    }
+    supported.clear();
+    for (const double level : levels) {
+        supported.push_back(static_cast<int>(std::lround(level)));
     }
     double nearest = levels.front();
     for (const double level : levels) {
@@ -383,11 +388,16 @@ bool WmiPanel::setPercent(double percent)
     }
     const double target = std::clamp(percent, 0.0, 100.0);
     return impl_->call<bool>(
-        [target](IWbemServices*& services) -> bool {
+        [this, target](IWbemServices*& services) -> bool {
             if (!ensureConnected(services)) {
                 return false;
             }
-            const bool written = writeNearestLevel(services, target);
+            std::vector<int> supported;
+            const bool written = writeNearestLevel(services, target, supported);
+            if (!supported.empty()) {
+                std::lock_guard<std::mutex> lock(levelsMutex_);
+                levels_ = std::move(supported);
+            }
             if (!written) {
                 dropConnection(services);
             }
@@ -396,11 +406,24 @@ bool WmiPanel::setPercent(double percent)
         false);
 }
 
+std::vector<int> WmiPanel::supportedLevels() const
+{
+    std::lock_guard<std::mutex> lock(levelsMutex_);
+    return levels_;
+}
+
 // ---- LaptopPanelFollower -------------------------------------------------
 
 namespace {
 
 constexpr std::chrono::milliseconds kImmediate{0};
+
+// Mirrors BuiltInProtectionController.isProtectable(reason:) on macOS: a screen that is off or
+// asleep can still take brightness changes, but a missing or non-adjustable one cannot.
+bool isProtectable(LaptopReason reason)
+{
+    return reason == LaptopReason::None || reason == LaptopReason::DisplayOffline;
+}
 
 }  // namespace
 
@@ -475,6 +498,35 @@ void LaptopPanelFollower::onCalibrationChanged(bool calibrating)
     cancelTimer(stale);
 }
 
+void LaptopPanelFollower::setProtectionEnabled(bool enabled)
+{
+    TimerId stale = kInvalidTimerId;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (protectionEnabled_ == enabled) {
+            return;
+        }
+        protectionEnabled_ = enabled;
+        stale = reconcileLocked();
+    }
+    cancelTimer(stale);
+}
+
+void LaptopPanelFollower::setHolding(bool holding)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (holding_ == holding) {
+        return;
+    }
+    holding_ = holding;
+    if (submitted_) {
+        // Resubmits the last report with the new flag, even though the level is unchanged.
+        Report report = *submitted_;
+        report.holding = holding;
+        publishLocked(report);
+    }
+}
+
 bool LaptopPanelFollower::canCalibrate() const
 {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -516,7 +568,18 @@ LaptopAvailability LaptopPanelFollower::evaluateLocked()
 
 bool LaptopPanelFollower::monitoringLocked() const
 {
-    return followEnabled_ && available_ && !calibrating_;
+    return (followEnabled_ || protectionEnabled_) && available_ && !calibrating_;
+}
+
+LaptopPanelFollower::Report LaptopPanelFollower::reportLocked(bool available, std::optional<int> brightness) const
+{
+    Report report;
+    report.available = available;
+    report.brightness = brightness;
+    report.calibrating = calibrating_;
+    report.protectable = isProtectable(reason_);
+    report.holding = holding_;
+    return report;
 }
 
 void LaptopPanelFollower::publishLocked(const Report& report)
@@ -529,7 +592,8 @@ void LaptopPanelFollower::publishLocked(const Report& report)
     if (report.brightness) {
         brightness = static_cast<double>(*report.brightness);
     }
-    submitter_.submit(buildBuiltinDisplay(report.available, brightness, report.calibrating));
+    submitter_.submit(
+        buildBuiltinDisplay(report.available, brightness, report.calibrating, report.protectable, report.holding));
 }
 
 // Re-evaluates availability and starts, stops or resumes polling. Caller holds mutex_.
@@ -543,12 +607,12 @@ TimerId LaptopPanelFollower::reconcileLocked()
     const TimerId stale = monitor ? kInvalidTimerId : takeTimerLocked();
     if (!available_) {
         lastLevel_.reset();
-        publishLocked(Report{false, std::nullopt, calibrating_});
+        publishLocked(reportLocked(false, std::nullopt));
     } else if (monitor) {
         // Start or resume: the first read is immediate, on the scheduler thread.
         armLocked(kImmediate, kImmediate);
     } else {
-        Report report{true, std::nullopt, calibrating_};
+        Report report = reportLocked(true, std::nullopt);
         if (calibrating_) {
             report.brightness = lastLevel_;
         }
@@ -587,7 +651,7 @@ void LaptopPanelFollower::applyReadLocked(std::optional<double> level)
         // Whole percent, as the macOS report. Only a changed whole percent is submitted.
         const int whole = static_cast<int>(std::lround(std::clamp(*level, 0.0, 100.0)));
         lastLevel_ = whole;
-        publishLocked(Report{true, whole, false});
+        publishLocked(reportLocked(true, whole));
         armLocked(kPollInterval, kPollLeeway);
         return;
     }
@@ -598,10 +662,10 @@ void LaptopPanelFollower::applyReadLocked(std::optional<double> level)
     reason_ = availability.reason;
     if (!available_) {
         lastLevel_.reset();
-        publishLocked(Report{false, std::nullopt, calibrating_});
+        publishLocked(reportLocked(false, std::nullopt));
         return;
     }
-    publishLocked(Report{true, lastLevel_, calibrating_});
+    publishLocked(reportLocked(true, lastLevel_));
     armLocked(kPollInterval, kPollLeeway);
 }
 

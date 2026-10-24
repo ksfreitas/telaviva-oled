@@ -35,6 +35,8 @@ struct FakePanel final : ILaptopPanel {
     }
 
     bool setPercent(double) override { return true; }
+
+    std::vector<int> supportedLevels() const override { return {}; }
 };
 
 struct FakeEnvironment final : ILaptopEnvironment {
@@ -63,7 +65,7 @@ struct RecordingSubmitter final : ICoreSubmitter {
 
 std::string report(bool available, std::optional<double> brightness, bool calibrating)
 {
-    return buildBuiltinDisplay(available, brightness, calibrating);
+    return buildBuiltinDisplay(available, brightness, calibrating, true, false);
 }
 
 std::string reasonName(LaptopReason reason)

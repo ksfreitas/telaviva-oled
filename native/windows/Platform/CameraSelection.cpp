@@ -57,10 +57,11 @@ bool matchesDeviceName(const CameraInfo& camera, const std::vector<CameraDeviceR
 }
 
 // Infrared is excluded here too, so a history entry pointing at an IR camera is skipped.
-const CameraInfo* findSelectable(const std::vector<CameraInfo>& connected, const std::string& id)
+// A built-in camera is skipped while the lid is closed.
+const CameraInfo* findSelectable(const std::vector<CameraInfo>& connected, const std::string& id, bool lidClosed)
 {
     for (const CameraInfo& camera : connected) {
-        if (camera.id == id && !camera.infrared) {
+        if (camera.id == id && !camera.infrared && !(lidClosed && camera.builtIn)) {
             return &camera;
         }
     }
@@ -148,22 +149,23 @@ std::optional<std::size_t> findCameraIndex(const std::vector<CameraInfo>& camera
     return std::nullopt;
 }
 
-std::vector<CameraInfo> selectableCameras(const std::vector<CameraInfo>& connected)
+std::vector<CameraInfo> selectableCameras(const std::vector<CameraInfo>& connected, bool lidClosed)
 {
     std::vector<CameraInfo> result;
     for (const CameraInfo& camera : connected) {
-        if (!camera.infrared) {
+        if (!camera.infrared && !(lidClosed && camera.builtIn)) {
             result.push_back(camera);
         }
     }
     return result;
 }
 
-CameraChoice chooseCamera(const std::vector<CameraInfo>& connected, const std::vector<std::string>& history)
+CameraChoice chooseCamera(const std::vector<CameraInfo>& connected, const std::vector<std::string>& history,
+                          bool lidClosed)
 {
     CameraChoice choice;
     for (const std::string& id : history) {
-        if (const CameraInfo* camera = findSelectable(connected, id)) {
+        if (const CameraInfo* camera = findSelectable(connected, id, lidClosed)) {
             choice.effective = *camera;
             return choice;
         }
@@ -172,7 +174,7 @@ CameraChoice chooseCamera(const std::vector<CameraInfo>& connected, const std::v
     // Prefer the first built-in selectable camera; otherwise the first selectable one.
     const CameraInfo* fallback = nullptr;
     for (const CameraInfo& camera : connected) {
-        if (camera.infrared) {
+        if (camera.infrared || (lidClosed && camera.builtIn)) {
             continue;
         }
         if (camera.builtIn) {

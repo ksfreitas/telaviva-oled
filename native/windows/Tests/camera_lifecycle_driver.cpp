@@ -143,6 +143,25 @@ CameraInfo builtInCamera(const std::string& id)
     return camera;
 }
 
+CameraInfo externalCamera(const std::string& id)
+{
+    CameraInfo camera;
+    camera.id = id;
+    camera.name = L"USB camera";
+    return camera;
+}
+
+// True when any submitted message contains needle. Used to show that no settings payload was sent.
+bool anySubmittedContains(const FakeSubmitter& submitter, const std::string& needle)
+{
+    for (const std::string& message : submitter.messages) {
+        if (contains(message, needle)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // A snapshot whose settings select cam-a. Only the camera fields the driver reads are set.
 Snapshot snapshotFor(const std::string& mode, const std::string& captureMode, uint64_t generation,
                      std::optional<double> nextSampleMs, bool alwaysOn)
@@ -625,4 +644,72 @@ TEST(lifecycle_core_api_returns_empty_text_for_a_rejected_event)
     CoreLifecycleApi api;
     CHECK(api.step("{\"type\":\"explode\"}").empty());
     CHECK(api.step("not json").empty());
+}
+
+// Lid closed (FR-020): the built-in camera is the only one, so the session stops and nothing is left.
+TEST(lifecycle_driver_lid_closed_stops_builtin_session_and_reports_unavailable)
+{
+    Rig rig;
+    rig.driver.onSnapshot(snapshotFor("face", "single_frame", 5, 1000.0, false));
+    advanceSeconds(rig, 1);
+    CHECK(rig.camera.isOpen());
+
+    rig.driver.setLidClosed(true);
+    CHECK(!rig.camera.isOpen());
+    CHECK_EQ(rig.camera.counters().close, 1);
+
+    // The next sample finds no selectable camera and reports unavailable without opening.
+    advanceSeconds(rig, 1);
+    CHECK(hasPresence(rig.submitter, "unavailable", "unavailable"));
+    CHECK_EQ(openCount(rig), 1);
+    CHECK(!rig.camera.isOpen());
+}
+
+// Lid opened again: the sample is taken at once and opens the remembered built-in camera.
+TEST(lifecycle_driver_lid_opened_restarts_on_the_remembered_choice)
+{
+    Rig rig;
+    rig.driver.onSnapshot(snapshotFor("face", "single_frame", 5, 1000.0, false));
+    advanceSeconds(rig, 1);
+    CHECK_EQ(openCount(rig), 1);
+
+    rig.driver.setLidClosed(true);
+    advanceSeconds(rig, 1);
+    CHECK(hasPresence(rig.submitter, "unavailable", "unavailable"));
+    CHECK_EQ(openCount(rig), 1);
+
+    rig.driver.setLidClosed(false);
+    advanceSeconds(rig, 1);
+    CHECK_EQ(openCount(rig), 2);
+    if (openCount(rig) == 2) {
+        CHECK_EQ(rig.camera.openCalls()[1].id, std::string("cam-a"));
+    }
+    CHECK(rig.camera.isOpen());
+}
+
+// Lid closed with history [built-in, USB]: the session moves to the USB camera. No settings payload is sent.
+TEST(lifecycle_driver_lid_closed_moves_to_the_remembered_external_camera_without_a_payload)
+{
+    Rig rig;
+    rig.camera.setDevices({builtInCamera("cam-a"), externalCamera("cam-b")});
+    Snapshot snapshot = snapshotFor("face", "single_frame", 5, 1000.0, false);
+    snapshot.settings.camera_history = {"cam-a", "cam-b"};
+    rig.driver.onSnapshot(snapshot);
+    advanceSeconds(rig, 1);
+    CHECK_EQ(openCount(rig), 1);
+    if (openCount(rig) == 1) {
+        CHECK_EQ(rig.camera.openCalls()[0].id, std::string("cam-a"));
+    }
+
+    rig.driver.setLidClosed(true);
+    CHECK(!rig.camera.isOpen());
+    advanceSeconds(rig, 1);
+    CHECK_EQ(openCount(rig), 2);
+    if (openCount(rig) == 2) {
+        CHECK_EQ(rig.camera.openCalls()[1].id, std::string("cam-b"));
+    }
+
+    // The driver only submits lifecycle reports, so no update_settings or selected_camera_id goes out.
+    CHECK(!anySubmittedContains(rig.submitter, "update_settings"));
+    CHECK(!anySubmittedContains(rig.submitter, "selected_camera_id"));
 }

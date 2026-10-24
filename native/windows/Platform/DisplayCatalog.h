@@ -20,6 +20,7 @@ struct CatalogEntry {
     std::vector<uint8_t> edid;   // raw registry EDID, empty when unavailable
     bool isInternalPanel = false;
     bool active = true;
+    bool primary = false;        // MONITORINFOF_PRIMARY of the matched GDI monitor; false when none matches
 };
 
 struct IDisplayCatalog {

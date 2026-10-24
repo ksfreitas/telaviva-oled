@@ -71,6 +71,20 @@ TEST(display_catalog_diff_stable_flag_flip)
     }
 }
 
+TEST(display_catalog_diff_keeps_primary_flag)
+{
+    // The diff returns the entries it was given, so the primary flag reaches discovery unchanged.
+    telaviva::CatalogEntry primary = makeEntry("win-A", true);
+    primary.primary = true;
+    const std::vector<telaviva::CatalogEntry> current{primary, makeEntry("win-B", true)};
+    const telaviva::CatalogDiff diff = telaviva::diffCatalogs({}, current);
+    CHECK_EQ(diff.added.size(), std::size_t(2));
+    if (diff.added.size() == 2) {
+        CHECK(diff.added[0].primary);
+        CHECK(!diff.added[1].primary);
+    }
+}
+
 TEST(display_catalog_diff_empty_previous)
 {
     const std::vector<telaviva::CatalogEntry> current{makeEntry("win-A", true), makeEntry("win-B", true)};

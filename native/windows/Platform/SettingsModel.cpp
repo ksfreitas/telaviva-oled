@@ -15,7 +15,7 @@ constexpr double kPresenceIntervalMin = 5.0;
 constexpr double kPresenceIntervalMax = 300.0;
 constexpr double kReturnIntervalMin = 0.25;
 constexpr double kReturnIntervalMax = 5.0;
-constexpr double kMinBrightnessMin = 10.0;
+constexpr double kMinBrightnessMin = 0.0;
 constexpr double kMinBrightnessMax = 90.0;
 constexpr int kKeyStepMin = 1;
 constexpr int kKeyStepMax = 15;
@@ -127,6 +127,24 @@ std::string boolText(bool value)
     return value ? "true" : "false";
 }
 
+// Writes a display-id to number object in the map's sorted order. Callers clamp the values first.
+std::string numberMapText(const std::map<std::string, double>& values)
+{
+    std::string out = "{";
+    bool first = true;
+    for (const auto& [id, value] : values) {
+        if (!first) {
+            out.push_back(',');
+        }
+        first = false;
+        out += jsonQuote(id);
+        out.push_back(':');
+        out += numberText(value);
+    }
+    out.push_back('}');
+    return out;
+}
+
 // Keeps comma placement in one place, like the writer in JsonCodec.cpp.
 class MemberWriter {
 public:
@@ -172,7 +190,9 @@ SettingsDraft draftFromSnapshotSettings(const SettingsSnapshot& settings)
     draft.brightnessKeyStep = settings.brightness_key_step;
     draft.volumeKeyStep = settings.volume_key_step;
     draft.ambientFollowEnabled = settings.ambient_follow_enabled;
+    draft.builtinAutoBrightnessOffOnProtection = settings.builtin_auto_brightness_off_on_protection;
     draft.screensaverTargets = settings.screensaver_targets;
+    draft.presenceMinBrightnessByDisplay = settings.presence_min_brightness_by_display;
     draft.protectionDisabled = settings.protection_disabled;
     draft.inferenceDevice = settings.inference_device;
     return draft;
@@ -200,6 +220,14 @@ SettingsDraft clampToCoreRanges(SettingsDraft draft)
     }
     draft.screensaverTargets = std::move(targets);
 
+    std::map<std::string, double> presenceByDisplay;
+    for (const auto& [id, value] : draft.presenceMinBrightnessByDisplay) {
+        if (validId(id)) {
+            presenceByDisplay[id] = clampNumber(value, kMinBrightnessMin, kMinBrightnessMax, 20.0);
+        }
+    }
+    draft.presenceMinBrightnessByDisplay = std::move(presenceByDisplay);
+
     std::set<std::string> disabled;
     for (const auto& id : draft.protectionDisabled) {
         if (validId(id) && disabled.size() < kMaxProtectionEntries) {
@@ -218,18 +246,8 @@ std::string buildSettingsPayload(const SettingsDraft& input)
 {
     const SettingsDraft draft = clampToCoreRanges(input);
 
-    std::string targets = "{";
-    bool firstTarget = true;
-    for (const auto& [id, value] : draft.screensaverTargets) {
-        if (!firstTarget) {
-            targets.push_back(',');
-        }
-        firstTarget = false;
-        targets += jsonQuote(id);
-        targets.push_back(':');
-        targets += numberText(value);
-    }
-    targets.push_back('}');
+    const std::string targets = numberMapText(draft.screensaverTargets);
+    const std::string presenceByDisplay = numberMapText(draft.presenceMinBrightnessByDisplay);
 
     std::string disabled = "[";
     bool firstDisabled = true;
@@ -260,6 +278,8 @@ std::string buildSettingsPayload(const SettingsDraft& input)
     settings.add("screensaver_targets", targets);
     settings.add("ambient_follow_enabled", boolText(draft.ambientFollowEnabled));
     settings.add("protection_disabled", disabled);
+    settings.add("builtin_auto_brightness_off_on_protection", boolText(draft.builtinAutoBrightnessOffOnProtection));
+    settings.add("presence_min_brightness_by_display", presenceByDisplay);
 
     return buildUpdateSettings(settings.finish());
 }
@@ -269,6 +289,13 @@ std::string buildSelectCameraPayload(const std::optional<std::string>& cameraId)
     // Only this payload carries the camera, so an unrelated save never re-sends a fallback.
     const std::string value = (cameraId && validId(*cameraId)) ? jsonQuote(*cameraId) : std::string("null");
     return buildUpdateSettings("{\"selected_camera_id\":" + value + "}");
+}
+
+std::string buildSelectMonitoredDisplayPayload(const std::optional<std::string>& displayId)
+{
+    // Only this payload carries the monitored display, so an unrelated save never re-sends a stale choice.
+    const std::string value = (displayId && validId(*displayId)) ? jsonQuote(*displayId) : std::string("null");
+    return buildUpdateSettings("{\"monitored_display_id\":" + value + "}");
 }
 
 }  // namespace telaviva

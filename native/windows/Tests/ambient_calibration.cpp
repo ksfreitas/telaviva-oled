@@ -1,7 +1,9 @@
 #include "TestHarness.h"
+#include "Fakes.h"
 
 #include "../Platform/AdaptiveBrightness.h"
 #include "../Platform/AmbientCalibrationController.h"
+#include "../Platform/AutoBrightnessOwner.h"
 #include "../Platform/CalibrationSession.h"
 
 #include <chrono>
@@ -25,9 +27,13 @@ using telaviva::AmbientCurve;
 using telaviva::AmbientCurveMap;
 using telaviva::AmbientCurvePoint;
 using telaviva::AmbientCalibrationController;
+using telaviva::AutoBrightnessOwner;
 using telaviva::CalibrationEndReason;
 using telaviva::CalibrationNotice;
+using telaviva::CalibrationRecord;
 using telaviva::CalibrationSession;
+using telaviva::FakeScheduler;
+using telaviva::SavedMonitorState;
 using telaviva::IPowerSettings;
 using telaviva::PowerSource;
 using telaviva::PowerStatus;
@@ -115,12 +121,16 @@ std::string noticeName(const std::optional<CalibrationNotice>& notice)
         return "builtInWriteFailed";
     case CalibrationNotice::BuiltInUnavailable:
         return "builtInUnavailable";
+    case CalibrationNotice::ProtectionActive:
+        return "protectionActive";
     case CalibrationNotice::AutoBrightnessUnknown:
         return "autoBrightnessUnknown";
     case CalibrationNotice::AutoBrightnessNotChanged:
         return "autoBrightnessNotChanged";
     case CalibrationNotice::RecoveryFailed:
         return "recoveryFailed";
+    case CalibrationNotice::MonitorRecoveryGaveUp:
+        return "monitorRecoveryGaveUp";
     }
     return "unknown";
 }
@@ -274,13 +284,16 @@ public:
         return it->second;
     }
 
-    void setPercent(const std::string& monitorId, double percent) override
+    bool setPercent(const std::string& monitorId, double percent) override
     {
         log_.push_back("setMonitor " + monitorId + " " + levelText(percent));
+        // A refused write is still logged, as the panel does.
+        return !failMonitorWrites;
     }
 
     // Readouts stand in for the monitor; writes are logged and do not change them. A missing key is unknown.
     std::map<std::string, double> observed;
+    bool failMonitorWrites = false;
 
 private:
     EventLog& log_;
@@ -312,17 +325,28 @@ private:
     EventLog& log_;
 };
 
+// A calibration record for monitor-a at 62 with the Laptop panel at 44, and the captured adaptive state.
+CalibrationRecord recordWithMonitor()
+{
+    CalibrationRecord record;
+    record.adaptive = capturedState();
+    record.panelLevel = 44.0;
+    record.monitor = SavedMonitorState{"monitor-a", 62.0};
+    return record;
+}
+
 // One temp directory, a fake power API with AC and DC values, a Laptop panel at `level`, and the fakes.
 struct Fixture {
     explicit Fixture(uint32_t ac = 1, uint32_t dc = 1, std::optional<double> level = 44.0)
         : power(log, ac, dc),
           session(dir.path()),
           adaptive(power),
+          owner(adaptive, dir.path() / "auto-brightness-hold.json", nullptr),
           panel(log, level),
           follow(log),
           monitors(log),
           settings(log),
-          controller(panel, settings, follow, monitors, adaptive, session)
+          controller(panel, settings, follow, monitors, owner, adaptive, session, scheduler)
     {
         monitors.observed = {{"monitor-a", 62.0}, {"monitor-b", 30.0}};
     }
@@ -337,10 +361,12 @@ struct Fixture {
     FakePower power;
     CalibrationSession session;
     AdaptiveBrightness adaptive;
+    AutoBrightnessOwner owner;
     FakePanel panel;
     FakeFollow follow;
     FakeMonitors monitors;
     FakeSettings settings;
+    FakeScheduler scheduler;
     AmbientCalibrationController controller;
 };
 
@@ -919,14 +945,145 @@ TEST(recovery_restores_leftover_session)
 
 TEST(recovery_with_disconnected_monitor_skips_monitor)
 {
-    // The record holds no monitor or panel state, so recovery writes only the power values.
+    // monitor-a is not in the snapshot. Recovery restores the panel and the adaptive values at once and keeps
+    // the monitor part of the record until the monitor reports again.
     Fixture f(0, 0);
     f.monitors.observed.erase("monitor-a");
-    CHECK(f.session.begin(capturedState()));
+    CHECK(f.session.begin(recordWithMonitor()));
     f.log.clear();
     CHECK(f.controller.recoverPending());
-    CHECK_EQ(joined(f.log), std::string("adaptive ac 1; adaptive dc 1"));
+    CHECK_EQ(joined(f.log), std::string("writeLevel 44; adaptive ac 1; adaptive dc 1"));
+    // The adaptive part is gone from the record, so a later launch cannot restore it again.
     CHECK(!f.session.pending().has_value());
+    const std::optional<CalibrationRecord> kept = f.session.pendingRecord();
+    CHECK(kept.has_value());
+    if (kept) {
+        CHECK(!kept->adaptiveValid);
+        CHECK(kept->monitor.has_value());
+    }
+    CHECK_EQ(noticeName(f.controller.notice()), std::string("none"));
+    // Still missing: the publish does nothing and the record stays.
+    f.log.clear();
+    f.controller.onSnapshot();
+    CHECK(f.log.empty());
+    CHECK(f.session.pendingRecord().has_value());
+    // The monitor reports again: the next publish restores it and removes the record.
+    f.monitors.observed["monitor-a"] = 62.0;
+    f.controller.onSnapshot();
+    CHECK_EQ(joined(f.log), std::string("setMonitor monitor-a 62"));
+    CHECK(!f.session.pendingRecord().has_value());
+    CHECK(!fs::exists(f.session.file()));
+}
+
+TEST(monitor_recovery_gives_up_after_ninety_seconds)
+{
+    Fixture f(0, 0);
+    f.monitors.observed.erase("monitor-a");
+    CHECK(f.session.begin(recordWithMonitor()));
+    CHECK(f.controller.recoverPending());
+    f.scheduler.advance(std::chrono::milliseconds(89999));
+    CHECK(f.session.pendingRecord().has_value());
+    CHECK_EQ(noticeName(f.controller.notice()), std::string("none"));
+    f.scheduler.advance(std::chrono::milliseconds(1));
+    CHECK(!f.session.pendingRecord().has_value());
+    CHECK(!fs::exists(f.session.file()));
+    CHECK_EQ(noticeName(f.controller.notice()), std::string("monitorRecoveryGaveUp"));
+    // After the give-up, a monitor that returns is not restored.
+    f.log.clear();
+    f.monitors.observed["monitor-a"] = 62.0;
+    f.controller.onSnapshot();
+    CHECK(f.log.empty());
+}
+
+TEST(monitor_recovery_is_not_given_up_once_the_monitor_returns)
+{
+    Fixture f(0, 0);
+    f.monitors.observed.erase("monitor-a");
+    CHECK(f.session.begin(recordWithMonitor()));
+    CHECK(f.controller.recoverPending());
+    f.scheduler.advance(std::chrono::milliseconds(30000));
+    f.monitors.observed["monitor-a"] = 62.0;
+    f.controller.onSnapshot();
+    CHECK(!f.session.pendingRecord().has_value());
+    f.scheduler.advance(std::chrono::milliseconds(90000));
+    CHECK_EQ(noticeName(f.controller.notice()), std::string("none"));
+}
+
+TEST(begin_drops_a_pending_monitor_restore)
+{
+    Fixture f;
+    f.monitors.observed.erase("monitor-a");
+    CHECK(f.session.begin(recordWithMonitor()));
+    CHECK(f.controller.recoverPending());
+    // A new session replaces the monitor-only record, so the earlier monitor restore is dropped.
+    f.controller.begin("monitor-b", 50);
+    CHECK(f.controller.isActive());
+    f.monitors.observed["monitor-a"] = 62.0;
+    f.log.clear();
+    f.controller.onSnapshot();
+    CHECK(f.log.empty());
+    const std::optional<CalibrationRecord> record = f.session.pendingRecord();
+    CHECK(record.has_value());
+    if (record) {
+        CHECK(record->adaptiveValid);
+        CHECK(record->monitor.has_value());
+        if (record->monitor) {
+            CHECK_EQ(record->monitor->monitorId, std::string("monitor-b"));
+        }
+    }
+}
+
+TEST(live_restore_with_a_refused_monitor_write_keeps_the_monitor_part)
+{
+    Fixture f;
+    f.controller.begin("monitor-a", 25);
+    f.monitors.failMonitorWrites = true;
+    f.log.clear();
+    f.controller.end(CalibrationEndReason::Done);
+    CHECK_EQ(joined(f.log), std::string("writeLevel 44; adaptive ac 1; adaptive dc 1; "
+                                        "setMonitor monitor-a 62; setCalibrating false"));
+    CHECK(!f.controller.isActive());
+    CHECK_EQ(noticeName(f.controller.notice()), std::string("none"));
+    // The record keeps the monitor part only: the adaptive values were restored, so they are not kept.
+    const std::optional<CalibrationRecord> kept = f.session.pendingRecord();
+    CHECK(kept.has_value());
+    if (kept) {
+        CHECK(!kept->adaptiveValid);
+        CHECK(kept->monitor.has_value());
+        if (kept->monitor) {
+            CHECK_EQ(kept->monitor->percent, 62.0);
+        }
+    }
+    // The next publish retries the monitor and removes the record.
+    f.monitors.failMonitorWrites = false;
+    f.log.clear();
+    f.controller.onSnapshot();
+    CHECK_EQ(joined(f.log), std::string("setMonitor monitor-a 62"));
+    CHECK(!f.session.pendingRecord().has_value());
+}
+
+TEST(begin_is_refused_while_protection_holds)
+{
+    Fixture f;
+    f.controller.setProtectionHolds([] { return true; });
+    f.controller.begin("monitor-a", 25);
+    CHECK_EQ(noticeName(f.controller.notice()), std::string("protectionActive"));
+    CHECK(!f.controller.isActive());
+    CHECK(f.log.empty());
+    CHECK(!f.session.pending().has_value());
+}
+
+TEST(begin_proceeds_once_protection_releases)
+{
+    Fixture f;
+    bool holds = true;
+    f.controller.setProtectionHolds([&holds] { return holds; });
+    f.controller.begin("monitor-a", 25);
+    CHECK(!f.controller.isActive());
+    holds = false;
+    f.controller.begin("monitor-a", 25);
+    CHECK_EQ(describe(f.controller.active()), std::string("monitor-a 25 44"));
+    CHECK_EQ(noticeName(f.controller.notice()), std::string("none"));
 }
 
 TEST(recovery_with_automatic_brightness_off_leaves_it_off)

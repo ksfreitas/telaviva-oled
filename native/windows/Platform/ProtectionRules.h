@@ -4,11 +4,14 @@
 // protectionBrightnessMaximum and clampScreensaverTarget) and hold no UI or core state.
 #include <algorithm>
 #include <cmath>
-#include <optional>
 #include <set>
 #include <string>
 
 namespace telaviva {
+
+// The protection brightness is one fixed range for every screen, matching the core (1..50).
+inline constexpr double kProtectionBrightnessMin = 1.0;
+inline constexpr double kProtectionBrightnessMax = 50.0;
 
 struct ProtectionClamp {
     double value = 0;
@@ -29,47 +32,38 @@ inline bool isMonitorProtected(const std::set<std::string>& protectionDisabled, 
     return protectionDisabled.find(monitorId) == protectionDisabled.end();
 }
 
-// The brightness row only matters when screensaver protection dims the monitor.
-inline bool showProtectionBrightnessRow(bool screensaverProtectionEnabled, bool monitorProtected)
+// The brightness row only matters when a protected monitor is dimmed by presence or screensaver.
+inline bool showProtectionBrightnessRow(bool presenceProtectionEnabled, bool screensaverProtectionEnabled,
+                                        bool monitorProtected)
 {
-    return screensaverProtectionEnabled && monitorProtected;
+    return monitorProtected && (presenceProtectionEnabled || screensaverProtectionEnabled);
 }
 
-// Returns the cap for the protection brightness slider. confirmed is the core's last
-// reported brightness (0..100); nullopt means the control is unsupported or has no value,
-// which yields 0 so the slider stays disabled. outstandingDraft is the pending local slider
-// value, or nullopt when none is pending. Callers pass nullopt for a followed monitor, since
-// the ambient sensor drives its brightness and a leftover draft must not lower the cap.
-inline double protectionBrightnessCap(std::optional<double> confirmed, std::optional<double> outstandingDraft)
+// A monitor without DDC brightness has no level to set, so its slider stays disabled.
+inline bool protectionSliderEnabled(bool brightnessSupported)
 {
-    if (!confirmed || !std::isfinite(*confirmed)) {
-        return 0;
-    }
-    const double base = std::clamp(*confirmed, 0.0, 100.0);
-    if (!outstandingDraft) {
-        return base;
-    }
-    return std::min(base, std::max(0.0, *outstandingDraft));
+    return brightnessSupported;
 }
 
-// A cap of 0 leaves nothing to dim to, so the slider is disabled and shows 0.
-inline bool protectionSliderEnabled(double cap)
+// The slider range is the fixed protection range, 1..50.
+inline double protectionSliderMinimum()
 {
-    return cap > 0;
+    return kProtectionBrightnessMin;
 }
 
-// The slider range is 0..cap. A disabled slider still needs a non-empty range, so it uses 1.
-inline double protectionSliderMaximum(double cap)
+inline double protectionSliderMaximum()
 {
-    return cap > 0 ? cap : 1;
+    return kProtectionBrightnessMax;
 }
 
-// Clamps the stored protection brightness into 0..cap. Run it on show and on every
-// brightness change. A non-finite stored value is treated as 0 so it can be repaired.
-inline ProtectionClamp clampProtectionBrightness(double stored, double cap)
+// Clamps the stored protection brightness into 1..50. Run it on show and on every
+// brightness change. A non-finite stored value becomes 1 so it can be repaired. The result
+// does not depend on any monitor's brightness.
+inline ProtectionClamp clampProtectionBrightness(double stored)
 {
-    const double finite = std::isfinite(stored) ? stored : 0.0;
-    const double value = std::clamp(finite, 0.0, std::max(0.0, cap));
+    const double value = std::isfinite(stored)
+        ? std::clamp(stored, kProtectionBrightnessMin, kProtectionBrightnessMax)
+        : kProtectionBrightnessMin;
     return ProtectionClamp{value, value != stored};
 }
 

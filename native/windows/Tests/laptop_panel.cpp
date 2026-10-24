@@ -26,6 +26,7 @@ namespace {
 
 struct FakePanel final : ILaptopPanel {
     std::optional<double> level = 40.0;
+    std::vector<int> levels;
     int reads = 0;
     int writes = 0;
 
@@ -40,6 +41,8 @@ struct FakePanel final : ILaptopPanel {
         ++writes;
         return true;
     }
+
+    std::vector<int> supportedLevels() const override { return levels; }
 };
 
 struct FakeEnvironment final : ILaptopEnvironment {
@@ -71,9 +74,11 @@ struct RecordingSubmitter final : ICoreSubmitter {
     }
 };
 
-std::string report(bool available, std::optional<double> brightness, bool calibrating)
+// Expected builtin_display for the existing scenarios. Each available screen there has reason None, and each
+// unavailable one has a reason that is not protectable, so protectable equals available.
+std::string report(bool available, std::optional<double> brightness, bool calibrating, bool holding = false)
 {
-    return buildBuiltinDisplay(available, brightness, calibrating);
+    return buildBuiltinDisplay(available, brightness, calibrating, available, holding);
 }
 
 std::string reasonName(LaptopReason reason)
@@ -292,4 +297,96 @@ TEST(laptop_panel_same_follow_value_does_not_reevaluate)
     follower.setFollowEnabled(true);
     CHECK_EQ(env.probes, probesBefore);
     CHECK_EQ(scheduler.pendingCount(), std::size_t{1});
+}
+
+TEST(laptop_panel_protection_polls_and_reports_level_with_follow_off)
+{
+    FakePanel panel;
+    FakeEnvironment env;
+    RecordingSubmitter submitter;
+    FakeScheduler scheduler;
+    FakeClock clock;
+    LaptopPanelFollower follower(panel, env, submitter, scheduler, clock);
+
+    follower.setProtectionEnabled(true);
+    scheduler.advance(0ms);
+    CHECK_EQ(panel.reads, 1);
+    CHECK_EQ(submitter.messages.back(), report(true, 40.0, false));
+    CHECK(!follower.canCalibrate());
+
+    scheduler.advance(1000ms);
+    CHECK_EQ(panel.reads, 2);
+    CHECK_EQ(scheduler.pendingCount(), std::size_t{1});
+
+    follower.setProtectionEnabled(false);
+    CHECK_EQ(scheduler.pendingCount(), std::size_t{0});
+    scheduler.advance(5000ms);
+    CHECK_EQ(panel.reads, 2);
+}
+
+TEST(laptop_panel_lid_closed_is_unavailable_but_protectable)
+{
+    FakePanel panel;
+    FakeEnvironment env;
+    RecordingSubmitter submitter;
+    FakeScheduler scheduler;
+    FakeClock clock;
+    LaptopPanelFollower follower(panel, env, submitter, scheduler, clock);
+
+    follower.setFollowEnabled(true);
+    scheduler.advance(0ms);
+    CHECK_EQ(submitter.messages.back(), buildBuiltinDisplay(true, 40.0, false, true, false));
+
+    env.lid = false;
+    follower.onLidChanged(false);
+    CHECK_EQ(reasonName(follower.reason()), std::string("displayOffline"));
+    CHECK_EQ(submitter.messages.back(), buildBuiltinDisplay(false, std::nullopt, false, true, false));
+    CHECK_EQ(scheduler.pendingCount(), std::size_t{0});
+}
+
+TEST(laptop_panel_missing_brightness_api_is_not_protectable)
+{
+    FakePanel panel;
+    FakeEnvironment env;
+    env.readability = BrightnessReadability::ApiMissing;
+    RecordingSubmitter submitter;
+    FakeScheduler scheduler;
+    FakeClock clock;
+    LaptopPanelFollower follower(panel, env, submitter, scheduler, clock);
+
+    follower.setProtectionEnabled(true);
+    CHECK_EQ(reasonName(follower.reason()), std::string("apiUnavailable"));
+    CHECK_EQ(submitter.messages.back(), buildBuiltinDisplay(false, std::nullopt, false, false, false));
+    CHECK_EQ(scheduler.pendingCount(), std::size_t{0});
+    CHECK_EQ(panel.reads, 0);
+}
+
+TEST(laptop_panel_holding_change_resubmits_same_level)
+{
+    FakePanel panel;
+    FakeEnvironment env;
+    RecordingSubmitter submitter;
+    FakeScheduler scheduler;
+    FakeClock clock;
+    LaptopPanelFollower follower(panel, env, submitter, scheduler, clock);
+
+    follower.setFollowEnabled(true);
+    scheduler.advance(0ms);
+    const std::size_t before = submitter.messages.size();
+
+    follower.setHolding(true);
+    CHECK_EQ(submitter.messages.size(), before + 1);
+    CHECK_EQ(submitter.messages.back(), buildBuiltinDisplay(true, 40.0, false, true, true));
+
+    // Same flag: nothing new is sent.
+    follower.setHolding(true);
+    CHECK_EQ(submitter.messages.size(), before + 1);
+
+    // The next poll reports the same level, so it adds nothing either.
+    scheduler.advance(1000ms);
+    CHECK_EQ(submitter.messages.size(), before + 1);
+
+    follower.setHolding(false);
+    CHECK_EQ(submitter.messages.size(), before + 2);
+    CHECK_EQ(submitter.messages.back(), report(true, 40.0, false));
 }

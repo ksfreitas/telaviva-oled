@@ -33,6 +33,8 @@ namespace winrt::TelaViva::implementation
         bool volumeKey_ = false;
         bool protectionPointer_ = false;
         bool protectionKey_ = false;
+        // Set from the state in Update: the card is the built-in screen, so its brightness goes to the panel.
+        bool builtin_ = false;
         // Tick of the last slider release (0 when none). Values from states built before the release are held off briefly.
         ULONGLONG lastReleaseTick_ = 0;
     };

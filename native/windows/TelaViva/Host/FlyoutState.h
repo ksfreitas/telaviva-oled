@@ -24,15 +24,19 @@ struct MonitorCardState {
     bool followed = false;
     SliderState brightness;
     SliderState volume;
-    // Protection controls. Visibility comes from ProtectionRules; the values are the stored
-    // target and its cap (0..100). The card clamps and saves the target.
+    // Protection controls. Visibility comes from ProtectionRules; the value is the stored
+    // target (clamped to 1..50 by the card, which saves the clamped value).
     bool protectionToggleVisible = false;
     bool protectionOn = true;
     bool protectionRowVisible = false;
     double protectionValue = 0;
-    double protectionCap = 0;
-    // False when the brightness is unknown; the value is then shown but never saved, as on macOS.
-    bool protectionCapKnown = false;
+    // False when the monitor has no DDC brightness; the slider is then disabled and the value never saved.
+    bool protectionBrightnessSupported = false;
+    // The built-in (Laptop) screen card. Its brightness goes through setBuiltinBrightness, and it has no volume.
+    bool isBuiltin = false;
+    bool hideVolume = false;
+    // Localized note under the brightness row, empty when there is none.
+    std::wstring notice;
 };
 
 // Warning at the top of the flyout while the camera needs attention.
@@ -59,6 +63,8 @@ struct IFlyoutActions {
     virtual void setVolume(const std::string& monitorId, double value) = 0;
     virtual void setMonitorProtected(const std::string& monitorId, bool protectedOn) = 0;
     virtual void setProtectionBrightness(const std::string& monitorId, double value) = 0;
+    // Writes the Laptop screen level directly to the panel, not through the core.
+    virtual void setBuiltinBrightness(double value) = 0;
     virtual void refresh() = 0;
     virtual void openSettings() = 0;
     virtual void quit() = 0;

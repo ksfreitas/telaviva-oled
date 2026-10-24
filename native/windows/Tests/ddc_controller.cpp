@@ -265,13 +265,14 @@ MonitorInfo::Channel unsupportedChannel()
 
 // Expected monitor_discovered, built by the real builder so only field values are compared.
 std::string discoveredJson(const std::string& id, bool stable, const std::string& name,
-                           MonitorInfo::Channel brightness, MonitorInfo::Channel volume)
+                           MonitorInfo::Channel brightness, MonitorInfo::Channel volume, bool primary = false)
 {
     MonitorInfo info;
     info.id = id;
     info.name = name;
     info.identityStable = stable;
     info.connectionPath = kPath;
+    info.primary = primary;
     info.brightness = brightness;
     info.volume = volume;
     return telaviva::buildMonitorDiscovered(info);
@@ -301,6 +302,26 @@ TEST(ddc_controller_discovers_stable_monitor_once_with_features)
     CHECK_EQ(rig.submitter.sent.front(),
              discoveredJson(kIdA, true, kName, supportedChannel(41, 100), supportedChannel(30, 100)));
     CHECK(rig.submitter.sent.front().find("\"identity_status\":\"stable\"") != std::string::npos);
+}
+
+TEST(ddc_controller_discovery_passes_primary_flag_through)
+{
+    Rig rig;
+    CatalogEntry primary = makeEntry(kIdA, true, kName);
+    primary.primary = true;
+    CatalogEntry secondary = makeEntry(kIdB, true, kName);
+    secondary.primary = false;
+    rig.catalog.entries = {primary, secondary};
+    rig.controller.refresh();
+    CHECK_EQ(rig.submitter.sent.size(), std::size_t(2));
+    if (rig.submitter.sent.size() == 2) {
+        CHECK_EQ(rig.submitter.sent[0], discoveredJson(kIdA, true, kName, supportedChannel(0, 100),
+                                                       supportedChannel(0, 100), true));
+        CHECK(rig.submitter.sent[0].find("\"primary\":true") != std::string::npos);
+        CHECK_EQ(rig.submitter.sent[1], discoveredJson(kIdB, true, kName, supportedChannel(0, 100),
+                                                       supportedChannel(0, 100), false));
+        CHECK(rig.submitter.sent[1].find("\"primary\":false") != std::string::npos);
+    }
 }
 
 TEST(ddc_controller_failed_volume_read_reports_volume_unsupported)

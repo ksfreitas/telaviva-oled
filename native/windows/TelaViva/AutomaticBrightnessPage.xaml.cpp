@@ -196,6 +196,12 @@ std::string_view noticeKey(const std::string& notice)
     if (notice == "recoveryFailed") {
         return "calibration.notice.recoveryFailed";
     }
+    if (notice == "protectionActive") {
+        return "calibration.notice.protectionActive";
+    }
+    if (notice == "monitorRecoveryGaveUp") {
+        return "calibration.notice.monitorRecoveryGaveUp";
+    }
     return {};
 }
 

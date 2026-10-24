@@ -25,7 +25,10 @@ struct SettingsDraft {
     int brightnessKeyStep = 5;
     int volumeKeyStep = 5;
     bool ambientFollowEnabled = false;
+    bool builtinAutoBrightnessOffOnProtection = false;
     std::map<std::string, double> screensaverTargets;
+    // Keyed by display id (a monitor id or "builtin"), like screensaverTargets.
+    std::map<std::string, double> presenceMinBrightnessByDisplay;
     std::set<std::string> protectionDisabled;
     std::string inferenceDevice = "auto";
 };
@@ -34,6 +37,7 @@ SettingsDraft draftFromSnapshotSettings(const SettingsSnapshot& settings);
 
 // Clamps every value to the core's accepted range. NaN numeric values become the
 // field default; NaN screensaver targets are dropped because no default is meaningful.
+// Per-display presence thresholds clamp to 0..90 and NaN becomes the global default.
 // Locales other than auto, en-US and pt-BR become auto. Empty or over-512-byte keys
 // are dropped. protection_disabled keeps at most 128 entries, the core's limit.
 // An inference device other than auto, cpu, ane, gpu or a gpu:vvvv:dddd:n selector
@@ -41,10 +45,15 @@ SettingsDraft draftFromSnapshotSettings(const SettingsSnapshot& settings);
 SettingsDraft clampToCoreRanges(SettingsDraft draft);
 
 // Returns the complete update_settings message. Never includes selected_camera_id,
-// camera_history, ambient_curves or schema_version, because the core rejects unknown keys.
+// camera_history, monitored_display_id, monitored_display_history, ambient_curves or
+// schema_version, because the core rejects unknown keys or sends them by their own command.
 std::string buildSettingsPayload(const SettingsDraft& draft);
 
 // Returns the update_settings message that sets or clears (nullopt, empty or over 512 bytes) the camera.
 std::string buildSelectCameraPayload(const std::optional<std::string>& cameraId);
+
+// Returns the update_settings message that sets or clears (nullopt, empty or over 512 bytes) the
+// monitored display. Automatic is nullopt. The reserved id "builtin" is accepted.
+std::string buildSelectMonitoredDisplayPayload(const std::optional<std::string>& displayId);
 
 }  // namespace telaviva

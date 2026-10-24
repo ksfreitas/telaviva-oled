@@ -6,6 +6,8 @@
 #include "Host/SettingRow.h"
 #include "Host/Strings.h"
 #include "Platform/CameraSelection.h"
+#include "Platform/MonitoredDisplayRules.h"
+#include "Platform/ProtectionRules.h"
 #include "Platform/SettingsModel.h"
 
 #include <winrt/Microsoft.UI.Dispatching.h>
@@ -21,7 +23,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -48,7 +49,7 @@ constexpr double kPresenceIntervalMin = 5.0;
 constexpr double kPresenceIntervalMax = 300.0;
 constexpr double kReturnIntervalMin = 0.25;
 constexpr double kReturnIntervalMax = 5.0;
-constexpr double kMinBrightnessMin = 10.0;
+constexpr double kMinBrightnessMin = 0.0;
 constexpr double kMinBrightnessMax = 90.0;
 
 // One second in 100 ns ticks, the unit of TimeSpan.
@@ -124,11 +125,11 @@ xc::ToggleSwitch makeSwitch(bool on, winrt::hstring const& name)
     return toggle;
 }
 
-xc::Slider makeSlider(double maximum, double value)
+xc::Slider makeSlider(double value)
 {
     xc::Slider slider;
-    slider.Minimum(0.0);
-    slider.Maximum(maximum);
+    slider.Minimum(telaviva::protectionSliderMinimum());
+    slider.Maximum(telaviva::protectionSliderMaximum());
     slider.StepFrequency(1.0);
     slider.Value(value);
     slider.Width(160);
@@ -185,27 +186,78 @@ winrt::Windows::Globalization::NumberFormatting::INumberFormatter2 intervalForma
     }
 }
 
-// Identity of the connected monitors. A change rebuilds the monitor rows.
+// The built-in screen's protection brightness row: listed under the visibility rule, and shown under the monitor rule.
+bool builtinTargetShown(const telaviva::Snapshot& snapshot)
+{
+    const auto& settings = snapshot.settings;
+    return telaviva::builtinEntryVisible(snapshot.builtinProtection) && telaviva::showProtectionBrightnessRow(
+        settings.presence_protection_enabled, settings.screensaver_protection_enabled,
+        telaviva::isMonitorProtected(settings.protection_disabled, telaviva::kBuiltinDisplayId));
+}
+
+// Identity of the connected monitors, and whether each one shows a target row. A change rebuilds the monitor rows.
 std::string monitorSignature(const telaviva::Snapshot& snapshot)
 {
     std::string signature;
+    const auto& settings = snapshot.settings;
     for (const auto& monitor : snapshot.monitors) {
         signature += monitor.id;
         signature.push_back('\n');
         signature += monitor.name;
         signature.push_back('\n');
+        const bool targetShown = telaviva::showProtectionBrightnessRow(settings.presence_protection_enabled,
+            settings.screensaver_protection_enabled, telaviva::isMonitorProtected(settings.protection_disabled, monitor.id));
+        signature.push_back(targetShown ? '1' : '0');
+        signature.push_back('\n');
+    }
+    // The built-in rows appear and disappear with the visibility rule, so a change rebuilds them too.
+    signature += telaviva::builtinEntryVisible(snapshot.builtinProtection) ? "builtin:1\n" : "builtin:0\n";
+    signature += builtinTargetShown(snapshot) ? "builtinTarget:1\n" : "builtinTarget:0\n";
+    return signature;
+}
+
+// Identity of the monitored display picker's choices: the built-in visibility and each monitor's id, name and usability.
+std::string monitoredPickerSignature(const telaviva::Snapshot& snapshot)
+{
+    std::string signature = telaviva::builtinEntryVisible(snapshot.builtinProtection) ? "builtin:1\n" : "builtin:0\n";
+    for (const auto& monitor : snapshot.monitors) {
+        signature += monitor.id;
+        signature.push_back('\n');
+        signature += monitor.name;
+        signature.push_back('\n');
+        signature.push_back(telaviva::isUsableMonitor(monitor) ? '1' : '0');
+        signature.push_back('\n');
     }
     return signature;
 }
 
-// Highest screensaver target for a monitor: its confirmed brightness, or 0 without a brightness control.
-double brightnessCeiling(const telaviva::MonitorSnapshot& monitor)
+// The presence threshold shown for a display: its own entry when it has one, else the global value.
+double presenceThresholdFor(const telaviva::SettingsSnapshot& settings, const std::string& displayId)
 {
-    const auto& observed = monitor.brightness.observed;
-    if (!monitor.brightness.supported || !observed || !std::isfinite(*observed)) {
-        return 0.0;
+    if (!displayId.empty()) {
+        const auto found = settings.presence_min_brightness_by_display.find(displayId);
+        if (found != settings.presence_min_brightness_by_display.end()) {
+            return found->second;
+        }
     }
-    return std::clamp(*observed, 0.0, 100.0);
+    return settings.presence_min_brightness_percent;
+}
+
+// The picker label: Automatic, the built-in screen's name, or the monitor's name as its monitor row shows it.
+winrt::hstring monitoredDisplayLabel(const telaviva::MonitoredDisplayItem& item, const std::vector<telaviva::MonitorSnapshot>& monitors)
+{
+    if (item.automatic) {
+        return loc("monitoredDisplayAutomatic");
+    }
+    if (item.builtin) {
+        return loc("builtin.name");
+    }
+    for (const auto& monitor : monitors) {
+        if (monitor.id == item.id) {
+            return utf8(monitor.name.empty() ? monitor.id : monitor.name);
+        }
+    }
+    return utf8(item.id);
 }
 
 // The display status when present, else the raw status, as AppText.cameraStatus does on macOS.
@@ -391,18 +443,49 @@ namespace winrt::TelaViva::implementation
         RowsPanel().Children().Append(telaviva::host::MakeSettingRow(presenceHeader, loc("presenceHelp"), presenceSwitch));
 
         // Brightness at or below which the camera stays off. Editable only while presence protection is on.
-        thresholdBox_ = makeNumberBox(kMinBrightnessMin, kMinBrightnessMax, 1.0, settings.presence_min_brightness_percent);
+        // It edits the monitored display's own value, or the global value when no display resolves.
+        thresholdTarget_ = telaviva::thresholdTargetId(snapshot.monitoredDisplay);
+        thresholdBox_ = makeNumberBox(kMinBrightnessMin, kMinBrightnessMax, 1.0, presenceThresholdFor(settings, thresholdTarget_));
         thresholdBox_.IsEnabled(presenceOn);
         xaml::Automation::AutomationProperties::SetName(thresholdBox_, loc("presenceMinBrightness"));
         thresholdBox_.ValueChanged([this](xc::NumberBox const&, xc::NumberBoxValueChangedEventArgs const& args) {
+            // suppress_ keeps the programmatic refresh for another display from being saved.
+            if (suppress_) {
+                return;
+            }
             const double value = args.NewValue();
             if (std::isnan(value)) {
                 return;
             }
-            edit([value](telaviva::SettingsDraft& draft) { draft.presenceMinBrightnessPercent = value; });
+            // Writes this display's entry; other entries are kept because the draft copies the whole map.
+            const std::string target = thresholdTarget_;
+            edit([value, target](telaviva::SettingsDraft& draft) {
+                if (target.empty()) {
+                    draft.presenceMinBrightnessPercent = value;
+                } else {
+                    draft.presenceMinBrightnessByDisplay[target] = value;
+                }
+            });
         });
         RowsPanel().Children().Append(telaviva::host::MakeSettingRow(
             loc("presenceMinBrightness"), loc("presenceMinBrightnessHelp"), withUnit(thresholdBox_, L"%")));
+
+        // Monitored display: the display whose brightness decides when the camera runs. Directly below the threshold.
+        monitoredBox_ = xc::ComboBox{};
+        xaml::Automation::AutomationProperties::SetName(monitoredBox_, loc("monitoredDisplay"));
+        monitoredBox_.SelectionChanged([this](auto const& sender, auto const&) {
+            if (suppress_ || !host_) {
+                return;
+            }
+            const int index = sender.as<xc::ComboBox>().SelectedIndex();
+            if (index < 0 || index >= static_cast<int>(monitoredItems_.size())) {
+                return;
+            }
+            // Index 0 is Automatic, which clears the selection.
+            host_->submit(telaviva::buildSelectMonitoredDisplayPayload(telaviva::monitoredDisplayIdForIndex(monitoredItems_, index)));
+        });
+        fillMonitoredBox(snapshot);
+        RowsPanel().Children().Append(telaviva::host::MakeSettingRow(loc("monitoredDisplay"), loc("monitoredDisplayHelp"), monitoredBox_));
 
         const winrt::hstring saverHeader = loc("saver");
         xc::ToggleSwitch saverSwitch = makeSwitch(settings.screensaver_protection_enabled, saverHeader);
@@ -555,6 +638,7 @@ namespace winrt::TelaViva::implementation
         } else {
             updateTargets(snapshot);
         }
+        syncMonitoredDisplay(snapshot);
     }
 
     void GeneralPage::reloadCameras()
@@ -619,7 +703,6 @@ namespace winrt::TelaViva::implementation
         targets_.clear();
         if (snapshot.monitors.empty()) {
             monitorsPanel_.Children().Append(telaviva::host::MakeCaption(loc("protection.monitors.none")));
-            return;
         }
 
         const auto& disabled = snapshot.settings.protection_disabled;
@@ -641,44 +724,93 @@ namespace winrt::TelaViva::implementation
             });
             monitorsPanel_.Children().Append(telaviva::host::MakeSettingRow(name, winrt::hstring{}, toggle));
 
-            // Screensaver target for this monitor, capped at its current brightness.
-            const double ceiling = brightnessCeiling(monitor);
-            const auto& targets = snapshot.settings.screensaver_targets;
+            // Protection brightness for this monitor, shown only while it is protected and presence or
+            // screensaver protection dims it.
+            const auto& settings = snapshot.settings;
+            if (!telaviva::showProtectionBrightnessRow(settings.presence_protection_enabled,
+                    settings.screensaver_protection_enabled, telaviva::isMonitorProtected(disabled, id))) {
+                continue;
+            }
+
+            // Screensaver target for this monitor, shown clamped to 1..50. The core clamps it when applied.
+            const auto& targets = settings.screensaver_targets;
             const auto found = targets.find(id);
-            const double target = found == targets.end() ? 0.0 : found->second;
-
-            TargetRow row;
-            row.monitorId = id;
-            row.slider = makeSlider(ceiling > 0 ? ceiling : 1.0, std::min(target, ceiling));
-            row.slider.IsEnabled(ceiling > 0);
-            // Named after the monitor, so the slider reads as this monitor's target; the percent is its item status.
-            const std::wstring sliderName = telaviva::host::Str("protectionBrightness") + L", " + name.c_str();
-            xaml::Automation::AutomationProperties::SetName(row.slider, winrt::hstring{ sliderName });
-            xaml::Automation::AutomationProperties::SetItemStatus(row.slider, winrt::hstring{ percentText(row.slider.Value()) });
-            row.readout = xc::TextBlock{};
-            row.readout.Text(percentText(row.slider.Value()));
-            row.readout.MinWidth(48);
-            row.readout.VerticalAlignment(xaml::VerticalAlignment::Center);
-            xaml::Automation::AutomationProperties::SetAccessibilityView(row.readout, xaml::Automation::Peers::AccessibilityView::Raw);
-
-            xc::StackPanel line;
-            line.Orientation(xc::Orientation::Horizontal);
-            line.Spacing(8);
-            line.Children().Append(row.slider);
-            line.Children().Append(row.readout);
-
-            row.slider.ValueChanged([this, id, readout = row.readout](auto const& sender, auto const&) {
-                const double value = sender.as<xc::Slider>().Value();
-                readout.Text(percentText(value));
-                xaml::Automation::AutomationProperties::SetItemStatus(sender.as<xc::Slider>(), winrt::hstring{ percentText(value) });
-                if (suppress_) {
-                    return;
-                }
-                edit([id, value](telaviva::SettingsDraft& draft) { draft.screensaverTargets[id] = value; });
-            });
-            targets_.push_back(row);
-            targetsPanel_.Children().Append(telaviva::host::MakeSettingRow(loc("protectionBrightness"), name, line));
+            addTargetRow(id, name, found == targets.end() ? 0.0 : found->second, monitor.brightness.supported);
         }
+
+        // The built-in screen, listed only under the visibility rule. Its switch, option and target row sit after the monitors.
+        if (telaviva::builtinEntryVisible(snapshot.builtinProtection)) {
+            const auto& settings = snapshot.settings;
+            const std::string builtinId = telaviva::kBuiltinDisplayId;
+            const winrt::hstring builtinName = loc("builtin.name");
+
+            // Protected unless listed in protection_disabled, as for the monitors. Each change writes the full set.
+            const bool builtinProtected = telaviva::isMonitorProtected(disabled, builtinId);
+            xc::ToggleSwitch builtinToggle = makeSwitch(builtinProtected, builtinName);
+            builtinToggle.Toggled([this, builtinId](auto const& sender, auto const&) {
+                const bool enabled = sender.as<xc::ToggleSwitch>().IsOn();
+                edit([builtinId, enabled](telaviva::SettingsDraft& draft) {
+                    if (enabled) {
+                        draft.protectionDisabled.erase(builtinId);
+                    } else {
+                        draft.protectionDisabled.insert(builtinId);
+                    }
+                });
+            });
+            monitorsPanel_.Children().Append(telaviva::host::MakeSettingRow(builtinName, loc("builtin.protection.toggle.help"), builtinToggle));
+
+            // Turns automatic brightness off while the built-in screen is protected. It is its own setting, not part of the monitor set.
+            xc::ToggleSwitch optionToggle = makeSwitch(settings.builtin_auto_brightness_off_on_protection, loc("builtin.protection.option.title"));
+            optionToggle.Toggled([this](auto const& sender, auto const&) {
+                const bool enabled = sender.as<xc::ToggleSwitch>().IsOn();
+                edit([enabled](telaviva::SettingsDraft& draft) { draft.builtinAutoBrightnessOffOnProtection = enabled; });
+            });
+            monitorsPanel_.Children().Append(telaviva::host::MakeSettingRow(
+                loc("builtin.protection.option.title"), loc("builtin.protection.option.help"), optionToggle));
+
+            // Protection brightness for the built-in screen, under the same rule as the monitor rows.
+            if (builtinTargetShown(snapshot)) {
+                const auto& targets = settings.screensaver_targets;
+                const auto found = targets.find(builtinId);
+                addTargetRow(builtinId, builtinName, found == targets.end() ? 0.0 : found->second, true);
+            }
+        }
+    }
+
+    void GeneralPage::addTargetRow(const std::string& id, const winrt::hstring& name, double stored, bool brightnessSupported)
+    {
+        TargetRow row;
+        row.monitorId = id;
+        row.slider = makeSlider(telaviva::clampProtectionBrightness(stored).value);
+        // A monitor without DDC brightness has no level to set.
+        row.slider.IsEnabled(telaviva::protectionSliderEnabled(brightnessSupported));
+        // Named after the display, so the slider reads as its target; the percent is its item status.
+        const std::wstring sliderName = telaviva::host::Str("protectionBrightness") + L", " + name.c_str();
+        xaml::Automation::AutomationProperties::SetName(row.slider, winrt::hstring{ sliderName });
+        xaml::Automation::AutomationProperties::SetItemStatus(row.slider, winrt::hstring{ percentText(row.slider.Value()) });
+        row.readout = xc::TextBlock{};
+        row.readout.Text(percentText(row.slider.Value()));
+        row.readout.MinWidth(48);
+        row.readout.VerticalAlignment(xaml::VerticalAlignment::Center);
+        xaml::Automation::AutomationProperties::SetAccessibilityView(row.readout, xaml::Automation::Peers::AccessibilityView::Raw);
+
+        xc::StackPanel line;
+        line.Orientation(xc::Orientation::Horizontal);
+        line.Spacing(8);
+        line.Children().Append(row.slider);
+        line.Children().Append(row.readout);
+
+        row.slider.ValueChanged([this, id, readout = row.readout](auto const& sender, auto const&) {
+            const double value = sender.as<xc::Slider>().Value();
+            readout.Text(percentText(value));
+            xaml::Automation::AutomationProperties::SetItemStatus(sender.as<xc::Slider>(), winrt::hstring{ percentText(value) });
+            if (suppress_) {
+                return;
+            }
+            edit([id, value](telaviva::SettingsDraft& draft) { draft.screensaverTargets[id] = value; });
+        });
+        targets_.push_back(row);
+        targetsPanel_.Children().Append(telaviva::host::MakeSettingRow(loc("protectionBrightness"), name, line));
     }
 
     void GeneralPage::updateTargets(const telaviva::Snapshot& snapshot)
@@ -689,16 +821,58 @@ namespace winrt::TelaViva::implementation
             if (monitor == snapshot.monitors.end()) {
                 continue;
             }
-            // Brightness changes move the cap; the stored target stays as the user set it.
-            const double ceiling = brightnessCeiling(*monitor);
-            suppress_ = true;
-            row.slider.Maximum(ceiling > 0 ? ceiling : 1.0);
-            row.slider.IsEnabled(ceiling > 0);
-            if (ceiling <= 0) {
-                row.slider.Value(0.0);
-            }
-            suppress_ = false;
-            row.readout.Text(percentText(row.slider.Value()));
+            // Brightness support can change after the row is built; the stored target stays as the user set it.
+            row.slider.IsEnabled(telaviva::protectionSliderEnabled(monitor->brightness.supported));
         }
+    }
+
+    void GeneralPage::fillMonitoredBox(const telaviva::Snapshot& snapshot)
+    {
+        if (!monitoredBox_) {
+            return;
+        }
+        monitoredItems_ = telaviva::monitoredDisplayItems(snapshot.monitors, snapshot.builtinProtection);
+        monitoredPickerSignature_ = monitoredPickerSignature(snapshot);
+        // suppress_ keeps the programmatic refill and selection from submitting a change.
+        suppress_ = true;
+        monitoredBox_.Items().Clear();
+        for (const auto& item : monitoredItems_) {
+            monitoredBox_.Items().Append(winrt::box_value(monitoredDisplayLabel(item, snapshot.monitors)));
+        }
+        monitoredBox_.SelectedIndex(telaviva::selectedMonitoredDisplayIndex(monitoredItems_, snapshot.settings.monitored_display_id));
+        suppress_ = false;
+    }
+
+    void GeneralPage::syncMonitoredDisplay(const telaviva::Snapshot& snapshot)
+    {
+        if (!monitoredBox_) {
+            return;
+        }
+        if (monitoredPickerSignature(snapshot) != monitoredPickerSignature_) {
+            fillMonitoredBox(snapshot);
+        } else {
+            const int selected = telaviva::selectedMonitoredDisplayIndex(monitoredItems_, snapshot.settings.monitored_display_id);
+            if (monitoredBox_.SelectedIndex() != selected) {
+                suppress_ = true;
+                monitoredBox_.SelectedIndex(selected);
+                suppress_ = false;
+            }
+        }
+        // The threshold follows the monitored display only when it changes, so a value being typed is not overwritten.
+        if (telaviva::thresholdTargetId(snapshot.monitoredDisplay) != thresholdTarget_) {
+            refreshThreshold(snapshot);
+        }
+    }
+
+    void GeneralPage::refreshThreshold(const telaviva::Snapshot& snapshot)
+    {
+        thresholdTarget_ = telaviva::thresholdTargetId(snapshot.monitoredDisplay);
+        if (!thresholdBox_) {
+            return;
+        }
+        // suppress_ keeps the refreshed value from being saved back.
+        suppress_ = true;
+        thresholdBox_.Value(presenceThresholdFor(snapshot.settings, thresholdTarget_));
+        suppress_ = false;
     }
 }

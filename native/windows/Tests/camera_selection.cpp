@@ -382,3 +382,64 @@ TEST(camera_selection_find_index_missing_id_gives_nullopt)
     const std::optional<std::size_t> none = telaviva::findCameraIndex(cameras, std::nullopt);
     CHECK(!none.has_value());
 }
+
+// Lid closed (FR-020): built-in cameras are never chosen, and the remembered choice is only skipped.
+TEST(camera_selection_lid_closed_history_skips_builtin_for_usb)
+{
+    const std::vector<telaviva::CameraInfo> connected = {makeCamera("builtin", false, true), makeCamera("usb-a")};
+    const telaviva::CameraChoice choice = telaviva::chooseCamera(connected, {"builtin", "usb-a"}, true);
+    CHECK(choice.effective.has_value());
+    if (!choice.effective) {
+        return;
+    }
+    CHECK_EQ(choice.effective->id, std::string("usb-a"));
+    CHECK(!choice.fallbackToDefault);
+}
+
+TEST(camera_selection_lid_closed_history_of_builtin_only_gives_nullopt)
+{
+    const std::vector<telaviva::CameraInfo> connected = {makeCamera("builtin", false, true)};
+    const telaviva::CameraChoice choice = telaviva::chooseCamera(connected, {"builtin"}, true);
+    CHECK(!choice.effective.has_value());
+    CHECK(!choice.fallbackToDefault);
+}
+
+TEST(camera_selection_lid_closed_default_skips_builtin_without_history)
+{
+    const std::vector<telaviva::CameraInfo> connected = {makeCamera("builtin", false, true), makeCamera("usb-a")};
+    const telaviva::CameraChoice choice = telaviva::chooseCamera(connected, {}, true);
+    CHECK(choice.effective.has_value());
+    if (!choice.effective) {
+        return;
+    }
+    CHECK_EQ(choice.effective->id, std::string("usb-a"));
+    CHECK(choice.fallbackToDefault);
+}
+
+TEST(camera_selection_lid_closed_only_builtin_gives_nullopt)
+{
+    const std::vector<telaviva::CameraInfo> connected = {makeCamera("builtin", false, true)};
+    const telaviva::CameraChoice choice = telaviva::chooseCamera(connected, {}, true);
+    CHECK(!choice.effective.has_value());
+    CHECK(!choice.fallbackToDefault);
+}
+
+TEST(camera_selection_lid_closed_selectable_hides_builtin)
+{
+    const std::vector<telaviva::CameraInfo> connected = {
+        makeCamera("builtin", false, true), makeCamera("ir-front", true), makeCamera("usb-a")};
+    const std::vector<telaviva::CameraInfo> closed = telaviva::selectableCameras(connected, true);
+    CHECK_EQ(closed.size(), std::size_t(1));
+    if (closed.size() != 1) {
+        return;
+    }
+    CHECK_EQ(closed[0].id, std::string("usb-a"));
+
+    // With the lid open the built-in camera is listed again, in order.
+    const std::vector<telaviva::CameraInfo> open = telaviva::selectableCameras(connected, false);
+    CHECK_EQ(open.size(), std::size_t(2));
+    if (open.size() == 2) {
+        CHECK_EQ(open[0].id, std::string("builtin"));
+        CHECK_EQ(open[1].id, std::string("usb-a"));
+    }
+}

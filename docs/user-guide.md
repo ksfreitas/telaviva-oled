@@ -99,7 +99,7 @@ This section applies to macOS and Windows. On macOS, the built-in screen of a Ma
 - The laptop screen is listed in the popup and in **Settings > General** as **MacBook screen** on macOS and **Laptop** on Windows. It has a protection switch, a brightness slider and a **Protection brightness** slider. It has no volume control.
 - The protection switch is on by default. Turn it off to exclude the screen from protection.
 - The brightness slider is locked while protection holds the screen dimmed and while the screen is unavailable. The brightness keys keep their normal macOS or Windows behavior.
-- The screen is listed only while it is available. With the lid closed, it is hidden from the popup and from the Settings protection list, and it reappears when the lid opens.
+- The screen is listed only while it is available and adjustable. With the lid closed, it is hidden from the popup and from the Settings protection list, and it reappears when the lid opens. On Windows, a computer without a built-in panel that the app can adjust does not list it.
 
 ### Protection
 
@@ -204,7 +204,7 @@ On Windows, DirectML is supplied by Windows and is not bundled with the app. If 
 - **Install, uninstall and data locations:** see the [Windows packaging guide](../packaging/windows/README.md). Settings, calibration and logs stay in `%LOCALAPPDATA%\TelaVivaOLED` unless you remove them on uninstall.
 - **SmartScreen:** release builds are not code-signed yet, so Windows may show "Windows protected your PC" the first time you run `TelaViva.exe`. Only continue for a zip you downloaded from the project and checked against its SHA-256.
 - **Acceleration:** see [Inference device](#inference-device). The package ships one ONNX Runtime, the DirectML build, and uses the DirectML that comes with Windows. NPUs are not supported.
-- **Laptop screen protection:** the laptop's built-in screen takes part in protection, in the monitored display choice and in the lid rule for the built-in camera, as on macOS. See [Laptop screen protection](#laptop-screen-protection). The automatic brightness option uses **Change brightness automatically when lighting changes** in the active power plan, for AC and DC, and restores it afterwards. The Windows laptop checks are not yet recorded.
+- **Laptop screen protection:** the laptop's built-in screen takes part in protection, in the monitored display choice and in the lid rule for the built-in camera, as on macOS. See [Laptop screen protection](#laptop-screen-protection). The automatic brightness option uses **Change brightness automatically when lighting changes** in the active power plan, for AC and DC, and restores it afterwards. The laptop panel is set through Windows Management Instrumentation (WMI), which accepts only the panel's supported levels: a requested level lands on the nearest one, and 0% lands on the lowest supported level, which can be above 0%. The Windows laptop checks are not yet recorded, so these features are not verified on Windows hardware.
 
 ## Limits and compatibility
 

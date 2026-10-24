@@ -4,11 +4,15 @@
 **Sources**: [spec.md](spec.md), [architecture.md](architecture.md) ("Windows Handoff" and Decisions 3, 4, 7, 13), [contracts.md](contracts.md), and the macOS implementation as the template.
 **Checklist**: [validation/hardware-checklist.md](validation/hardware-checklist.md)
 
-> **Status: NOT IMPLEMENTED. NOT BUILT. NOT VERIFIED on Windows.**
+> **Status: implemented on Windows in code, with unit tests. NOT verified on Windows hardware.**
 >
-> No Windows source file, string, test or project file has been changed for this feature. Nothing in this document has been compiled or run on Windows, and no Windows hardware row has been run. The shared Rust core already contains the policy (section 1), but it stays inert for Windows until the Windows shell opts in with `protectable`. The owner implements the tasks in section 3 on a Windows 11 x64 machine.
+> The Windows shell implements the tasks in section 3 (T-W1 to T-W9) and the follow-ups in section 7 that are listed below as done. The native Windows tests pass, and the build was verified by the orchestrator. No Windows hardware row has been run; the rows in [validation/hardware-checklist.md](validation/hardware-checklist.md) are all Not run.
 >
-> Follow-up items from the owner's macOS hardware testing (2026-10-20) are in section 7. They are also not implemented.
+> Not implemented:
+> - Section 7.6 (d): wake re-read of a known monitor that was discovered with brightness unsupported.
+> - Section 7.6 (e): in-place rediscovery (a short grace before `monitor_disconnected`).
+> - The adaptive give-up in section 7.5, item 6 (undecided: delete the record and show a notice, or keep blocking).
+> - `primary` is sent only inside `monitor_discovered`, so a change of the Windows primary display applies at the next discovery.
 
 ## 1. What the shared core already provides
 

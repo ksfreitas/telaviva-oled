@@ -16,6 +16,8 @@ public:
     const std::filesystem::path& root() const;
     std::filesystem::path settingsFile() const;
     std::filesystem::path calibrationSessionFile() const;
+    std::filesystem::path autoBrightnessHoldFile() const;
+    std::filesystem::path builtinProtectionSessionFile() const;
     std::filesystem::path inferenceFailuresFile() const;
     std::filesystem::path logFile() const;
 

@@ -15,6 +15,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <vector>
 
 namespace telaviva {
 
@@ -37,9 +38,14 @@ public:
 
     std::optional<double> readPercent() override;
     bool setPercent(double percent) override;
+    // Filled by setPercent from the level list it already reads. Empty until the first write.
+    std::vector<int> supportedLevels() const override;
 
 private:
     std::unique_ptr<WmiPanelWorker> impl_;
+    // Written on the worker thread by setPercent and read by callers, so guarded.
+    mutable std::mutex levelsMutex_;
+    std::vector<int> levels_;  // guarded by levelsMutex_
 };
 
 // Pure policy. Polls the panel every second with a 0.5 s leeway, but only while
@@ -66,6 +72,10 @@ public:
     void onLidChanged(bool open);
     void onDisplayStatusChanged(bool on);
     void onCalibrationChanged(bool calibrating);
+    // Protection needs the level even when follow is off, so polling runs for either.
+    void setProtectionEnabled(bool enabled);
+    // True while the shell holds the panel dimmed. Resubmits the report at once.
+    void setHolding(bool holding);
 
     // True only while follow is enabled and the panel is available. Calibration
     // must be refused otherwise.
@@ -79,10 +89,14 @@ private:
         bool available = false;
         std::optional<int> brightness;
         bool calibrating = false;
+        // The core treats the built-in screen as protectable (see isProtectable in LaptopPanel.cpp).
+        bool protectable = false;
+        bool holding = false;
 
         bool operator==(const Report& other) const
         {
-            return available == other.available && brightness == other.brightness && calibrating == other.calibrating;
+            return available == other.available && brightness == other.brightness && calibrating == other.calibrating &&
+                   protectable == other.protectable && holding == other.holding;
         }
     };
 
@@ -93,6 +107,7 @@ private:
     TimerId reconcileLocked();
     LaptopAvailability evaluateLocked();
     bool monitoringLocked() const;
+    Report reportLocked(bool available, std::optional<int> brightness) const;
     void publishLocked(const Report& report);
     void applyReadLocked(std::optional<double> level);
 
@@ -112,6 +127,8 @@ private:
     int readsInFlight_ = 0;
 
     bool followEnabled_ = false;
+    bool protectionEnabled_ = false;
+    bool holding_ = false;
     bool evaluated_ = false;
     bool calibrating_ = false;
     std::optional<bool> lidOpen_;  // nullopt is treated as open by detectLaptop

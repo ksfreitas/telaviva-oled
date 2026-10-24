@@ -17,6 +17,7 @@
 #include <fstream>
 #include <iterator>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -70,31 +71,80 @@ std::optional<uint32_t> toValue(double number)
     return static_cast<uint32_t>(number);
 }
 
-// Returns false for any shape other than the schema 1 layout, including wrong types.
-bool parseFile(const std::string& text, SavedAdaptiveState& out)
+// Levels are percents: finite and within 0..100.
+bool isPercentValue(double value)
+{
+    return std::isfinite(value) && value >= 0.0 && value <= 100.0;
+}
+
+// A record needs the adaptive part or the monitor part, and every present part must be valid.
+bool validRecord(const CalibrationRecord& record)
+{
+    if (record.adaptiveValid ? !isSchemeGuidText(record.adaptive.schemeGuid) : !record.monitor.has_value()) {
+        return false;
+    }
+    if (record.monitor && (record.monitor->monitorId.empty() || !isPercentValue(record.monitor->percent))) {
+        return false;
+    }
+    return !record.panelLevel || isPercentValue(*record.panelLevel);
+}
+
+// Returns false for any shape other than the schema 1 layouts, including wrong types. A monitor_id
+// without monitor_percent, or the reverse, is corrupt.
+bool parseFile(const std::string& text, CalibrationRecord& out)
 {
     try {
         const json::JsonObject root = json::JsonObject::Parse(winrt::to_hstring(std::string_view(text)));
         if (root.GetNamedNumber(L"schema") != kSchema) {
             return false;
         }
-        const json::JsonObject adaptive = root.GetNamedObject(L"adaptive_brightness");
-        SavedAdaptiveState state;
-        state.schemeGuid = winrt::to_string(adaptive.GetNamedString(L"scheme"));
-        const std::optional<uint32_t> acValue = toValue(adaptive.GetNamedNumber(L"ac"));
-        const std::optional<uint32_t> dcValue = toValue(adaptive.GetNamedNumber(L"dc"));
-        if (!acValue || !dcValue || !isSchemeGuidText(state.schemeGuid)) {
+        CalibrationRecord record;
+        record.adaptiveValid = root.HasKey(L"adaptive_brightness");
+        if (record.adaptiveValid) {
+            const json::JsonObject adaptive = root.GetNamedObject(L"adaptive_brightness");
+            SavedAdaptiveState state;
+            state.schemeGuid = winrt::to_string(adaptive.GetNamedString(L"scheme"));
+            const std::optional<uint32_t> acValue = toValue(adaptive.GetNamedNumber(L"ac"));
+            const std::optional<uint32_t> dcValue = toValue(adaptive.GetNamedNumber(L"dc"));
+            if (!acValue || !dcValue || !isSchemeGuidText(state.schemeGuid)) {
+                return false;
+            }
+            state.acValue = *acValue;
+            state.dcValue = *dcValue;
+            record.adaptive = state;
+        }
+        const bool hasMonitorId = root.HasKey(L"monitor_id");
+        if (hasMonitorId != root.HasKey(L"monitor_percent")) {
             return false;
         }
-        state.acValue = *acValue;
-        state.dcValue = *dcValue;
+        if (hasMonitorId) {
+            SavedMonitorState monitor;
+            monitor.monitorId = winrt::to_string(root.GetNamedString(L"monitor_id"));
+            monitor.percent = root.GetNamedNumber(L"monitor_percent");
+            record.monitor = monitor;
+        }
+        if (root.HasKey(L"panel_level")) {
+            record.panelLevel = root.GetNamedNumber(L"panel_level");
+        }
         // started_at is required for a valid record, but recovery does not use it.
         static_cast<void>(root.GetNamedString(L"started_at"));
-        out = state;
+        if (!validRecord(record)) {
+            return false;
+        }
+        out = record;
         return true;
     } catch (...) {
         return false;
     }
+}
+
+// Shortest form that reads back exactly for percents: whole numbers print without a fraction.
+std::string numberText(double value)
+{
+    std::ostringstream out;
+    out.precision(15);
+    out << value;
+    return out.str();
 }
 
 }  // namespace
@@ -107,15 +157,30 @@ CalibrationSession::CalibrationSession(std::filesystem::path directory)
 
 bool CalibrationSession::begin(const SavedAdaptiveState& saved)
 {
-    if (!isSchemeGuidText(saved.schemeGuid)) {
+    CalibrationRecord record;
+    record.adaptive = saved;
+    return begin(record);
+}
+
+bool CalibrationSession::begin(const CalibrationRecord& record)
+{
+    if (!record.adaptiveValid || !validRecord(record)) {
         return false;
     }
-    SavedAdaptiveState existing;
+    CalibrationRecord existing;
     const Load state = load(existing);
     if (state == Load::Loaded || state == Load::Unreadable) {
         return false;
     }
-    return save(saved);
+    return save(record);
+}
+
+bool CalibrationSession::rewrite(const CalibrationRecord& record)
+{
+    if (!validRecord(record)) {
+        return false;
+    }
+    return save(record);
 }
 
 void CalibrationSession::end()
@@ -125,17 +190,26 @@ void CalibrationSession::end()
 
 std::optional<SavedAdaptiveState> CalibrationSession::pending() const
 {
-    SavedAdaptiveState state;
-    if (load(state) == Load::Loaded) {
-        return state;
+    const std::optional<CalibrationRecord> record = pendingRecord();
+    if (record && record->adaptiveValid) {
+        return record->adaptive;
+    }
+    return std::nullopt;
+}
+
+std::optional<CalibrationRecord> CalibrationSession::pendingRecord() const
+{
+    CalibrationRecord record;
+    if (load(record) == Load::Loaded) {
+        return record;
     }
     return std::nullopt;
 }
 
 bool CalibrationSession::recover(AdaptiveBrightness& adaptive)
 {
-    SavedAdaptiveState state;
-    switch (load(state)) {
+    CalibrationRecord record;
+    switch (load(record)) {
     case Load::Absent:
     case Load::Corrupt:
         // A corrupt file was just quarantined, so there is nothing to restore.
@@ -145,11 +219,23 @@ bool CalibrationSession::recover(AdaptiveBrightness& adaptive)
     case Load::Loaded:
         break;
     }
+    if (!record.adaptiveValid) {
+        // Monitor-only: no adaptive values are left, and the monitor part stays until the monitor is back.
+        return true;
+    }
     // Keep the record unless the restore succeeded, so the next launch retries it.
-    if (!adaptive.restore(state)) {
+    if (!adaptive.restore(record.adaptive)) {
         return false;
     }
-    return removeFile();
+    if (!record.monitor) {
+        return removeFile();
+    }
+    // The adaptive values are back, so the record keeps only the monitor part. A later launch must not
+    // restore the old values over a later change. The panel level is restored by the caller and is dropped.
+    CalibrationRecord monitorOnly;
+    monitorOnly.adaptiveValid = false;
+    monitorOnly.monitor = record.monitor;
+    return save(monitorOnly);
 }
 
 std::filesystem::path CalibrationSession::file() const
@@ -157,7 +243,7 @@ std::filesystem::path CalibrationSession::file() const
     return file_;
 }
 
-CalibrationSession::Load CalibrationSession::load(SavedAdaptiveState& out) const
+CalibrationSession::Load CalibrationSession::load(CalibrationRecord& out) const
 {
     std::error_code ec;
     const bool present = std::filesystem::exists(file_, ec);
@@ -181,7 +267,7 @@ CalibrationSession::Load CalibrationSession::load(SavedAdaptiveState& out) const
     } catch (...) {
         return Load::Unreadable;
     }
-    SavedAdaptiveState parsed;
+    CalibrationRecord parsed;
     if (parseFile(text, parsed)) {
         out = parsed;
         return Load::Loaded;
@@ -190,11 +276,23 @@ CalibrationSession::Load CalibrationSession::load(SavedAdaptiveState& out) const
     return Load::Corrupt;
 }
 
-bool CalibrationSession::save(const SavedAdaptiveState& state) const
+bool CalibrationSession::save(const CalibrationRecord& record) const
 {
-    const std::string text = "{\"schema\":1,\"adaptive_brightness\":{\"scheme\":" + jsonQuote(state.schemeGuid) +
-                             ",\"ac\":" + std::to_string(state.acValue) + ",\"dc\":" + std::to_string(state.dcValue) +
-                             "},\"started_at\":" + jsonQuote(utcTimestampNow()) + "}";
+    // Adaptive-only records keep the schema 1 text they always had. The monitor and panel parts are added when present.
+    std::string text = "{\"schema\":1";
+    if (record.adaptiveValid) {
+        text += ",\"adaptive_brightness\":{\"scheme\":" + jsonQuote(record.adaptive.schemeGuid) +
+                ",\"ac\":" + std::to_string(record.adaptive.acValue) +
+                ",\"dc\":" + std::to_string(record.adaptive.dcValue) + "}";
+    }
+    if (record.monitor) {
+        text += ",\"monitor_id\":" + jsonQuote(record.monitor->monitorId) +
+                ",\"monitor_percent\":" + numberText(record.monitor->percent);
+    }
+    if (record.panelLevel) {
+        text += ",\"panel_level\":" + numberText(*record.panelLevel);
+    }
+    text += ",\"started_at\":" + jsonQuote(utcTimestampNow()) + "}";
     try {
         std::error_code ec;
         static_cast<void>(std::filesystem::create_directories(file_.parent_path(), ec));

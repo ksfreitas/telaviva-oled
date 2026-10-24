@@ -129,6 +129,7 @@ std::wstring queryGdiName(const DISPLAYCONFIG_PATH_SOURCE_INFO& source)
 struct MonitorHandle {
     HMONITOR handle;
     std::wstring deviceName;
+    bool primary = false;
 };
 
 BOOL CALLBACK collectMonitor(HMONITOR monitor, HDC, LPRECT, LPARAM data)
@@ -139,7 +140,8 @@ BOOL CALLBACK collectMonitor(HMONITOR monitor, HDC, LPRECT, LPARAM data)
         MONITORINFOEXW info{};
         info.cbSize = static_cast<DWORD>(sizeof(info));
         if (GetMonitorInfoW(monitor, &info)) {
-            out->push_back(MonitorHandle{monitor, std::wstring(info.szDevice)});
+            const bool primary = (info.dwFlags & MONITORINFOF_PRIMARY) != 0;
+            out->push_back(MonitorHandle{monitor, std::wstring(info.szDevice), primary});
         }
         return TRUE;
     } catch (...) {
@@ -166,6 +168,20 @@ uintptr_t findMonitor(const std::vector<MonitorHandle>& monitors, const std::wst
         }
     }
     return 0;
+}
+
+// Same GDI name match as findMonitor; false when no monitor matches.
+bool isPrimaryMonitor(const std::vector<MonitorHandle>& monitors, const std::wstring& gdiName)
+{
+    if (gdiName.empty()) {
+        return false;
+    }
+    for (const MonitorHandle& monitor : monitors) {
+        if (_wcsicmp(monitor.deviceName.c_str(), gdiName.c_str()) == 0) {
+            return monitor.primary;
+        }
+    }
+    return false;
 }
 
 // The registry EDID is the only source of the monitor's own bytes; the
@@ -272,6 +288,7 @@ void gatherEntries(std::vector<CatalogEntry>& entries)
                 existing.active = true;
                 existing.gdiDeviceName = gdiName;
                 existing.hmonitor = findMonitor(monitors, gdiName);
+                existing.primary = isPrimaryMonitor(monitors, gdiName);
             }
             continue;
         }
@@ -280,6 +297,7 @@ void gatherEntries(std::vector<CatalogEntry>& entries)
         entry.connectionPath = toUtf8(devicePath);
         entry.gdiDeviceName = gdiName;
         entry.hmonitor = findMonitor(monitors, gdiName);
+        entry.primary = isPrimaryMonitor(monitors, gdiName);
         entry.edid = readEdidFromRegistry(devicePath);
         entry.isInternalPanel = internal;
         entry.active = active;

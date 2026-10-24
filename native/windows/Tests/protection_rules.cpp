@@ -3,7 +3,7 @@
 
 #include "../Platform/ProtectionRules.h"
 
-#include <optional>
+#include <limits>
 #include <set>
 #include <string>
 #include <vector>
@@ -12,9 +12,9 @@ namespace {
 
 using telaviva::clampProtectionBrightness;
 using telaviva::isMonitorProtected;
-using telaviva::protectionBrightnessCap;
 using telaviva::protectionSliderEnabled;
 using telaviva::protectionSliderMaximum;
+using telaviva::protectionSliderMinimum;
 using telaviva::showProtectionBrightnessRow;
 using telaviva::showProtectionToggle;
 using telaviva::withMonitorProtection;
@@ -36,11 +36,16 @@ TEST(protectionRules_toggleVisibilityMatrix)
 
 TEST(protectionRules_brightnessRowVisibilityMatrix)
 {
-    // Protected and screensaver on is the only combination that shows the row.
-    CHECK(!showProtectionBrightnessRow(false, false));
-    CHECK(!showProtectionBrightnessRow(false, true));
-    CHECK(!showProtectionBrightnessRow(true, false));
-    CHECK(showProtectionBrightnessRow(true, true));
+    // The row shows only for a protected monitor while presence or screensaver protection is on.
+    // Arguments are (presence, screensaver, protected).
+    CHECK(!showProtectionBrightnessRow(false, false, false));
+    CHECK(!showProtectionBrightnessRow(false, false, true));
+    CHECK(!showProtectionBrightnessRow(true, false, false));
+    CHECK(showProtectionBrightnessRow(true, false, true));
+    CHECK(!showProtectionBrightnessRow(false, true, false));
+    CHECK(showProtectionBrightnessRow(false, true, true));
+    CHECK(!showProtectionBrightnessRow(true, true, false));
+    CHECK(showProtectionBrightnessRow(true, true, true));
 }
 
 TEST(protectionRules_untouchedMonitorIsProtected)
@@ -53,74 +58,68 @@ TEST(protectionRules_untouchedMonitorIsProtected)
     CHECK(isMonitorProtected(disabled, "win-b"));
 }
 
-TEST(protectionRules_capIsConfirmedWithoutDraft)
+TEST(protectionRules_sliderRangeIsFixed)
 {
-    CHECK(protectionBrightnessCap(60.0, std::nullopt) == 60.0);
-    CHECK(protectionBrightnessCap(120.0, std::nullopt) == 100.0);
-    CHECK(protectionBrightnessCap(-5.0, std::nullopt) == 0.0);
+    CHECK(protectionSliderMinimum() == 1.0);
+    CHECK(protectionSliderMaximum() == 50.0);
 }
 
-TEST(protectionRules_capIsLowerOfConfirmedAndDraft)
+TEST(protectionRules_sliderEnabledOnlyWithBrightnessSupport)
 {
-    CHECK(protectionBrightnessCap(60.0, 40.0) == 40.0);
-    CHECK(protectionBrightnessCap(40.0, 60.0) == 40.0);
-    CHECK(protectionBrightnessCap(60.0, -10.0) == 0.0);
+    CHECK(protectionSliderEnabled(true));
+    CHECK(!protectionSliderEnabled(false));
 }
 
-TEST(protectionRules_capIsZeroWithoutConfirmedValue)
+TEST(protectionRules_clampBelowMinimumGivesMinimum)
 {
-    CHECK(protectionBrightnessCap(std::nullopt, std::nullopt) == 0.0);
-    CHECK(protectionBrightnessCap(std::nullopt, 50.0) == 0.0);
-}
-
-TEST(protectionRules_zeroCapDisablesSlider)
-{
-    CHECK(!protectionSliderEnabled(0.0));
-    CHECK(protectionSliderEnabled(50.0));
-    CHECK(protectionSliderMaximum(0.0) == 1.0);
-    CHECK(protectionSliderMaximum(30.0) == 30.0);
-}
-
-TEST(protectionRules_clampOnShowLowersStoredValue)
-{
-    const auto clamped = clampProtectionBrightness(80.0, 40.0);
-    CHECK(clamped.value == 40.0);
+    const auto clamped = clampProtectionBrightness(0.0);
+    CHECK(clamped.value == 1.0);
     CHECK(clamped.changed);
+
+    const auto negative = clampProtectionBrightness(-5.0);
+    CHECK(negative.value == 1.0);
+    CHECK(negative.changed);
 }
 
-TEST(protectionRules_clampOnShowRaisesNothing)
+TEST(protectionRules_clampAboveMaximumGivesMaximum)
 {
-    const auto kept = clampProtectionBrightness(30.0, 40.0);
+    const auto clamped = clampProtectionBrightness(80.0);
+    CHECK(clamped.value == 50.0);
+    CHECK(clamped.changed);
+
+    const auto edge = clampProtectionBrightness(100.0);
+    CHECK(edge.value == 50.0);
+    CHECK(edge.changed);
+}
+
+TEST(protectionRules_clampInRangeLeavesValue)
+{
+    const auto low = clampProtectionBrightness(1.0);
+    CHECK(low.value == 1.0);
+    CHECK(!low.changed);
+
+    const auto kept = clampProtectionBrightness(30.0);
     CHECK(kept.value == 30.0);
     CHECK(!kept.changed);
+
+    const auto high = clampProtectionBrightness(50.0);
+    CHECK(high.value == 50.0);
+    CHECK(!high.changed);
 }
 
-TEST(protectionRules_clampToZeroCapReportsChange)
+TEST(protectionRules_clampNonFiniteGivesMinimum)
 {
-    const auto clamped = clampProtectionBrightness(20.0, 0.0);
-    CHECK(clamped.value == 0.0);
-    CHECK(clamped.changed);
+    const auto nan = clampProtectionBrightness(std::numeric_limits<double>::quiet_NaN());
+    CHECK(nan.value == 1.0);
+    CHECK(nan.changed);
 
-    const auto alreadyZero = clampProtectionBrightness(0.0, 0.0);
-    CHECK(alreadyZero.value == 0.0);
-    CHECK(!alreadyZero.changed);
-}
+    const auto inf = clampProtectionBrightness(std::numeric_limits<double>::infinity());
+    CHECK(inf.value == 1.0);
+    CHECK(inf.changed);
 
-TEST(protectionRules_brightnessDecreaseClampsStoredValue)
-{
-    // Confirmed brightness drops from 60 to 40 while the stored protection brightness is 50.
-    const double cap = protectionBrightnessCap(40.0, std::nullopt);
-    const auto clamped = clampProtectionBrightness(50.0, cap);
-    CHECK(clamped.value == 40.0);
-    CHECK(clamped.changed);
-}
-
-TEST(protectionRules_brightnessChangeWithinCapLeavesValue)
-{
-    const double cap = protectionBrightnessCap(60.0, std::nullopt);
-    const auto kept = clampProtectionBrightness(50.0, cap);
-    CHECK(kept.value == 50.0);
-    CHECK(!kept.changed);
+    const auto negInf = clampProtectionBrightness(-std::numeric_limits<double>::infinity());
+    CHECK(negInf.value == 1.0);
+    CHECK(negInf.changed);
 }
 
 TEST(protectionRules_disabledSetAddsAndRemovesMonitor)

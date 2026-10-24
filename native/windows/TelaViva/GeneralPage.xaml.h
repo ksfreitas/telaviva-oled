@@ -5,6 +5,7 @@
 #include "GeneralPage.g.h"
 #include "pch.h"
 #include "Host/SettingsHost.h"
+#include "Platform/MonitoredDisplayRules.h"
 #include "Platform/SettingsModel.h"
 
 #include <cstdint>
@@ -48,7 +49,14 @@ namespace winrt::TelaViva::implementation
         void fillCameraBox(const std::optional<std::string>& selected);
         void updateCameraStatus(const telaviva::Snapshot& snapshot);
         void buildMonitorRows(const telaviva::Snapshot& snapshot);
+        // Adds one protection brightness row, named after its display; the caller looks up the stored value.
+        void addTargetRow(const std::string& id, const winrt::hstring& name, double stored, bool brightnessSupported);
         void updateTargets(const telaviva::Snapshot& snapshot);
+        // Rebuilds the monitored display picker when its choices change, and keeps its selection and the threshold in step.
+        void fillMonitoredBox(const telaviva::Snapshot& snapshot);
+        void syncMonitoredDisplay(const telaviva::Snapshot& snapshot);
+        // Shows the presence threshold of the monitored display, or the global value when none resolves.
+        void refreshThreshold(const telaviva::Snapshot& snapshot);
 
         telaviva::host::ISettingsHost* host_ = nullptr;
         std::function<void()> onLanguageChanged_;
@@ -67,9 +75,16 @@ namespace winrt::TelaViva::implementation
         // Selectable cameras in the picker, in the same order as its items after the default.
         std::vector<telaviva::CameraInfo> cameras_;
         std::vector<TargetRow> targets_;
+        // Choices of the monitored display picker, in the same order as its items.
+        std::vector<telaviva::MonitoredDisplayItem> monitoredItems_;
+        // Picker choices the picker was built for: built-in visibility and each monitor's id, name and usability.
+        std::string monitoredPickerSignature_;
+        // Display whose presence threshold the box shows; empty for the global value.
+        std::string thresholdTarget_;
 
         winrt::Microsoft::UI::Xaml::Controls::ComboBox languageBox_{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::ComboBox cameraBox_{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::ComboBox monitoredBox_{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::NumberBox thresholdBox_{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::StackPanel monitorsPanel_{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::StackPanel targetsPanel_{ nullptr };

@@ -176,6 +176,8 @@ const std::set<std::string> kSettingsKeys = {
     "ambient_follow_enabled",
     "protection_disabled",
     "inference_device",
+    "builtin_auto_brightness_off_on_protection",
+    "presence_min_brightness_by_display",
 };
 
 }  // namespace
@@ -189,12 +191,14 @@ TEST(settings_payload_has_exactly_the_core_keys)
     CHECK_EQ(root.size(), std::size_t{2});
 
     const std::vector<std::string> keys = keysAtDepth(json, 2);
-    CHECK_EQ(keys.size(), std::size_t{16});
+    CHECK_EQ(keys.size(), std::size_t{18});
     const std::set<std::string> actual(keys.begin(), keys.end());
     CHECK(actual == kSettingsKeys);
 
     // The core rejects these keys in update_settings, so they must never appear.
     CHECK(!contains(json, R"("selected_camera_id")"));
+    CHECK(!contains(json, R"("monitored_display_id")"));
+    CHECK(!contains(json, R"("monitored_display_history")"));
     CHECK(!contains(json, R"("camera_history")"));
     CHECK(!contains(json, R"("ambient_curves")"));
     CHECK(!contains(json, R"("schema_version")"));
@@ -259,7 +263,9 @@ TEST(settings_payload_clamps_min_brightness_both_ends)
     telaviva::SettingsDraft draft;
 
     draft.presenceMinBrightnessPercent = -5.0;
-    CHECK_EQ(scalarFor(draft, "presence_min_brightness_percent"), std::string("10"));
+    CHECK_EQ(scalarFor(draft, "presence_min_brightness_percent"), std::string("0"));
+    draft.presenceMinBrightnessPercent = 0.0;
+    CHECK_EQ(scalarFor(draft, "presence_min_brightness_percent"), std::string("0"));
     draft.presenceMinBrightnessPercent = 100.0;
     CHECK_EQ(scalarFor(draft, "presence_min_brightness_percent"), std::string("90"));
     draft.presenceMinBrightnessPercent = std::numeric_limits<double>::quiet_NaN();
@@ -408,6 +414,35 @@ TEST(settings_payload_camera_null_and_length_limits)
                    R"("selected_camera_id":")" + longest + R"("})"));
 }
 
+TEST(settings_payload_monitored_display_escapes_quotes_and_backslashes)
+{
+    const std::string id = std::string("mon\"itor\\one");
+    const std::string json = telaviva::buildSelectMonitoredDisplayPayload(std::optional<std::string>{id});
+    // Kept out of the macro: MSVC mis-stringizes backslashes in raw literals inside CHECK_EQ.
+    const std::string expected = R"({"type":"update_settings","settings":{"monitored_display_id":"mon\"itor\\one"}})";
+    CHECK_EQ(compact(json), expected);
+    CHECK_EQ(keysAtDepth(json, 2).size(), std::size_t{1});
+}
+
+TEST(settings_payload_monitored_display_null_length_and_builtin)
+{
+    // nullopt is Automatic, and the core reads it as null.
+    CHECK_EQ(compact(telaviva::buildSelectMonitoredDisplayPayload(std::nullopt)),
+             std::string(R"({"type":"update_settings","settings":{"monitored_display_id":null}})"));
+    CHECK_EQ(compact(telaviva::buildSelectMonitoredDisplayPayload(std::optional<std::string>{""})),
+             std::string(R"({"type":"update_settings","settings":{"monitored_display_id":null}})"));
+    CHECK_EQ(compact(telaviva::buildSelectMonitoredDisplayPayload(std::optional<std::string>{std::string(513, 'x')})),
+             std::string(R"({"type":"update_settings","settings":{"monitored_display_id":null}})"));
+
+    const std::string longest(512, 'x');
+    CHECK(contains(telaviva::buildSelectMonitoredDisplayPayload(std::optional<std::string>{longest}),
+                   R"("monitored_display_id":")" + longest + R"("})"));
+
+    // The reserved built-in id is a valid choice.
+    CHECK_EQ(compact(telaviva::buildSelectMonitoredDisplayPayload(std::optional<std::string>{"builtin"})),
+             std::string(R"({"type":"update_settings","settings":{"monitored_display_id":"builtin"}})"));
+}
+
 TEST(settings_payload_round_trip_basic_fixture_gives_defaults)
 {
     const telaviva::Snapshot s = parseFixture("snapshot-basic.json");
@@ -444,7 +479,9 @@ TEST(settings_payload_round_trip_non_default_values)
                          R"("hardware_keys_enabled":true,"brightness_key_step":3,"volume_key_step":7,)"
                          R"("inference_device":"auto",)"
                          R"("screensaver_targets":{"win-a":25},"ambient_follow_enabled":true,)"
-                         R"("protection_disabled":["win-b"]}})"));
+                         R"("protection_disabled":["win-b"],)"
+                         R"("builtin_auto_brightness_off_on_protection":false,)"
+                         R"("presence_min_brightness_by_display":{}}})"));
 }
 
 TEST(settings_payload_always_on_camera_missing_key_defaults_to_true)
@@ -453,4 +490,60 @@ TEST(settings_payload_always_on_camera_missing_key_defaults_to_true)
     const telaviva::Snapshot s = telaviva::parseSnapshot(R"({"settings":{"locale":"auto"}})");
     const telaviva::SettingsDraft draft = telaviva::draftFromSnapshotSettings(s.settings);
     CHECK(draft.alwaysOnCamera);
+}
+
+TEST(settings_payload_builtin_option_defaults_to_false)
+{
+    const telaviva::SettingsDraft draft{};
+    CHECK(!draft.builtinAutoBrightnessOffOnProtection);
+    CHECK(draft.presenceMinBrightnessByDisplay.empty());
+    CHECK_EQ(scalarFor(draft, "builtin_auto_brightness_off_on_protection"), std::string("false"));
+    CHECK(contains(telaviva::buildSettingsPayload(draft), R"("presence_min_brightness_by_display":{})"));
+}
+
+TEST(settings_payload_builtin_option_true_survives_draft_from_snapshot)
+{
+    // Without the copy, any other save would write false and silently turn the option off.
+    const telaviva::Snapshot s = telaviva::parseSnapshot(
+        R"({"settings":{"builtin_auto_brightness_off_on_protection":true}})");
+    const telaviva::SettingsDraft draft = telaviva::draftFromSnapshotSettings(s.settings);
+    CHECK(draft.builtinAutoBrightnessOffOnProtection);
+    CHECK_EQ(scalarFor(draft, "builtin_auto_brightness_off_on_protection"), std::string("true"));
+}
+
+TEST(settings_payload_presence_by_display_copied_from_snapshot_whole)
+{
+    const telaviva::Snapshot s = telaviva::parseSnapshot(
+        R"({"settings":{"presence_min_brightness_by_display":{"win-a":35,"win-gone":60}}})");
+    const telaviva::SettingsDraft draft = telaviva::draftFromSnapshotSettings(s.settings);
+    CHECK_EQ(draft.presenceMinBrightnessByDisplay.size(), std::size_t{2});
+    CHECK(contains(telaviva::buildSettingsPayload(draft),
+                   R"("presence_min_brightness_by_display":{"win-a":35,"win-gone":60})"));
+}
+
+TEST(settings_payload_presence_by_display_clamps_to_zero_ninety_and_keeps_disconnected)
+{
+    telaviva::SettingsDraft draft;
+    draft.presenceMinBrightnessByDisplay = {
+        {"win-a", 35.0},
+        // Disconnected ids are kept, so a returning display gets its threshold back.
+        {"win-gone", 60.0},
+        {"builtin", 95.0},
+        {"win-low", -5.0},
+        {"win-nan", std::numeric_limits<double>::quiet_NaN()},
+        {"", 40.0},
+    };
+    const std::string json = telaviva::buildSettingsPayload(draft);
+    // std::map keeps the keys sorted. NaN takes the global default (20), and the empty id is dropped.
+    CHECK(contains(json, R"("presence_min_brightness_by_display":)"
+                         R"({"builtin":90,"win-a":35,"win-gone":60,"win-low":0,"win-nan":20})"));
+    CHECK(!contains(json, R"("":40)"));
+}
+
+TEST(settings_payload_presence_by_display_boundaries_are_kept)
+{
+    telaviva::SettingsDraft draft;
+    draft.presenceMinBrightnessByDisplay = {{"win-zero", 0.0}, {"win-max", 90.0}};
+    const std::string json = telaviva::buildSettingsPayload(draft);
+    CHECK(contains(json, R"("presence_min_brightness_by_display":{"win-max":90,"win-zero":0})"));
 }

@@ -327,6 +327,23 @@ std::set<std::string> stringSetField(const Object& object, std::string_view key)
     return result;
 }
 
+// Keeps the order the core sent; non-string values are skipped.
+std::vector<std::string> stringVectorField(const Object& object, std::string_view key)
+{
+    std::vector<std::string> result;
+    const std::optional<json::JsonArray> values = arrayField(object, key);
+    if (!values) {
+        return result;
+    }
+    for (uint32_t i = 0; i < values->Size(); ++i) {
+        const json::IJsonValue value = values->GetAt(i);
+        if (value && value.ValueType() == json::JsonValueType::String) {
+            result.push_back(winrt::to_string(value.GetString()));
+        }
+    }
+    return result;
+}
+
 // A monitor whose value is not an object with a points array is dropped. Inside a
 // kept curve, a point missing a numeric monitor or builtin is dropped alone.
 AmbientCurvesSnapshot ambientCurvesField(const Object& object, std::string_view key)
@@ -600,6 +617,7 @@ std::string buildMonitorDiscovered(const MonitorInfo& monitor)
         .addString("name", monitor.name)
         .addString("identity_status", monitor.identityStable ? "stable" : "ambiguous")
         .addString("connection_path", monitor.connectionPath)
+        .addBool("primary", monitor.primary)
         .addRaw("brightness", channelJson(monitor.brightness))
         .addRaw("volume", channelJson(monitor.volume));
 
@@ -668,13 +686,16 @@ std::string buildCameraStatus(const std::string& status, std::optional<uint64_t>
     return message.finish();
 }
 
-std::string buildBuiltinDisplay(bool available, std::optional<double> brightness, bool calibrating)
+std::string buildBuiltinDisplay(bool available, std::optional<double> brightness, bool calibrating, bool protectable,
+                                bool holding)
 {
     ObjectWriter message;
     message.addString("type", "builtin_display")
         .addBool("available", available)
         .addOptionalNumber("brightness", brightness)
-        .addBool("calibrating", calibrating);
+        .addBool("calibrating", calibrating)
+        .addBool("protectable", protectable)
+        .addBool("holding", holding);
     return message.finish();
 }
 
@@ -881,6 +902,27 @@ Snapshot parseSnapshot(const std::string& text)
         snapshot.settings.protection_disabled = stringSetField(*settings, "protection_disabled");
         snapshot.settings.inference_device = stringOr(*settings, "inference_device", "auto");
         snapshot.settings.ambientCurves = ambientCurvesField(*settings, "ambient_curves");
+        snapshot.settings.builtin_auto_brightness_off_on_protection =
+            boolOr(*settings, "builtin_auto_brightness_off_on_protection", false);
+        snapshot.settings.monitored_display_id = stringField(*settings, "monitored_display_id");
+        snapshot.settings.camera_history = stringVectorField(*settings, "camera_history");
+        snapshot.settings.presence_min_brightness_by_display =
+            numberMapField(*settings, "presence_min_brightness_by_display");
+    }
+
+    if (const auto monitored = objectField(root, "monitored_display")) {
+        snapshot.monitoredDisplay.id = stringField(*monitored, "id");
+        snapshot.monitoredDisplay.automatic = boolOr(*monitored, "automatic", false);
+    }
+
+    if (const auto builtin = objectField(root, "builtin_protection")) {
+        snapshot.builtinProtection.protectable = boolOr(*builtin, "protectable", false);
+        snapshot.builtinProtection.protected_ = boolOr(*builtin, "protected", false);
+        snapshot.builtinProtection.available = boolOr(*builtin, "available", false);
+        snapshot.builtinProtection.reasons = stringVectorField(*builtin, "reasons");
+        snapshot.builtinProtection.targetPercent = numberField(*builtin, "target_percent");
+        snapshot.builtinProtection.holdAutoBrightness = boolOr(*builtin, "hold_auto_brightness", false);
+        snapshot.builtinProtection.holding = boolOr(*builtin, "holding", false);
     }
 
     if (const auto monitors = arrayField(root, "monitors")) {

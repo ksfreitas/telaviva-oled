@@ -214,6 +214,7 @@ struct DdcController::Impl {
             info.name = entry.identity.name;
             info.identityStable = entry.identity.stable;
             info.connectionPath = entry.connectionPath;
+            info.primary = entry.primary;
 
             // An ambiguous identity may address the wrong panel, so it is never read or opened.
             if (!record.ambiguous) {

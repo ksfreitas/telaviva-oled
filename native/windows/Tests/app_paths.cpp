@@ -34,6 +34,8 @@ TEST(app_paths_files_are_under_root_with_expected_names)
     CHECK(paths.settingsFile() == root / "settings.json");
     CHECK(paths.calibrationSessionFile() == root / "calibration-session.json");
     CHECK(paths.inferenceFailuresFile() == root / "inference-failures.json");
+    CHECK(paths.autoBrightnessHoldFile() == root / "auto-brightness-hold.json");
+    CHECK(paths.builtinProtectionSessionFile() == root / "builtin-protection-session.json");
     CHECK(paths.logFile() == root / "telaviva.log");
 }
 

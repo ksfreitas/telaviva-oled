@@ -155,7 +155,11 @@ namespace winrt::TelaViva::implementation
             updateValueTip(BrightnessSlider(), value);
             setValueLabel(BrightnessValue(), value);
             if (!updating_ && actions_ != nullptr) {
-                actions_->setBrightness(id_, value);
+                if (builtin_) {
+                    actions_->setBuiltinBrightness(value);
+                } else {
+                    actions_->setBrightness(id_, value);
+                }
             }
         });
         VolumeSlider().ValueChanged([this](auto const&, auto const& args) {
@@ -192,8 +196,14 @@ namespace winrt::TelaViva::implementation
 
         id_ = state.id;
         name_ = state.name;
+        builtin_ = state.isBuiltin;
         NameText().Text(winrt::hstring{ name_ });
         StatusText().Text(winrt::hstring{ state.status });
+
+        // The built-in screen has no volume, so its volume row is left out.
+        VolumeRow().Visibility(state.hideVolume ? xaml::Visibility::Collapsed : xaml::Visibility::Visible);
+        NoticeText().Text(winrt::hstring{ state.notice });
+        NoticeText().Visibility(state.notice.empty() ? xaml::Visibility::Collapsed : xaml::Visibility::Visible);
 
         // A followed monitor is driven by the Laptop panel, so the brightness row gives way to a caption.
         BrightnessRow().Visibility(state.followed ? xaml::Visibility::Collapsed : xaml::Visibility::Visible);
@@ -213,6 +223,9 @@ namespace winrt::TelaViva::implementation
             volumePointer_ || volumeKey_ || holdOff);
 
         ProtectionToggleRow().Visibility(state.protectionToggleVisible ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
+        // The built-in screen explains the toggle with its own help text; monitors keep the generic one.
+        xc::ToolTipService::SetToolTip(ProtectionToggle(), winrt::box_value(winrt::hstring{
+            telaviva::host::Str(state.isBuiltin ? "builtin.protection.toggle.help" : "protection.monitor.toggle") }));
         ProtectionToggle().IsOn(state.protectionOn);
         xaml::Automation::AutomationProperties::SetName(ProtectionToggle(),
             winrt::hstring{ telaviva::host::Str("protection.monitor.toggle") + L", " + name_ });
@@ -222,14 +235,14 @@ namespace winrt::TelaViva::implementation
         }
     }
 
-    // Sets the protection slider from the stored target, clamped into 0..cap. The clamped value is
-    // saved only when the clamp moved it and the user is not already moving the slider.
+    // Sets the protection slider from the stored target, clamped into 1..50. The clamped value is
+    // saved only when the clamp moved it, the monitor has brightness, and the user is not already moving the slider.
     void MonitorCard::applyProtectionSlider(const telaviva::host::MonitorCardState& state, const std::wstring& accessibleName)
     {
-        const double cap = state.protectionCap;
-        ProtectionSlider().Maximum(telaviva::protectionSliderMaximum(cap));
-        ProtectionSlider().IsEnabled(telaviva::protectionSliderEnabled(cap));
-        const telaviva::ProtectionClamp clamp = telaviva::clampProtectionBrightness(state.protectionValue, cap);
+        ProtectionSlider().Minimum(telaviva::protectionSliderMinimum());
+        ProtectionSlider().Maximum(telaviva::protectionSliderMaximum());
+        ProtectionSlider().IsEnabled(telaviva::protectionSliderEnabled(state.protectionBrightnessSupported));
+        const telaviva::ProtectionClamp clamp = telaviva::clampProtectionBrightness(state.protectionValue);
         // A stale state must not save a clamped value right after the release either.
         const bool busy = protectionPointer_ || protectionKey_ || withinReleaseHoldOff(lastReleaseTick_);
         if (!busy) {
@@ -239,7 +252,7 @@ namespace winrt::TelaViva::implementation
         updateValueTip(ProtectionSlider(), ProtectionSlider().Value());
         setValueLabel(ProtectionValue(), ProtectionSlider().Value());
 
-        if (clamp.changed && state.protectionCapKnown && !busy && actions_ != nullptr) {
+        if (clamp.changed && state.protectionBrightnessSupported && !busy && actions_ != nullptr) {
             actions_->setProtectionBrightness(id_, clamp.value);
         }
     }
@@ -257,16 +270,20 @@ namespace winrt::TelaViva::implementation
         bit(VolumeFailed().Visibility() == xaml::Visibility::Visible);
         bit(BrightnessReason().Visibility() == xaml::Visibility::Visible);
         bit(VolumeReason().Visibility() == xaml::Visibility::Visible);
+        bit(VolumeRow().Visibility() == xaml::Visibility::Visible);
+        bit(NoticeText().Visibility() == xaml::Visibility::Visible);
 
         // Wrapping depends on the text, so the texts that can wrap are folded in as well.
         const winrt::hstring name = NameText().Text();
         const winrt::hstring status = StatusText().Text();
         const winrt::hstring brightnessReason = BrightnessReason().Text();
         const winrt::hstring volumeReason = VolumeReason().Text();
+        const winrt::hstring notice = NoticeText().Text();
         const std::hash<std::wstring_view> hash;
         size_t key = bits;
         for (const std::wstring_view text : { std::wstring_view{ name }, std::wstring_view{ status },
-                 std::wstring_view{ brightnessReason }, std::wstring_view{ volumeReason } }) {
+                 std::wstring_view{ brightnessReason }, std::wstring_view{ volumeReason },
+                 std::wstring_view{ notice } }) {
             key = key * 31 + hash(text);
         }
         return key;

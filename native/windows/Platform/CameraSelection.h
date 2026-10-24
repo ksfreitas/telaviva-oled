@@ -63,10 +63,14 @@ struct CameraChoice {
 };
 
 // Infrared cameras are hidden until they are validated with the detector (Q8). Order is preserved.
-std::vector<CameraInfo> selectableCameras(const std::vector<CameraInfo>& connected);
+// While lidClosed is true, built-in cameras are hidden too (FR-020). The remembered choice is not changed.
+std::vector<CameraInfo> selectableCameras(const std::vector<CameraInfo>& connected, bool lidClosed = false);
 
 // history is ordered most recent first. The default is used only when no history entry is selectable.
-CameraChoice chooseCamera(const std::vector<CameraInfo>& connected, const std::vector<std::string>& history);
+// While lidClosed is true, built-in cameras are skipped in both the history and the default (FR-020).
+// When nothing else is selectable, effective is empty.
+CameraChoice chooseCamera(const std::vector<CameraInfo>& connected, const std::vector<std::string>& history,
+                          bool lidClosed = false);
 
 // Value for the core camera lifecycle camera_id: history entries joined by "\n", or the selected id
 // alone when the history is empty, or an empty string when neither exists.

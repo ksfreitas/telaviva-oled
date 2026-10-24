@@ -24,6 +24,8 @@ struct MonitorInfo {
     std::string name;
     bool identityStable = false;
     std::string connectionPath;
+    // True for the display Windows marks as primary (MONITORINFOF_PRIMARY).
+    bool primary = false;
     Channel brightness;
     Channel volume;
 };
@@ -58,6 +60,12 @@ struct SettingsSnapshot {
     // Inference device selector: auto, cpu, ane, gpu or gpu:vvvv:dddd:n.
     std::string inference_device = "auto";
     AmbientCurvesSnapshot ambientCurves;
+    bool builtin_auto_brightness_off_on_protection = false;
+    std::optional<std::string> monitored_display_id;
+    // Read-only: the core owns the history and rejects writes to it.
+    std::vector<std::string> camera_history;
+    // Keyed by display id (a monitor id or "builtin"), as screensaver_targets is.
+    std::map<std::string, double> presence_min_brightness_by_display;
 };
 
 struct ChannelSnapshot {
@@ -102,6 +110,23 @@ struct AmbientSnapshot {
     std::optional<double> builtinPercent;
 };
 
+// The snapshot object builtin_protection. Defaults are the inert state for a shell that never reports protectable.
+struct BuiltinProtectionSnapshot {
+    bool protectable = false;
+    bool protected_ = false;
+    bool available = false;
+    std::vector<std::string> reasons;
+    std::optional<double> targetPercent;
+    bool holdAutoBrightness = false;
+    bool holding = false;
+};
+
+// The snapshot object monitored_display: the resolved display, and whether the history is empty.
+struct MonitoredDisplaySnapshot {
+    std::optional<std::string> id;
+    bool automatic = false;
+};
+
 struct CameraSnapshot {
     std::string mode;
     std::string captureMode;
@@ -128,6 +153,8 @@ struct Snapshot {
     std::vector<MonitorSnapshot> monitors;
     std::vector<PendingAction> pendingActions;
     AmbientSnapshot ambient;
+    BuiltinProtectionSnapshot builtinProtection;
+    MonitoredDisplaySnapshot monitoredDisplay;
     CameraSnapshot camera;
     PowerSnapshot power;
     ScreensaverSnapshot screensaver;
@@ -144,7 +171,9 @@ std::string buildScreensaver(const std::string& state);
 std::string buildPresenceObservation(const std::string& status, uint64_t capturedAtMs, uint64_t cameraGeneration,
                                      const std::optional<std::string>& cameraStatus);
 std::string buildCameraStatus(const std::string& status, std::optional<uint64_t> generation);
-std::string buildBuiltinDisplay(bool available, std::optional<double> brightness, bool calibrating);
+// protectable and holding default to false, which is what the legacy three-argument call sends.
+std::string buildBuiltinDisplay(bool available, std::optional<double> brightness, bool calibrating,
+                                bool protectable = false, bool holding = false);
 std::string buildSetBrightness(const std::string& monitorId, double value,
                                std::optional<uint64_t> connectionGeneration);
 std::string buildSetVolume(const std::string& monitorId, double value, std::optional<uint64_t> connectionGeneration);

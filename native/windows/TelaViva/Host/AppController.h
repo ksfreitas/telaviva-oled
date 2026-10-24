@@ -50,6 +50,7 @@ public:
     void setVolume(const std::string& monitorId, double value) override;
     void setMonitorProtected(const std::string& monitorId, bool protectedOn) override;
     void setProtectionBrightness(const std::string& monitorId, double value) override;
+    void setBuiltinBrightness(double value) override;
     void refresh() override;
     void openSettings() override;
     void quit() override;

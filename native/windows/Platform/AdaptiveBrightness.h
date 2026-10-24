@@ -24,6 +24,12 @@ enum class SuspendResult {
     Failed          // a read or write failed; writes are rolled back when possible
 };
 
+enum class AdaptiveReadResult {
+    NotApplicable,  // setting absent (desktop); out holds no values
+    Read,           // out holds the active scheme GUID and both values, which may be 0 (off)
+    Failed          // the scheme or a value could not be read; out holds no values
+};
+
 // True for a GUID in 8-4-4-4-12 hex form without braces.
 bool isSchemeGuidText(const std::string& text);
 
@@ -41,6 +47,10 @@ public:
     // Writes the saved values back to saved.schemeGuid. Applies them only when that scheme is
     // still active, and never switches the active scheme. False means the state must be kept.
     bool restore(const SavedAdaptiveState& saved);
+
+    // Read-only: the active scheme's current AC and DC values. It does not write, apply or
+    // switch schemes. A value of 0 on both sources means the setting is off.
+    AdaptiveReadResult readActive(SavedAdaptiveState& out);
 
 private:
     bool writeBoth(const std::string& schemeGuid, uint32_t acValue, uint32_t dcValue);

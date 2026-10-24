@@ -141,6 +141,27 @@ TEST(json_codec_monitor_discovered_unsupported_feature)
     CHECK(!contains(json, R"("raw")"));
 }
 
+TEST(json_codec_monitor_discovered_primary_true)
+{
+    telaviva::MonitorInfo monitor;
+    monitor.id = "win-GSM-23456-873459-1f3a9c2b";
+    monitor.name = "LG ULTRAFINE";
+    monitor.primary = true;
+
+    const std::string json = telaviva::buildMonitorDiscovered(monitor);
+    CHECK(contains(json, R"("primary":true)"));
+}
+
+TEST(json_codec_monitor_discovered_primary_false)
+{
+    telaviva::MonitorInfo monitor;
+    monitor.id = "win-GSM-23456-873459-1f3a9c2b";
+    monitor.name = "LG ULTRAFINE";
+
+    const std::string json = telaviva::buildMonitorDiscovered(monitor);
+    CHECK(contains(json, R"("primary":false)"));
+}
+
 TEST(json_codec_monitor_disconnected_fields)
 {
     const std::string json = telaviva::buildMonitorDisconnected("win-GSM-23456-873459-1f3a9c2b");
@@ -211,6 +232,26 @@ TEST(json_codec_builtin_display_null_brightness)
     const std::string known = telaviva::buildBuiltinDisplay(true, 42.0, true);
     CHECK(contains(known, R"("brightness":42)"));
     CHECK(contains(known, R"("calibrating":true)"));
+}
+
+TEST(json_codec_builtin_display_protection_flags_true)
+{
+    const std::string json = telaviva::buildBuiltinDisplay(true, 40.0, false, true, true);
+    CHECK(contains(json, R"("protectable":true)"));
+    CHECK(contains(json, R"("holding":true)"));
+    CHECK(contains(json, R"("available":true)"));
+    CHECK(contains(json, R"("brightness":40)"));
+    CHECK(contains(json, R"("calibrating":false)"));
+}
+
+TEST(json_codec_builtin_display_legacy_call_writes_flags_false)
+{
+    const std::string json = telaviva::buildBuiltinDisplay(false, std::nullopt, true);
+    CHECK(contains(json, R"("protectable":false)"));
+    CHECK(contains(json, R"("holding":false)"));
+    CHECK(contains(json, R"("available":false)"));
+    CHECK(contains(json, R"("brightness":null)"));
+    CHECK(contains(json, R"("calibrating":true)"));
 }
 
 TEST(json_codec_set_brightness_and_volume_fields)
@@ -330,6 +371,100 @@ TEST(json_codec_parses_snapshot_with_action)
     CHECK_EQ(s.camera.generation, uint64_t{4});
     CHECK(!s.settings.presence_protection_enabled);
     CHECK_EQ(s.settings.locale, std::string("auto"));
+}
+
+// The snapshot object builtin_protection is read field by field; every key is set.
+TEST(json_codec_parses_builtin_protection_fields)
+{
+    const telaviva::Snapshot s = telaviva::parseSnapshot(
+        R"({"builtin_protection":{"protectable":true,"protected":true,"available":true,"reasons":["presence","screensaver"],"target_percent":12.5,"hold_auto_brightness":true,"holding":true}})");
+    const telaviva::BuiltinProtectionSnapshot& b = s.builtinProtection;
+    CHECK(b.protectable);
+    CHECK(b.protected_);
+    CHECK(b.available);
+    CHECK_EQ(b.reasons.size(), std::size_t{2});
+    if (b.reasons.size() == 2) {
+        CHECK_EQ(b.reasons[0], std::string("presence"));
+        CHECK_EQ(b.reasons[1], std::string("screensaver"));
+    }
+    CHECK(nearlyOpt(b.targetPercent, 12.5));
+    CHECK(b.holdAutoBrightness);
+    CHECK(b.holding);
+}
+
+TEST(json_codec_builtin_protection_null_target_and_false_flags)
+{
+    const telaviva::Snapshot s = telaviva::parseSnapshot(
+        R"({"builtin_protection":{"protectable":true,"protected":false,"available":false,"reasons":[],"target_percent":null,"hold_auto_brightness":false,"holding":false}})");
+    CHECK(s.builtinProtection.protectable);
+    CHECK(!s.builtinProtection.protected_);
+    CHECK(!s.builtinProtection.available);
+    CHECK(s.builtinProtection.reasons.empty());
+    CHECK(!s.builtinProtection.targetPercent.has_value());
+    CHECK(!s.builtinProtection.holdAutoBrightness);
+    CHECK(!s.builtinProtection.holding);
+}
+
+// A snapshot without builtin_protection keeps the inert default: protectable is false.
+TEST(json_codec_builtin_protection_absent_is_inert_default)
+{
+    const telaviva::Snapshot s = telaviva::parseSnapshot(R"({"revision":1})");
+    CHECK(!s.builtinProtection.protectable);
+    CHECK(!s.builtinProtection.protected_);
+    CHECK(!s.builtinProtection.available);
+    CHECK(s.builtinProtection.reasons.empty());
+    CHECK(!s.builtinProtection.targetPercent.has_value());
+    CHECK(!s.builtinProtection.holdAutoBrightness);
+    CHECK(!s.builtinProtection.holding);
+}
+
+TEST(json_codec_parses_protection_and_monitored_display_settings)
+{
+    const telaviva::Snapshot s = telaviva::parseSnapshot(
+        R"({"settings":{"builtin_auto_brightness_off_on_protection":true,"monitored_display_id":"builtin","camera_history":["cam-2","cam-1"],"presence_min_brightness_by_display":{"mon-1":35,"builtin":0},"selected_camera_id":"cam-2"},"monitored_display":{"id":"builtin","automatic":false}})");
+    CHECK(s.settings.builtin_auto_brightness_off_on_protection);
+    CHECK_EQ(s.settings.monitored_display_id.value_or(""), std::string("builtin"));
+    CHECK_EQ(s.settings.camera_history.size(), std::size_t{2});
+    if (s.settings.camera_history.size() == 2) {
+        CHECK_EQ(s.settings.camera_history[0], std::string("cam-2"));
+        CHECK_EQ(s.settings.camera_history[1], std::string("cam-1"));
+    }
+    CHECK_EQ(s.settings.presence_min_brightness_by_display.size(), std::size_t{2});
+    const auto mon = s.settings.presence_min_brightness_by_display.find("mon-1");
+    CHECK(mon != s.settings.presence_min_brightness_by_display.end());
+    if (mon != s.settings.presence_min_brightness_by_display.end()) {
+        CHECK(nearly(mon->second, 35.0));
+    }
+    const auto builtin = s.settings.presence_min_brightness_by_display.find("builtin");
+    CHECK(builtin != s.settings.presence_min_brightness_by_display.end());
+    if (builtin != s.settings.presence_min_brightness_by_display.end()) {
+        CHECK(nearly(builtin->second, 0.0));
+    }
+    CHECK_EQ(s.settings.selected_camera_id.value_or(""), std::string("cam-2"));
+
+    CHECK(s.monitoredDisplay.id.has_value());
+    CHECK_EQ(s.monitoredDisplay.id.value_or(""), std::string("builtin"));
+    CHECK(!s.monitoredDisplay.automatic);
+}
+
+TEST(json_codec_protection_and_monitored_display_settings_defaults)
+{
+    const telaviva::Snapshot s = telaviva::parseSnapshot(
+        R"({"settings":{"monitored_display_id":null},"monitored_display":{"id":null,"automatic":true}})");
+    CHECK(!s.settings.builtin_auto_brightness_off_on_protection);
+    CHECK(!s.settings.monitored_display_id.has_value());
+    CHECK(s.settings.camera_history.empty());
+    CHECK(s.settings.presence_min_brightness_by_display.empty());
+    CHECK(!s.monitoredDisplay.id.has_value());
+    CHECK(s.monitoredDisplay.automatic);
+
+    const telaviva::Snapshot absent = telaviva::parseSnapshot(R"({"revision":1})");
+    CHECK(!absent.settings.builtin_auto_brightness_off_on_protection);
+    CHECK(!absent.settings.monitored_display_id.has_value());
+    CHECK(absent.settings.camera_history.empty());
+    CHECK(absent.settings.presence_min_brightness_by_display.empty());
+    CHECK(!absent.monitoredDisplay.id.has_value());
+    CHECK(!absent.monitoredDisplay.automatic);
 }
 
 TEST(json_codec_camera_retry_in_ms_is_parsed)

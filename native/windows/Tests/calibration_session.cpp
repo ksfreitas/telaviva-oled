@@ -17,11 +17,13 @@
 
 namespace fs = std::filesystem;
 using telaviva::AdaptiveBrightness;
+using telaviva::CalibrationRecord;
 using telaviva::CalibrationSession;
 using telaviva::IPowerSettings;
 using telaviva::PowerSource;
 using telaviva::PowerStatus;
 using telaviva::SavedAdaptiveState;
+using telaviva::SavedMonitorState;
 using telaviva::SuspendResult;
 
 namespace {
@@ -273,6 +275,138 @@ TEST(calibration_session_missing_field_is_treated_as_corrupt)
     writeText(session.file(), R"({"schema":1,"adaptive_brightness":{"scheme":"381b4222-f694-41f0-9685-ff5bb260df2e","ac":1},"started_at":"2026-10-17T14:30:00Z"})");
     CHECK(!session.pending().has_value());
     CHECK(fs::exists(dir.path() / "calibration-session.json.corrupt"));
+}
+
+TEST(calibration_session_old_format_record_loads_without_monitor_fields)
+{
+    const TempDir dir;
+    CalibrationSession session(dir.path());
+    writeText(session.file(), R"({"schema":1,"adaptive_brightness":{"scheme":"381b4222-f694-41f0-9685-ff5bb260df2e","ac":1,"dc":1},"started_at":"2026-10-17T14:30:00Z"})");
+    const std::optional<CalibrationRecord> record = session.pendingRecord();
+    CHECK(record.has_value());
+    if (record) {
+        CHECK(record->adaptiveValid);
+        CHECK(!record->monitor.has_value());
+        CHECK(!record->panelLevel.has_value());
+        CHECK_EQ(record->adaptive.acValue, static_cast<uint32_t>(1));
+    }
+    CHECK(session.pending().has_value());
+    CHECK(!fs::exists(dir.path() / "calibration-session.json.corrupt"));
+}
+
+TEST(calibration_session_optional_monitor_and_panel_fields_parse)
+{
+    const TempDir dir;
+    CalibrationSession session(dir.path());
+    writeText(session.file(), R"({"schema":1,"adaptive_brightness":{"scheme":"381b4222-f694-41f0-9685-ff5bb260df2e","ac":1,"dc":1},"monitor_id":"monitor-a","monitor_percent":62,"panel_level":44,"started_at":"2026-10-17T14:30:00Z"})");
+    const std::optional<CalibrationRecord> record = session.pendingRecord();
+    CHECK(record.has_value());
+    if (record) {
+        CHECK(record->adaptiveValid);
+        CHECK(record->monitor.has_value());
+        if (record->monitor) {
+            CHECK_EQ(record->monitor->monitorId, std::string("monitor-a"));
+            CHECK_EQ(record->monitor->percent, 62.0);
+        }
+        CHECK(record->panelLevel.has_value());
+        if (record->panelLevel) {
+            CHECK_EQ(*record->panelLevel, 44.0);
+        }
+    }
+}
+
+TEST(calibration_session_monitor_only_record_parses_and_is_not_adaptive)
+{
+    const TempDir dir;
+    CalibrationSession session(dir.path());
+    writeText(session.file(), R"({"schema":1,"monitor_id":"monitor-a","monitor_percent":62,"started_at":"2026-10-17T14:30:00Z"})");
+    const std::optional<CalibrationRecord> record = session.pendingRecord();
+    CHECK(record.has_value());
+    if (record) {
+        CHECK(!record->adaptiveValid);
+        CHECK(record->monitor.has_value());
+    }
+    CHECK(!session.pending().has_value());
+    CHECK(!fs::exists(dir.path() / "calibration-session.json.corrupt"));
+}
+
+TEST(calibration_session_monitor_id_without_percent_is_treated_as_corrupt)
+{
+    const TempDir dir;
+    CalibrationSession session(dir.path());
+    writeText(session.file(), R"({"schema":1,"adaptive_brightness":{"scheme":"381b4222-f694-41f0-9685-ff5bb260df2e","ac":1,"dc":1},"monitor_id":"monitor-a","started_at":"2026-10-17T14:30:00Z"})");
+    CHECK(!session.pendingRecord().has_value());
+    CHECK(fs::exists(dir.path() / "calibration-session.json.corrupt"));
+}
+
+TEST(calibration_session_recover_drops_the_adaptive_part_and_keeps_the_monitor)
+{
+    const TempDir dir;
+    FakePower power = makeLaptop();
+    AdaptiveBrightness adaptive(power);
+    CalibrationSession session(dir.path());
+    CalibrationRecord record;
+    record.adaptive = sampleState();
+    record.panelLevel = 44.0;
+    record.monitor = SavedMonitorState{"monitor-a", 62.0};
+    CHECK(session.begin(record));
+    power.schemes[kScheme] = FakePower::Scheme{0, 0};
+    CHECK(session.recover(adaptive));
+    CHECK_EQ(power.schemes[kScheme].ac, static_cast<uint32_t>(1));
+    CHECK_EQ(power.schemes[kScheme].dc, static_cast<uint32_t>(1));
+    // Only the monitor part is left, and the adaptive values are not in the file.
+    const std::string text = readText(session.file());
+    CHECK(text.find("adaptive_brightness") == std::string::npos);
+    CHECK(text.find(R"("monitor_id":"monitor-a")") != std::string::npos);
+    const std::optional<CalibrationRecord> kept = session.pendingRecord();
+    CHECK(kept.has_value());
+    if (kept) {
+        CHECK(!kept->adaptiveValid);
+        CHECK(!kept->panelLevel.has_value());
+        CHECK(kept->monitor.has_value());
+    }
+    // A second recovery restores nothing and keeps the monitor part.
+    power.schemes[kScheme] = FakePower::Scheme{0, 0};
+    CHECK(session.recover(adaptive));
+    CHECK_EQ(power.schemes[kScheme].ac, static_cast<uint32_t>(0));
+    CHECK(session.pendingRecord().has_value());
+}
+
+TEST(calibration_session_begin_with_monitor_and_panel_writes_them)
+{
+    const TempDir dir;
+    CalibrationSession session(dir.path());
+    CalibrationRecord record;
+    record.adaptive = sampleState();
+    record.panelLevel = 44.0;
+    record.monitor = SavedMonitorState{"monitor-a", 62.0};
+    CHECK(session.begin(record));
+    const std::string text = readText(session.file());
+    CHECK(text.find(R"("monitor_id":"monitor-a")") != std::string::npos);
+    CHECK(text.find(R"("monitor_percent":62)") != std::string::npos);
+    CHECK(text.find(R"("panel_level":44)") != std::string::npos);
+    CHECK(session.pending() == sampleState());
+}
+
+TEST(calibration_session_rewrite_replaces_the_record)
+{
+    const TempDir dir;
+    CalibrationSession session(dir.path());
+    CHECK(session.begin(sampleState()));
+    CalibrationRecord monitorOnly;
+    monitorOnly.adaptiveValid = false;
+    monitorOnly.monitor = SavedMonitorState{"monitor-b", 30.0};
+    CHECK(session.rewrite(monitorOnly));
+    CHECK(!session.pending().has_value());
+    const std::optional<CalibrationRecord> record = session.pendingRecord();
+    CHECK(record.has_value());
+    if (record) {
+        CHECK(!record->adaptiveValid);
+        CHECK(record->monitor.has_value());
+        if (record->monitor) {
+            CHECK_EQ(record->monitor->monitorId, std::string("monitor-b"));
+        }
+    }
 }
 
 TEST(calibration_session_recovery_failure_keeps_file_for_next_launch)

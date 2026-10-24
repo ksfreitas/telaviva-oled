@@ -54,6 +54,13 @@ public:
     //    is submitted with the current generation, so a re-enumerated camera is not held back.
     void onDevicesChanged();
 
+    // Called when the lid opens or closes (FR-020). While closed, built-in cameras are not used.
+    //  - The choice is re-run as onDevicesChanged does. If the effective camera changes or becomes none,
+    //    the session stops and the next sample is taken at once; a missing camera is reported unavailable.
+    //  - When the lid opens and no session is open, the next sample is taken at once.
+    //  - Never sends a camera selection; the remembered choice is not changed.
+    void setLidClosed(bool closed);
+
     // Closes the camera, cancels all timers and releases the analyzer. Later calls do nothing.
     void shutdown();
 

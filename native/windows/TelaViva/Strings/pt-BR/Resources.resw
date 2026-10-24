@@ -173,7 +173,7 @@
     <value>Verificar presença só acima do brilho</value>
   </data>
   <data name="presenceMinBrightnessHelp" xml:space="preserve">
-    <value>A câmera fica desligada enquanto todos os monitores estiverem neste brilho ou abaixo.</value>
+    <value>A câmera fica desligada enquanto a tela monitorada estiver com brilho igual ou inferior a este valor.</value>
   </data>
   <data name="alwaysOnCamera" xml:space="preserve">
     <value>Manter a câmera ligada</value>
@@ -222,6 +222,15 @@
   </data>
   <data name="cameraHelp" xml:space="preserve">
     <value>A câmera só será solicitada quando houver um detector local validado e a proteção estiver ativa.</value>
+  </data>
+  <data name="monitoredDisplay" xml:space="preserve">
+    <value>Tela monitorada</value>
+  </data>
+  <data name="monitoredDisplayHelp" xml:space="preserve">
+    <value>A tela cujo brilho decide quando a câmera funciona.</value>
+  </data>
+  <data name="monitoredDisplayAutomatic" xml:space="preserve">
+    <value>Automática</value>
   </data>
   <data name="displayHelp" xml:space="preserve">
     <value>O suporte depende do monitor, cabo, dock, hub, adaptador e caminho de conexão.</value>
@@ -435,6 +444,36 @@
   </data>
   <data name="calibration.notice.recoveryFailed" xml:space="preserve">
     <value>A calibração anterior não pôde ser totalmente restaurada. Verifique o brilho do notebook e o ajuste de brilho adaptável.</value>
+  </data>
+  <data name="calibration.notice.protectionActive" xml:space="preserve">
+    <value>A calibração não pode ser feita enquanto a proteção escurece a tela do notebook. Ela pode ser feita quando a proteção terminar.</value>
+  </data>
+  <data name="calibration.notice.monitorRecoveryGaveUp" xml:space="preserve">
+    <value>Um monitor não respondeu a tempo, então o brilho dele não pôde ser restaurado depois da calibração. Verifique o brilho do monitor.</value>
+  </data>
+  <data name="builtin.name" xml:space="preserve">
+    <value>Tela do Notebook</value>
+  </data>
+  <data name="builtin.protection.toggle.help" xml:space="preserve">
+    <value>Escurece a tela do notebook enquanto a proteção por presença ou por protetor de tela estiver ativa.</value>
+  </data>
+  <data name="builtin.protection.option.title" xml:space="preserve">
+    <value>Desativar a configuração do Windows "Alterar o brilho automaticamente quando a iluminação for alterada" durante a proteção</value>
+  </data>
+  <data name="builtin.protection.option.help" xml:space="preserve">
+    <value>O TelaViva desativa essa configuração do Windows enquanto escurece a tela do notebook e a reativa depois. Não é a página Brilho automático do TelaViva.</value>
+  </data>
+  <data name="builtin.notice.autoBrightnessUnknown" xml:space="preserve">
+    <value>O TelaViva não conseguiu verificar a configuração do Windows "Alterar o brilho automaticamente quando a iluminação for alterada". A tela do notebook pode mudar de brilho enquanto estiver escurecida.</value>
+  </data>
+  <data name="builtin.notice.autoBrightnessNotChanged" xml:space="preserve">
+    <value>O TelaViva não conseguiu desativar a configuração do Windows "Alterar o brilho automaticamente quando a iluminação for alterada". A tela do notebook pode mudar de brilho enquanto estiver escurecida.</value>
+  </data>
+  <data name="builtin.notice.restoreFailed" xml:space="preserve">
+    <value>Não foi possível restaurar o brilho da tela do notebook. O TelaViva tenta de novo na próxima vez que iniciar.</value>
+  </data>
+  <data name="builtin.slider.disabledWhileProtected" xml:space="preserve">
+    <value>O brilho da tela do notebook é controlado pela proteção enquanto ela estiver ativa.</value>
   </data>
   <data name="systemLanguage" xml:space="preserve">
     <value>Usar idioma do sistema</value>

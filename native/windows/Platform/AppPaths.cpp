@@ -42,6 +42,16 @@ std::filesystem::path AppPaths::calibrationSessionFile() const
     return root_ / L"calibration-session.json";
 }
 
+std::filesystem::path AppPaths::autoBrightnessHoldFile() const
+{
+    return root_ / L"auto-brightness-hold.json";
+}
+
+std::filesystem::path AppPaths::builtinProtectionSessionFile() const
+{
+    return root_ / L"builtin-protection-session.json";
+}
+
 std::filesystem::path AppPaths::inferenceFailuresFile() const
 {
     return root_ / L"inference-failures.json";

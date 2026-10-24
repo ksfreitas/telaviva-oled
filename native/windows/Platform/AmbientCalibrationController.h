@@ -4,13 +4,31 @@
 // then follow is paused, then the monitor and the panel are moved. End (done, cancel, quit, display
 // off, lid closed): panel level, adaptive brightness, monitor, then the pause flag, then the record
 // is deleted. A failed adaptive restore keeps the record for the next launch.
-// Single-threaded: call from the UI thread only. Includes no windows.h.
+//
+// Adaptive brightness is taken through the shared AutoBrightnessOwner as the calibration holder. The
+// owner keeps its own record (auto-brightness-hold.json). The calibration record (calibration-session.json)
+// is the one this controller restores: recoverPending uses it, through CalibrationSession::recover and
+// the owner's underlying AdaptiveBrightness, which is passed in for that purpose because the owner does not
+// expose it. The two records hold the same saved values; the owner's record is written first, so the owner
+// remains the single holder of the setting while calibration runs.
+//
+// A monitor missing at launch, or whose live restore was refused, keeps its part of the record. onSnapshot
+// retries it on every publish and gives up after 90 s, deleting the record and raising MonitorRecoveryGaveUp.
+//
+// Threading: the UI thread drives begin, end, setSlider, confirm, removePoint and recoverPending. onSnapshot
+// runs on the snapshot thread (not under settingsMutex or laptopMutex) and the give-up timer on a pool thread.
+// They share only the pending monitor restore, its timer and the give-up notice, guarded by mutex_.
+// Includes no windows.h.
 #include "AdaptiveBrightness.h"
+#include "AutoBrightnessOwner.h"
 #include "CalibrationSession.h"
+#include "Scheduler.h"
 #include "SettingsModel.h"
 
 #include <cstddef>
+#include <functional>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -36,9 +54,10 @@ struct IFollowPause {
 // Monitor brightness readouts and writes. The app maps these to the snapshot and the controls driver.
 struct ICalibrationMonitors {
     virtual ~ICalibrationMonitors() = default;
-    // nullopt when the monitor's brightness is unknown.
+    // nullopt when the monitor is not in the latest snapshot or its brightness is unknown.
     virtual std::optional<double> observedPercent(const std::string& monitorId) = 0;
-    virtual void setPercent(const std::string& monitorId, double percent) = 0;
+    // False when the write was refused.
+    virtual bool setPercent(const std::string& monitorId, double percent) = 0;
 };
 
 // One calibration point. `monitor` is the monitor brightness percent (1..100); `builtin` is the Laptop
@@ -95,9 +114,13 @@ enum class CalibrationNotice {
     BuiltInUnreadable,
     BuiltInWriteFailed,
     BuiltInUnavailable,
+    // Built-in protection holds the screen, so calibration is refused until protection releases it.
+    ProtectionActive,
     AutoBrightnessUnknown,
     AutoBrightnessNotChanged,
     RecoveryFailed,
+    // A monitor restore waited 90 s for the monitor, which did not return. The record was deleted.
+    MonitorRecoveryGaveUp,
 };
 
 enum class CalibrationEndReason {
@@ -119,13 +142,24 @@ bool isValidCurveMap(const AmbientCurveMap& curves);
 
 class AmbientCalibrationController {
 public:
+    // owner takes adaptive brightness for the calibration holder. adaptive is the owner's underlying
+    // AdaptiveBrightness, used by recoverPending. Every argument must outlive the controller.
     AmbientCalibrationController(ICalibrationPanel& panel, ICalibrationSettings& settings, IFollowPause& follow,
-                                 ICalibrationMonitors& monitors, AdaptiveBrightness& adaptive,
-                                 CalibrationSession& session);
+                                 ICalibrationMonitors& monitors, AutoBrightnessOwner& owner, AdaptiveBrightness& adaptive,
+                                 CalibrationSession& session, IScheduler& scheduler);
+    // Cancels the give-up timer, if one is armed.
+    ~AmbientCalibrationController();
+
+    AmbientCalibrationController(const AmbientCalibrationController&) = delete;
+    AmbientCalibrationController& operator=(const AmbientCalibrationController&) = delete;
 
     bool isActive() const { return active_.has_value(); }
     const std::optional<ActiveCalibration>& active() const { return active_; }
-    std::optional<CalibrationNotice> notice() const { return notice_; }
+    // The give-up notice wins over the session notice until the next begin.
+    std::optional<CalibrationNotice> notice() const;
+
+    // While it returns true, begin is refused with the ProtectionActive notice. Unset means nothing holds the screen.
+    void setProtectionHolds(std::function<bool()> protectionHolds);
 
     // Starts a session for `point` (1..100), or re-measures it when the point is saved. Ignored, without a notice,
     // when the point is out of range or would be a new point on a full curve.
@@ -149,35 +183,58 @@ public:
 
     void end(CalibrationEndReason reason);
 
-    // Restores the session left by a previous run, through CalibrationSession::recover. False when it could not be
-    // restored: the record is kept and the RecoveryFailed notice is raised.
+    // Restores the record left by a previous run. The panel level and the adaptive values are restored together. A
+    // monitor missing from the snapshot keeps its part of the record until onSnapshot restores it or the 90 s give-up.
+    // False when it could not be restored: the record is kept and the RecoveryFailed notice is raised.
     bool recoverPending();
+
+    // Completes a pending monitor restore once the monitor reports again. Call on every snapshot publish.
+    // Does nothing unless a restore is pending. A refused write keeps the restore for the next call.
+    void onSnapshot();
 
 private:
     struct Captured {
         std::string monitorId;
         double panelLevel = 0.0;
         std::optional<double> monitorOriginal;
-        bool adaptiveHeld = false;
-        SavedAdaptiveState adaptive;
+    };
+
+    struct PendingMonitor {
+        std::string monitorId;
+        double percent = 0.0;
     };
 
     AmbientCurve curveOf(const std::string& monitorId);
-    // Turns adaptive brightness off and pauses follow. False when nothing was started.
-    bool startSession(const std::string& monitorId);
+    // Turns adaptive brightness off and pauses follow. False when nothing was started. replacingPending: the new
+    // record overwrites a monitor-only record, so it is written with rewrite rather than begin.
+    bool startSession(const std::string& monitorId, bool replacingPending);
     void finish();
     void restoreState(const Captured& captured);
     bool submitCurves(const AmbientCurveMap& curves);
+    // Keeps a monitor restore for onSnapshot and arms the give-up timer. Takes mutex_.
+    void holdMonitorRestore(const std::string& monitorId, double percent);
+    // Timer callback: gives up a pending monitor restore after the timeout. Takes mutex_.
+    void giveUpMonitorRecovery();
 
     ICalibrationPanel& panel_;
     ICalibrationSettings& settings_;
     IFollowPause& follow_;
     ICalibrationMonitors& monitors_;
+    AutoBrightnessOwner& owner_;
     AdaptiveBrightness& adaptive_;
     CalibrationSession& session_;
+    IScheduler& scheduler_;
+    std::function<bool()> protectionHolds_;
     std::optional<Captured> captured_;
     std::optional<ActiveCalibration> active_;
     std::optional<CalibrationNotice> notice_;
+
+    // Guards the fields below. onSnapshot and the give-up timer run off the UI thread.
+    mutable std::mutex mutex_;
+    std::optional<PendingMonitor> pendingMonitor_;
+    // Armed while a give-up is outstanding; one timer covers every pending restore until it fires.
+    std::optional<TimerId> monitorTimer_;
+    std::optional<CalibrationNotice> monitorNotice_;
 };
 
 }  // namespace telaviva

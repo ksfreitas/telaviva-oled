@@ -2,8 +2,17 @@
 
 ## Unreleased
 
+### Added
+
+- Laptop screen protection on Windows: the built-in panel appears in the popup and in Settings > General as "Laptop" (Notebook in Portuguese), with a protection switch, a brightness slider and a Protection brightness slider, and no volume control. It dims when no face is detected and when the screensaver starts, and it is restored afterwards. Hardware checks are pending.
+- An option, off by default, that turns off "Change brightness automatically when lighting changes" in the active power plan while the Windows laptop panel is protected, for AC and DC power. The app restores the setting afterwards, unless you turned it on during protection, and it recovers the setting and the panel brightness at the next launch after a crash. Hardware checks are pending.
+- A Monitored display selector on Windows, with Automatic (the main external display, otherwise the laptop panel), the remembered displays and the laptop panel as choices. The camera follows the monitored display. Hardware checks are pending.
+- A presence brightness threshold saved for each display on Windows, with a range of 0 to 90 percent. Hardware checks are pending.
+- On Windows, the built-in camera is ignored while the lid is closed, as if it were disconnected. The camera choice is kept, and the built-in camera is used again when the lid opens. Hardware checks are pending.
+
 ### Changed
 
+- Protection brightness on Windows is a fixed level of 1 to 50 percent for each screen, used for both presence and the screensaver, with a default of 1 percent. Hardware checks are pending.
 - Keep camera on is now on by default and moved to Settings > Advanced on macOS and Windows, with a note that turning it off can cause detection problems, depending on the camera, and "insufficient light" events. Hardware checks are pending.
 - Upgrade note: existing installs keep their saved value; turn the option on in Settings > Advanced.
 - The camera status "busy" (Portuguese "ocupada") now reads "no image" (Portuguese "sem imagem") on macOS and Windows. It is shown when no frame arrives in time or the camera fails to start while the device is present, not when another app holds the camera. Hardware checks are pending.
@@ -11,6 +20,7 @@
 
 ### Fixed
 
+- Calibration crash recovery on Windows now restores the external monitor's brightness once the monitor is available again, for up to 90 seconds after launch, as on macOS. Hardware checks are pending.
 - The camera is retried after it stops delivering images, after 30 s, then 1 min, then every 5 min, on macOS and Windows. Before, a camera left "busy" or "unavailable" stayed off until the app was restarted. Presence protection resumes by itself when the camera answers. Hardware checks are pending.
 
 ## 0.1.3 - 2026-10-21

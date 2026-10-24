@@ -470,7 +470,7 @@ Notes:
 
 ## Windows
 
-Status: Not run. Not implemented in this plan; for the owner, on a Windows laptop, after the work in ../windows-handoff.md.
+Status: Not run. The Windows implementation exists in code with passing unit tests (2026-10 work in specs/windows-laptop-parity/plan.md) and no Windows hardware row has been run; every Windows row below stays "Not run". For the owner, on a Windows laptop, after the work in ../windows-handoff.md.
 
 Names: the Windows UI says "Laptop" in en-US and "Notebook" in pt-BR. Use the name the app shows. The rows below cover the built-in laptop panel only, except W-L10, which covers an external DDC monitor. Their steps are written for the owner to run after the Windows work is done, and they are not verified.
 
@@ -487,12 +487,16 @@ Steps:
 3. Start the screensaver, or step away from the camera, and wait for the dim.
 4. Check that the panel dims to its protection level, 0% by default or the configured protection brightness. Record the delay in Notes.
 5. Stop the screensaver, or return to the camera. Check that the panel returns to L.
-6. Restore the starting values recorded before the section.
+6. Set Protection brightness on the Laptop card to 1, then to 50. At each value, repeat steps 3 to 5. Check that the slider stays within 1% to 50%, and record in Notes the level Windows Settings shows while dimmed. The panel accepts only its supported levels, so the reading can differ slightly from the value set.
+7. With an external display connected, close the lid. Wait 30 seconds, and check that the Laptop card and its protection entry are absent, as in W-L7. Open the lid again.
+8. Restore the starting values recorded before the section.
 
 Expected (per FR-016, SC-001 and SC-002):
 
 - The laptop panel dims to its protection level after the trigger.
 - The panel returns to L when the trigger ends.
+- The protection level stays between 1% and 50%. A write of 0% lands on the panel's lowest supported level, which can be above 0%.
+- With the lid closed, the Laptop card and its protection entry are absent, and they return when the lid opens.
 
 Result:
 
@@ -518,7 +522,8 @@ Steps, on battery (DC):
 Steps, option off:
 
 6. Turn the option off. Trigger protection on AC power. Check that "Enable adaptive brightness" is not changed during protection.
-7. Restore the recorded values and the active plan, and record the result in Notes.
+7. Check that the active power plan name is the same before, during and after protection.
+8. Restore the recorded values and the active plan, and record the result in Notes.
 
 Expected (per FR-006, FR-007 and FR-016):
 
@@ -526,6 +531,7 @@ Expected (per FR-006, FR-007 and FR-016):
 - When protection ends, each value returns to its recorded value, if the app turned it off and it is still off.
 - If the active power plan changed during protection, the app does not restore the value over the new plan.
 - With the option off, protection never changes the adaptive brightness value.
+- The active power plan and its other values are unchanged before, during and after protection.
 
 Result:
 
@@ -546,11 +552,16 @@ Steps:
 5. Launch the app again. Wait up to 10 seconds, with no other action.
 6. Check that the panel returns to L, not to the dimmed level, and that "Enable adaptive brightness" returns to its recorded value for Plugged in and On battery.
 7. Check that the recovery record is gone.
+8. Calibration recovery with an external DDC monitor: in Settings > Automatic brightness, start a calibration on that monitor, and record the monitor's brightness from its own menu first. While the calibration dialog is open, end the app with End task in Task Manager.
+9. Disconnect the external monitor before the relaunch. Relaunch the app, and check that adaptive brightness is restored at once.
+10. Reconnect the external monitor within 90 seconds of the relaunch. Check that it returns to the brightness recorded in step 8.
+11. Record the result, including any notice shown, in Notes.
 
 Expected (per SC-003 and FR-010):
 
 - The recovery record exists while the panel is dimmed, and it is gone after the next launch.
 - After the relaunch, with no user action, the panel returns to L and adaptive brightness returns to its recorded values, on AC and on battery.
+- Calibration recovery: adaptive brightness is restored at the launch, and the external monitor returns to its recorded brightness within 90 seconds of the launch, once it is connected again.
 
 Result:
 
@@ -593,14 +604,16 @@ Steps:
 3. Select Laptop (Notebook in pt-BR) as Monitored display. Check the camera status again.
 4. Select Automatic. Make the laptop panel the primary display. Check that Automatic now follows the external monitor.
 5. Select the external monitor as Monitored display, then disconnect it. Check that the camera follows the Laptop (Notebook in pt-BR) screen.
-6. Restore the primary display and the Monitored display value recorded in the preconditions.
+6. Select the external monitor as Monitored display and set its presence threshold to 50%. Then select Laptop (Notebook in pt-BR) as Monitored display and set its threshold to 0%. Check that the threshold box shows each display's own value after each selection. With the Laptop screen at 1%, check that the camera keeps running, because its threshold is 0%.
+7. Restore the primary display, the Monitored display value and the thresholds recorded in the preconditions.
 
 Expected (per FR-021):
 
 - Only the monitored display decides whether the camera runs at the threshold. Absence still dims every protected screen, including the Laptop (Notebook in pt-BR) screen.
 - Automatic uses the primary external monitor, then the first external monitor, then the Laptop (Notebook in pt-BR) screen.
 - If the chosen display is disconnected, the next remembered choice is used, then Automatic.
-- The Laptop (Notebook in pt-BR) entry is listed only while the screen is available.
+- The Laptop (Notebook in pt-BR) entry is listed only while the screen is available and adjustable.
+- Each display keeps its own presence threshold, from 0% to 90%. At 0%, the camera stops only when the monitored display is at 0%.
 
 Result:
 
@@ -617,9 +630,11 @@ Steps:
 1. Select the built-in camera in the camera picker. Check that presence protection shows the camera running.
 2. Close the lid. Wait 30 seconds. Check that the built-in camera is not used. If an external camera is connected, check that it is used.
 3. Open the camera picker and record what it shows.
-4. Open the lid. Wait up to 30 seconds. Check that the built-in camera runs again.
+4. Open the lid. Wait up to 30 seconds. Check that the built-in camera runs again, without restarting the app.
 5. Close the lid, quit the app, and start it again with the lid still closed. Record whether the built-in camera is used at launch.
 6. Restore the lid setting in Power Options to the value recorded before the section.
+
+Caveat: the lid rule identifies the built-in camera by its reported enclosure location (front or back). A built-in camera that reports no enclosure location is not treated as built-in, so the rule does not hide it. If that happens, record the camera's name and whether it was used with the lid closed in Notes.
 
 Expected (per FR-020):
 

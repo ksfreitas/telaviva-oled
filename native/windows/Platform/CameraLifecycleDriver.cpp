@@ -151,6 +151,7 @@ struct CameraLifecycleDriver::Impl final : ICameraBackendCallbacks {
         const bool policyChanged = snapshot.camera.generation != generation_ || snapshot.camera.mode != mode_ ||
                                    snapshot.camera.captureMode != captureMode_;
         selectedCameraId_ = snapshot.settings.selected_camera_id;
+        cameraHistory_ = snapshot.settings.camera_history;
         alwaysOn_ = snapshot.settings.always_on_camera;
         const std::string cameraIds = lifecycleCameraIdList({}, selectedCameraId_);
         const std::string reply = lifecycle_.step(reconcileEvent(snapshot.camera.mode, snapshot.camera.captureMode,
@@ -195,7 +196,7 @@ struct CameraLifecycleDriver::Impl final : ICameraBackendCallbacks {
         Effects fx;
         if (sampling_) {
             // Any change of the chosen camera restarts the session, which also covers a higher-ranked join.
-            const CameraChoice choice = chooseCamera(camera_.enumerate(), historyOf());
+            const CameraChoice choice = chooseCamera(camera_.enumerate(), historyOf(), lidClosed_);
             if (!choice.effective || choice.effective->id != activeCameraId_) {
                 stopCapture(fx);
                 if (eligible()) {
@@ -205,6 +206,34 @@ struct CameraLifecycleDriver::Impl final : ICameraBackendCallbacks {
         }
         // A busy or unavailable camera is re-sent as unknown, so a re-enumerated camera is not held back.
         resendUnknownStatusIfNeeded();
+        lock.unlock();
+        flush(fx);
+    }
+
+    void setLidClosed(bool closed)
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (stopped_) {
+            return;
+        }
+        const bool lidOpened = lidClosed_ && !closed;
+        lidClosed_ = closed;
+        Effects fx;
+        if (sampling_) {
+            // Same re-run as onDevicesChanged: the session stops when the chosen camera changes or is lost.
+            const CameraChoice choice = chooseCamera(camera_.enumerate(), historyOf(), lidClosed_);
+            if (!choice.effective || choice.effective->id != activeCameraId_) {
+                stopCapture(fx);
+                if (eligible()) {
+                    // The next sample reports unavailable when no camera is left, as startCapture does.
+                    scheduleSample(std::chrono::milliseconds(0));
+                }
+            }
+        } else if (lidOpened && eligible() && sampleTimer_ == kInvalidTimerId &&
+                   !(continuous() && inferenceRequested_)) {
+            // The lid opened with no session: take the next sample at once on the remembered choice.
+            scheduleSample(std::chrono::milliseconds(0));
+        }
         lock.unlock();
         flush(fx);
     }
@@ -328,6 +357,8 @@ private:
     uint64_t generation_ = 0;
     bool alwaysOn_ = false;
     std::optional<std::string> selectedCameraId_;
+    std::vector<std::string> cameraHistory_;  // settings.camera_history, most recent first.
+    bool lidClosed_ = false;  // The lid is closed; built-in cameras are not used (FR-020).
     bool sampling_ = false;  // The camera is open for the current session.
     uint64_t session_ = 0;
     std::string activeCameraId_;
@@ -360,8 +391,12 @@ private:
         return captureMode_ == "continuous_return" || (alwaysOn_ && captureMode_ == "continuous_monitoring");
     }
 
+    // Under the mutex. The full camera history of the latest snapshot; the selected id alone when it is empty.
     std::vector<std::string> historyOf() const
     {
+        if (!cameraHistory_.empty()) {
+            return cameraHistory_;
+        }
         std::vector<std::string> history;
         if (selectedCameraId_) {
             history.push_back(*selectedCameraId_);
@@ -536,7 +571,7 @@ private:
             return;
         }
         // Enumerated on every sample, so a reconnected camera is used without a settings change.
-        const CameraChoice choice = chooseCamera(camera_.enumerate(), historyOf());
+        const CameraChoice choice = chooseCamera(camera_.enumerate(), historyOf(), lidClosed_);
         if (!choice.effective) {
             reportLocked("unavailable", "unavailable");
             return;
@@ -660,6 +695,11 @@ void CameraLifecycleDriver::onSnapshot(const Snapshot& snapshot)
 void CameraLifecycleDriver::onDevicesChanged()
 {
     impl_->onDevicesChanged();
+}
+
+void CameraLifecycleDriver::setLidClosed(bool closed)
+{
+    impl_->setLidClosed(closed);
 }
 
 void CameraLifecycleDriver::shutdown()

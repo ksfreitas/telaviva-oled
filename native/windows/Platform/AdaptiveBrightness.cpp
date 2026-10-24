@@ -160,6 +160,28 @@ bool AdaptiveBrightness::restore(const SavedAdaptiveState& saved)
     return true;
 }
 
+AdaptiveReadResult AdaptiveBrightness::readActive(SavedAdaptiveState& out)
+{
+    out = SavedAdaptiveState{};
+    std::string scheme;
+    if (power_.activeScheme(scheme) != PowerStatus::Ok || !isSchemeGuidText(scheme)) {
+        return AdaptiveReadResult::Failed;
+    }
+    uint32_t acValue = 0;
+    uint32_t dcValue = 0;
+    const PowerStatus acStatus = power_.readAdaptive(scheme, PowerSource::Ac, acValue);
+    if (acStatus == PowerStatus::NotFound) {
+        return AdaptiveReadResult::NotApplicable;
+    }
+    if (acStatus != PowerStatus::Ok || power_.readAdaptive(scheme, PowerSource::Dc, dcValue) != PowerStatus::Ok) {
+        return AdaptiveReadResult::Failed;
+    }
+    out.schemeGuid = scheme;
+    out.acValue = acValue;
+    out.dcValue = dcValue;
+    return AdaptiveReadResult::Read;
+}
+
 bool AdaptiveBrightness::writeBoth(const std::string& schemeGuid, uint32_t acValue, uint32_t dcValue)
 {
     // Both writes run even when the first fails, so a rollback still reaches the other value.

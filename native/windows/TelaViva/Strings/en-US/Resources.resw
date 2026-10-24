@@ -173,7 +173,7 @@
     <value>Check presence only above brightness</value>
   </data>
   <data name="presenceMinBrightnessHelp" xml:space="preserve">
-    <value>The camera stays off while every monitor is at or below this brightness.</value>
+    <value>The camera stays off while the monitored display is at or below this brightness.</value>
   </data>
   <data name="alwaysOnCamera" xml:space="preserve">
     <value>Keep camera on</value>
@@ -222,6 +222,15 @@
   </data>
   <data name="cameraHelp" xml:space="preserve">
     <value>Camera access is requested only after a validated local detector is available and protection is enabled.</value>
+  </data>
+  <data name="monitoredDisplay" xml:space="preserve">
+    <value>Monitored display</value>
+  </data>
+  <data name="monitoredDisplayHelp" xml:space="preserve">
+    <value>The display whose brightness decides when the camera runs.</value>
+  </data>
+  <data name="monitoredDisplayAutomatic" xml:space="preserve">
+    <value>Automatic</value>
   </data>
   <data name="displayHelp" xml:space="preserve">
     <value>Display support depends on the monitor, cable, dock, hub, adapter, and connection path.</value>
@@ -435,6 +444,36 @@
   </data>
   <data name="calibration.notice.recoveryFailed" xml:space="preserve">
     <value>The previous calibration could not be fully restored. Check the Laptop brightness and the adaptive brightness setting.</value>
+  </data>
+  <data name="calibration.notice.protectionActive" xml:space="preserve">
+    <value>Calibration is not possible while protection dims the Laptop screen. It can be done when protection ends.</value>
+  </data>
+  <data name="calibration.notice.monitorRecoveryGaveUp" xml:space="preserve">
+    <value>A monitor did not respond in time, so its brightness could not be restored after calibration. Check the monitor brightness.</value>
+  </data>
+  <data name="builtin.name" xml:space="preserve">
+    <value>Laptop screen</value>
+  </data>
+  <data name="builtin.protection.toggle.help" xml:space="preserve">
+    <value>Dims the Laptop screen while presence or screensaver protection is on.</value>
+  </data>
+  <data name="builtin.protection.option.title" xml:space="preserve">
+    <value>Turn off the Windows setting "Change brightness automatically when lighting changes" during protection</value>
+  </data>
+  <data name="builtin.protection.option.help" xml:space="preserve">
+    <value>TelaViva turns this Windows setting off while it dims the Laptop screen and turns it back on afterwards. It is not the Automatic brightness page of TelaViva.</value>
+  </data>
+  <data name="builtin.notice.autoBrightnessUnknown" xml:space="preserve">
+    <value>TelaViva could not check the Windows setting "Change brightness automatically when lighting changes". The Laptop screen may change brightness while it is dimmed.</value>
+  </data>
+  <data name="builtin.notice.autoBrightnessNotChanged" xml:space="preserve">
+    <value>TelaViva could not turn off the Windows setting "Change brightness automatically when lighting changes". The Laptop screen may change brightness while it is dimmed.</value>
+  </data>
+  <data name="builtin.notice.restoreFailed" xml:space="preserve">
+    <value>The Laptop screen brightness could not be restored. TelaViva tries again the next time it starts.</value>
+  </data>
+  <data name="builtin.slider.disabledWhileProtected" xml:space="preserve">
+    <value>The Laptop screen brightness is controlled by protection while it is active.</value>
   </data>
   <data name="systemLanguage" xml:space="preserve">
     <value>Use system language</value>

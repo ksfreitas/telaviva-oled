@@ -1,17 +1,29 @@
 #include "AmbientCalibrationController.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <sstream>
+#include <utility>
 
 namespace telaviva {
 namespace {
+
+// How long a restore waits for a monitor that is not in the snapshot before it gives up (macOS monitorRecoveryTimeout).
+constexpr std::chrono::milliseconds kMonitorRecoveryTimeout{90000};
+// Leeway for the give-up timer: the macOS value for a 90 s delay (10%, capped at 1 s).
+constexpr std::chrono::milliseconds kMonitorRecoveryTolerance{1000};
 
 // Clamps to the range. The range is ordered (lower <= upper) by construction, so zero width is valid.
 double clampTo(double value, const SliderRange& range)
 {
     return std::min(std::max(value, range.lower), range.upper);
+}
+
+bool isPercent(double value)
+{
+    return std::isfinite(value) && value >= 0.0 && value <= 100.0;
 }
 
 std::string numberText(double value)
@@ -146,14 +158,42 @@ bool isValidCurveMap(const AmbientCurveMap& curves)
 
 AmbientCalibrationController::AmbientCalibrationController(ICalibrationPanel& panel, ICalibrationSettings& settings,
                                                            IFollowPause& follow, ICalibrationMonitors& monitors,
-                                                           AdaptiveBrightness& adaptive, CalibrationSession& session)
+                                                           AutoBrightnessOwner& owner, AdaptiveBrightness& adaptive,
+                                                           CalibrationSession& session, IScheduler& scheduler)
     : panel_(panel),
       settings_(settings),
       follow_(follow),
       monitors_(monitors),
+      owner_(owner),
       adaptive_(adaptive),
-      session_(session)
+      session_(session),
+      scheduler_(scheduler)
 {
+}
+
+AmbientCalibrationController::~AmbientCalibrationController()
+{
+    std::optional<TimerId> timer;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        timer = monitorTimer_;
+        monitorTimer_.reset();
+    }
+    // Cancelled outside the lock: a give-up that is running waits for the lock, and cancel waits for that callback.
+    if (timer) {
+        scheduler_.cancel(*timer);
+    }
+}
+
+std::optional<CalibrationNotice> AmbientCalibrationController::notice() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return monitorNotice_ ? monitorNotice_ : notice_;
+}
+
+void AmbientCalibrationController::setProtectionHolds(std::function<bool()> protectionHolds)
+{
+    protectionHolds_ = std::move(protectionHolds);
 }
 
 void AmbientCalibrationController::begin(const std::string& monitorId, int point)
@@ -167,6 +207,16 @@ void AmbientCalibrationController::begin(const std::string& monitorId, int point
         return;
     }
     notice_.reset();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        monitorNotice_.reset();
+    }
+    // Refused before any read: protection may hold the built-in screen at a dimmed level, and calibration captures
+    // that level as its restore target.
+    if (protectionHolds_ && protectionHolds_()) {
+        notice_ = CalibrationNotice::ProtectionActive;
+        return;
+    }
     // Checked live: the follower may have paused since its last report.
     if (follow_.paused()) {
         notice_ = CalibrationNotice::BuiltInUnavailable;
@@ -175,11 +225,22 @@ void AmbientCalibrationController::begin(const std::string& monitorId, int point
     if (captured_ && captured_->monitorId != monitorId) {
         end(CalibrationEndReason::Cancelled);
     }
-    if (!captured_ && !startSession(monitorId)) {
-        return;
+    if (!captured_) {
+        // The new session replaces a monitor-only record, so a pending monitor restore is dropped here, before the
+        // file is read. Once it is dropped, nothing else touches the file: onSnapshot and the timer act only on a
+        // pending restore. A refused start keeps the record, so the next launch still restores the monitor.
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            pendingMonitor_.reset();
+        }
+        const std::optional<CalibrationRecord> leftover = session_.pendingRecord();
+        const bool replacing = leftover.has_value() && !leftover->adaptiveValid;
+        if (!startSession(monitorId, replacing)) {
+            return;
+        }
     }
     // The point is a monitor level: move the monitor first, then set the Laptop slider.
-    monitors_.setPercent(monitorId, static_cast<double>(point));
+    static_cast<void>(monitors_.setPercent(monitorId, static_cast<double>(point)));
     const SliderRange range = allowedRange(point, monitorId);
     const std::optional<AmbientCurvePoint> stored = curve.point(point);
     const double initial = stored ? stored->builtin : captured_->panelLevel;
@@ -269,11 +330,50 @@ void AmbientCalibrationController::end(CalibrationEndReason reason)
 
 bool AmbientCalibrationController::recoverPending()
 {
-    if (session_.recover(adaptive_)) {
-        return true;
+    const std::optional<CalibrationRecord> record = session_.pendingRecord();
+    if (!record) {
+        // Nothing was left, or the file was just quarantined. An unreadable file makes recover report the failure.
+        if (session_.recover(adaptive_)) {
+            return true;
+        }
+        notice_ = CalibrationNotice::RecoveryFailed;
+        return false;
     }
-    notice_ = CalibrationNotice::RecoveryFailed;
-    return false;
+    // The panel level and the adaptive values are restored at once. A refused panel write keeps the whole record
+    // for the next launch, so nothing is lost.
+    if (record->panelLevel && !panel_.setPanelPercent(*record->panelLevel)) {
+        notice_ = CalibrationNotice::RecoveryFailed;
+        return false;
+    }
+    // recover rewrites a record that names a monitor as monitor-only, so the adaptive values are never restored twice.
+    if (record->adaptiveValid && !session_.recover(adaptive_)) {
+        notice_ = CalibrationNotice::RecoveryFailed;
+        return false;
+    }
+    if (record->monitor) {
+        // The monitor restore waits for the monitor. The record keeps its part until then.
+        holdMonitorRestore(record->monitor->monitorId, record->monitor->percent);
+        onSnapshot();
+    }
+    return true;
+}
+
+void AmbientCalibrationController::onSnapshot()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!pendingMonitor_) {
+        return;
+    }
+    // Still missing from the snapshot, or its brightness is unknown: wait for the next publish.
+    if (!monitors_.observedPercent(pendingMonitor_->monitorId).has_value()) {
+        return;
+    }
+    // A refused write keeps the restore; the next publish tries again until the give-up timer ends the wait.
+    if (!monitors_.setPercent(pendingMonitor_->monitorId, pendingMonitor_->percent)) {
+        return;
+    }
+    pendingMonitor_.reset();
+    session_.end();
 }
 
 AmbientCurve AmbientCalibrationController::curveOf(const std::string& monitorId)
@@ -283,7 +383,7 @@ AmbientCurve AmbientCalibrationController::curveOf(const std::string& monitorId)
     return found == curves.end() ? AmbientCurve{} : found->second;
 }
 
-bool AmbientCalibrationController::startSession(const std::string& monitorId)
+bool AmbientCalibrationController::startSession(const std::string& monitorId, bool replacingPending)
 {
     const std::optional<double> level = panel_.panelPercent();
     if (!level) {
@@ -295,35 +395,40 @@ bool AmbientCalibrationController::startSession(const std::string& monitorId)
     captured.panelLevel = *level;
     captured.monitorOriginal = monitors_.observedPercent(monitorId);
 
-    // The record is written before any change. A refused record means nothing was changed.
+    // The record is written before any change, by the owner's persist-first step. A refused record means
+    // nothing was changed. Levels outside 0..100 are left out of the record, so they never refuse it.
     bool persistAttempted = false;
     bool persisted = false;
-    const SuspendResult result = adaptive_.suspend(
-        captured.adaptive, [this, &persistAttempted, &persisted](const SavedAdaptiveState& state) {
+    const AutoBrightnessOutcome outcome = owner_.acquire(
+        AutoBrightnessHolder::calibration,
+        [this, &captured, replacingPending, &persistAttempted, &persisted](const SavedAdaptiveState& state) {
+            CalibrationRecord record;
+            record.adaptive = state;
+            if (isPercent(captured.panelLevel)) {
+                record.panelLevel = captured.panelLevel;
+            }
+            if (captured.monitorOriginal && isPercent(*captured.monitorOriginal)) {
+                record.monitor = SavedMonitorState{captured.monitorId, *captured.monitorOriginal};
+            }
             persistAttempted = true;
-            persisted = session_.begin(state);
+            persisted = replacingPending ? session_.rewrite(record) : session_.begin(record);
             return persisted;
         });
     if (persistAttempted && !persisted) {
+        // The owner took the holder before the refusal. It wrote nothing it owes, so releasing it only drops the holder.
+        static_cast<void>(owner_.release(AutoBrightnessHolder::calibration));
         notice_ = CalibrationNotice::RecoveryFailed;
         return false;
     }
-    switch (result) {
-    case SuspendResult::NotApplicable:
-    case SuspendResult::WasOff:
+    switch (outcome) {
+    case AutoBrightnessOutcome::notApplicable:
+    case AutoBrightnessOutcome::turnedOff:
         break;
-    case SuspendResult::Suspended:
-        captured.adaptiveHeld = true;
-        break;
-    case SuspendResult::Failed:
-        if (persisted) {
-            // The record exists and the write was rolled back, so the saved values are restored at the end.
-            captured.adaptiveHeld = true;
-            notice_ = CalibrationNotice::AutoBrightnessNotChanged;
-        } else {
-            // Nothing was recorded or written: the setting could not be read.
-            notice_ = CalibrationNotice::AutoBrightnessUnknown;
-        }
+    case AutoBrightnessOutcome::notChanged:
+    case AutoBrightnessOutcome::unknown:
+        // The owner holds nothing. A record saved before a failed change is still on disk, so that notice applies.
+        // notChanged and unknown keep the single failure mapping calibration has always used.
+        notice_ = persisted ? CalibrationNotice::AutoBrightnessNotChanged : CalibrationNotice::AutoBrightnessUnknown;
         break;
     }
     captured_ = captured;
@@ -346,22 +451,64 @@ void AmbientCalibrationController::restoreState(const Captured& captured)
     // Order matters: panel level, adaptive brightness, monitor, then the pause flag. A failing step
     // does not stop the rest.
     static_cast<void>(panel_.setPanelPercent(captured.panelLevel));
-    bool adaptiveRestored = true;
-    if (captured.adaptiveHeld) {
-        adaptiveRestored = adaptive_.restore(captured.adaptive);
-    }
+    // The owner restores only when this holder turned the setting off, and skips the write when the user turned it on.
+    const bool adaptiveRestored = owner_.release(AutoBrightnessHolder::calibration);
+    bool monitorRestored = true;
     if (captured.monitorOriginal) {
-        monitors_.setPercent(captured.monitorId, *captured.monitorOriginal);
+        monitorRestored = monitors_.setPercent(captured.monitorId, *captured.monitorOriginal);
     }
     follow_.setCalibrating(false);
-    if (adaptiveRestored) {
-        session_.end();
-    } else {
-        // The record is kept so the next launch retries the restore.
+    if (!adaptiveRestored) {
+        // The record is kept, with its monitor part, so the next launch retries both.
         if (!notice_) {
             notice_ = CalibrationNotice::AutoBrightnessNotChanged;
         }
+        return;
     }
+    if (monitorRestored) {
+        session_.end();
+        return;
+    }
+    // The adaptive values are back but the monitor is not. Keep only the monitor part, so a later launch never
+    // restores the adaptive values again, and retry the monitor on each publish.
+    CalibrationRecord monitorOnly;
+    monitorOnly.adaptiveValid = false;
+    monitorOnly.monitor = SavedMonitorState{captured.monitorId, *captured.monitorOriginal};
+    if (!session_.rewrite(monitorOnly)) {
+        if (!notice_) {
+            notice_ = CalibrationNotice::RecoveryFailed;
+        }
+        return;
+    }
+    holdMonitorRestore(captured.monitorId, *captured.monitorOriginal);
+}
+
+void AmbientCalibrationController::holdMonitorRestore(const std::string& monitorId, double percent)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    pendingMonitor_ = PendingMonitor{monitorId, percent};
+    if (monitorTimer_) {
+        // The armed timer covers this restore too; it is not replaced.
+        return;
+    }
+    const TimerId id = scheduler_.scheduleOnce(kMonitorRecoveryTimeout, kMonitorRecoveryTolerance,
+                                               [this] { giveUpMonitorRecovery(); });
+    if (id != kInvalidTimerId) {
+        monitorTimer_ = id;
+    }
+}
+
+void AmbientCalibrationController::giveUpMonitorRecovery()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    monitorTimer_.reset();
+    if (!pendingMonitor_) {
+        // Restored already, or a new session dropped it.
+        return;
+    }
+    pendingMonitor_.reset();
+    session_.end();
+    monitorNotice_ = CalibrationNotice::MonitorRecoveryGaveUp;
 }
 
 bool AmbientCalibrationController::submitCurves(const AmbientCurveMap& curves)
