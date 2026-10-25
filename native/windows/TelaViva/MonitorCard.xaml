@@ -40,8 +40,9 @@
                            Style="{StaticResource CaptionTextBlockStyle}" TextWrapping="Wrap" />
             </Grid>
 
-            <Grid x:Name="BrightnessRow" ColumnDefinitions="Auto,*" ColumnSpacing="12">
-                <FontIcon Grid.Column="0" Glyph="&#xE706;" FontFamily="Segoe Fluent Icons" />
+            <Grid x:Name="BrightnessRow" ColumnDefinitions="24,*" ColumnSpacing="12">
+                <FontIcon x:Name="BrightnessIcon" Grid.Column="0" Glyph="&#xE706;" FontFamily="Segoe Fluent Icons"
+                          VerticalAlignment="Center" AutomationProperties.AccessibilityView="Raw" />
                 <StackPanel Grid.Column="1" Spacing="2">
                     <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
                         <Slider x:Name="BrightnessSlider" Grid.Column="0" Minimum="0" Maximum="100" StepFrequency="1" />
@@ -63,8 +64,9 @@
             <TextBlock x:Name="NoticeText" Style="{StaticResource CaptionTextBlockStyle}"
                        TextWrapping="Wrap" Visibility="Collapsed" />
 
-            <Grid x:Name="VolumeRow" ColumnDefinitions="Auto,*" ColumnSpacing="12">
-                <FontIcon Grid.Column="0" Glyph="&#xE767;" FontFamily="Segoe Fluent Icons" />
+            <Grid x:Name="VolumeRow" ColumnDefinitions="24,*" ColumnSpacing="12">
+                <FontIcon x:Name="VolumeIcon" Grid.Column="0" Glyph="&#xE767;" FontFamily="Segoe Fluent Icons"
+                          VerticalAlignment="Center" AutomationProperties.AccessibilityView="Raw" />
                 <StackPanel Grid.Column="1" Spacing="2">
                     <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
                         <Slider x:Name="VolumeSlider" Grid.Column="0" Minimum="0" Maximum="100" StepFrequency="1" />
@@ -83,18 +85,20 @@
             </Grid>
 
             <!-- Protection brightness: the cap and the disabled state come from ProtectionRules. -->
-            <StackPanel x:Name="ProtectionPanel" Spacing="2" Visibility="Collapsed">
-                <TextBlock x:Name="ProtectionLabel" Style="{StaticResource CaptionTextBlockStyle}"
-                           TextWrapping="Wrap" />
-                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
-                    <Slider x:Name="ProtectionSlider" Grid.Column="0" Minimum="0" Maximum="100" StepFrequency="1" />
-                    <TextBlock x:Name="ProtectionValue" Grid.Column="1" MinWidth="44"
-                               Style="{StaticResource CaptionTextBlockStyle}"
-                               TextAlignment="Right" VerticalAlignment="Center"
-                               Typography.NumeralAlignment="Tabular"
-                               AutomationProperties.AccessibilityView="Raw" />
-                </Grid>
-            </StackPanel>
+            <Grid x:Name="ProtectionPanel" ColumnDefinitions="24,*" ColumnSpacing="12" Visibility="Collapsed">
+                <FontIcon x:Name="ProtectionIcon" Grid.Column="0" Glyph="&#xE83D;" FontFamily="Segoe Fluent Icons"
+                          VerticalAlignment="Center" AutomationProperties.AccessibilityView="Raw" />
+                <StackPanel Grid.Column="1" Spacing="2">
+                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                        <Slider x:Name="ProtectionSlider" Grid.Column="0" Minimum="0" Maximum="100" StepFrequency="1" />
+                        <TextBlock x:Name="ProtectionValue" Grid.Column="1" MinWidth="44"
+                                   Style="{StaticResource CaptionTextBlockStyle}"
+                                   TextAlignment="Right" VerticalAlignment="Center"
+                                   Typography.NumeralAlignment="Tabular"
+                                   AutomationProperties.AccessibilityView="Raw" />
+                    </Grid>
+                </StackPanel>
+            </Grid>
         </StackPanel>
     </Border>
 </UserControl>

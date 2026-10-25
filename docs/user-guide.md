@@ -21,6 +21,7 @@ Click the menu bar icon (macOS) or the tray icon (Windows) to open it.
 
 - Each detected external monitor has a card with an independent brightness slider and speaker volume slider. A control the monitor does not support is shown as unavailable. On macOS and Windows, a laptop's built-in screen has a card too, with a brightness slider and no volume slider. See [Laptop screen protection](#laptop-screen-protection).
 - The popup fits one to three monitors and scrolls beyond three.
+- The sun, speaker and shield icons identify brightness, speaker volume and **Protection brightness**. Hover over an icon for an explanation in the selected language. Screen readers expose the control names and explanatory help on the sliders.
 - Each monitor has a switch that includes it in or excludes it from OLED protection (on by default). The same switches are listed in Settings. A laptop's built-in screen has one too.
 - While presence or screensaver protection is on, each protected monitor also has a **Protection brightness** slider, from 1% to 50%. The same level applies to presence and to the screensaver, and it does not depend on the monitor's current brightness. Protection never raises a screen above its current brightness.
 - Presence is shown by the menu bar icon (macOS) or the tray icon (Windows), not by a line in the popup. On Windows the popup footer shows only the camera status, as `Camera: <status>`. The icon shows:

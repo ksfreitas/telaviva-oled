@@ -12,6 +12,7 @@
 
 ### Changed
 
+- Monitor sliders on macOS and Windows use aligned brightness, speaker and protection shield icons, with explanatory tooltips in English and Portuguese and accessible slider help.
 - Protection brightness on Windows is a fixed level of 1 to 50 percent for each screen, used for both presence and the screensaver, with a default of 1 percent. Hardware checks are pending.
 - Keep camera on is now on by default and moved to Settings > Advanced on macOS and Windows, with a note that turning it off can cause detection problems, depending on the camera, and "insufficient light" events. Hardware checks are pending.
 - Upgrade note: existing installs keep their saved value; turn the option on in Settings > Advanced.

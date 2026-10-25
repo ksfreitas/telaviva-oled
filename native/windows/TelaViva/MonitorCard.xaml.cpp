@@ -142,7 +142,9 @@ namespace winrt::TelaViva::implementation
         const winrt::hstring protectionText{ telaviva::host::Str("protection.monitor.toggle") };
         ProtectionToggleText().Text(protectionText);
         xc::ToolTipService::SetToolTip(ProtectionToggle(), winrt::box_value(protectionText));
-        ProtectionLabel().Text(winrt::hstring{ telaviva::host::Str("protectionBrightness") });
+        xc::ToolTipService::SetToolTip(BrightnessIcon(), winrt::box_value(winrt::hstring{ telaviva::host::Str("control.brightness.help") }));
+        xc::ToolTipService::SetToolTip(VolumeIcon(), winrt::box_value(winrt::hstring{ telaviva::host::Str("control.volume.help") }));
+        xc::ToolTipService::SetToolTip(ProtectionIcon(), winrt::box_value(winrt::hstring{ telaviva::host::Str("control.protectionBrightness.help") }));
         FollowedText().Text(winrt::hstring{ telaviva::host::Str("ambient.toggle") });
 
         hookBusy(BrightnessSlider(), brightnessPointer_, brightnessKey_, lastReleaseTick_);
@@ -212,6 +214,8 @@ namespace winrt::TelaViva::implementation
         // Each control names its monitor after its label, as "Brightness, <monitor>", so Narrator tells cards apart.
         const std::wstring brightnessLabel = telaviva::host::Str("flyout.brightness");
         const std::wstring volumeLabel = telaviva::host::Str("flyout.volume");
+        xaml::Automation::AutomationProperties::SetHelpText(BrightnessSlider(), winrt::hstring{ telaviva::host::Str("control.brightness.help") });
+        xaml::Automation::AutomationProperties::SetHelpText(VolumeSlider(), winrt::hstring{ telaviva::host::Str("control.volume.help") });
 
         // Values are held off for a moment after any release (see withinReleaseHoldOff).
         const bool holdOff = withinReleaseHoldOff(lastReleaseTick_);
@@ -249,6 +253,7 @@ namespace winrt::TelaViva::implementation
             ProtectionSlider().Value(clamp.value);
         }
         xaml::Automation::AutomationProperties::SetName(ProtectionSlider(), winrt::hstring{ accessibleName });
+        xaml::Automation::AutomationProperties::SetHelpText(ProtectionSlider(), winrt::hstring{ telaviva::host::Str("control.protectionBrightness.help") });
         updateValueTip(ProtectionSlider(), ProtectionSlider().Value());
         setValueLabel(ProtectionValue(), ProtectionSlider().Value());
 

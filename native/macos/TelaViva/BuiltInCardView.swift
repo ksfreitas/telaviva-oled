@@ -58,7 +58,7 @@ struct BuiltInCardView: View {
     private var brightnessControl: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 8) {
-                rowLabel(AppText.string("brightness", locale: locale))
+                controlIcon("sun.max", help: AppText.string("control.brightness.help", locale: locale))
                 Slider(value: Binding(get: {
                     level
                 }, set: { value in
@@ -66,6 +66,8 @@ struct BuiltInCardView: View {
                     _ = builtIn.writeLevel(value)
                 }), in: 0...100, onEditingChanged: { editing = $0 })
                 .disabled(sliderLocked)
+                .accessibilityLabel("\(AppText.string("brightness", locale: locale)), \(AppText.string("builtin.name", locale: locale))")
+                .accessibilityHelp(AppText.string("control.brightness.help", locale: locale))
                 Text("\(Int(level.rounded()))%").monospacedDigit().frame(width: 42, alignment: .trailing).font(.caption)
             }
             if sliderLocked {
@@ -102,7 +104,7 @@ struct BuiltInCardView: View {
     private var protectionBrightness: some View {
         let target = min(max(core.snapshot.settings?.screensaver_targets[BuiltInProtectionController.displayID] ?? 1, 1), 50)
         return HStack(spacing: 8) {
-            rowLabel(AppText.string("protectionBrightness", locale: locale))
+            controlIcon("shield", help: AppText.string("control.protectionBrightness.help", locale: locale))
             Slider(value: Binding(get: {
                 min(max(core.snapshot.settings?.screensaver_targets[BuiltInProtectionController.displayID] ?? 1, 1), 50)
             }, set: { value in
@@ -110,16 +112,18 @@ struct BuiltInCardView: View {
                 settings.screensaver_targets[BuiltInProtectionController.displayID] = min(max(value, 1), 50)
                 core.updateSettings(settings)
             }), in: 1...50)
+            .accessibilityLabel("\(AppText.string("protectionBrightness", locale: locale)), \(AppText.string("builtin.name", locale: locale))")
+            .accessibilityHelp(AppText.string("control.protectionBrightness.help", locale: locale))
             Text("\(Int(target.rounded()))%").monospacedDigit().frame(width: 42, alignment: .trailing).font(.caption)
         }
     }
 
-    private func rowLabel(_ title: String) -> some View {
-        Text(title)
-            .frame(width: 112, alignment: .trailing)
-            .multilineTextAlignment(.trailing)
-            .fixedSize(horizontal: false, vertical: true)
-            .font(.caption)
+    private func controlIcon(_ symbol: String, help: String) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: 14))
+            .frame(width: 24)
+            .help(help)
+            .accessibilityHidden(true)
     }
 }
 

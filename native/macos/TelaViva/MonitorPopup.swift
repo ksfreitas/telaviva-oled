@@ -107,7 +107,7 @@ private struct MonitorControls: View {
     private var screensaverTarget: some View {
         let target = min(max(core.snapshot.settings?.screensaver_targets[monitor.id] ?? 1, 1), 50)
         return HStack(spacing: 8) {
-            rowLabel(AppText.string("protectionBrightness", locale: core.snapshot.settings?.locale))
+            controlIcon("shield", help: AppText.string("control.protectionBrightness.help", locale: core.snapshot.settings?.locale))
             Slider(value: Binding(get: {
                 min(max(core.snapshot.settings?.screensaver_targets[monitor.id] ?? 1, 1), 50)
             }, set: { value in
@@ -115,6 +115,8 @@ private struct MonitorControls: View {
                 settings.screensaver_targets[monitor.id] = min(max(value, 1), 50)
                 core.updateSettings(settings)
             }), in: 1...50)
+            .accessibilityLabel("\(AppText.string("protectionBrightness", locale: core.snapshot.settings?.locale)), \(monitor.name)")
+            .accessibilityHelp(AppText.string("control.protectionBrightness.help", locale: core.snapshot.settings?.locale))
             Text("\(Int(target.rounded()))%").monospacedDigit().frame(width: 42, alignment: .trailing).font(.caption)
         }
     }
@@ -147,7 +149,8 @@ private struct MonitorControls: View {
             let shown = controls.displayValue(monitor: monitor, feature: feature) ?? confirmed
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 8) {
-                    rowLabel(title)
+                    let helpKey = feature == .brightness ? "control.brightness.help" : "control.volume.help"
+                    controlIcon(feature == .brightness ? "sun.max" : "speaker.wave.2", help: AppText.string(helpKey, locale: core.snapshot.settings?.locale))
                     Slider(value: Binding(get: {
                         controls.displayValue(monitor: monitor, feature: feature) ?? confirmed
                     }, set: { newValue in
@@ -155,6 +158,8 @@ private struct MonitorControls: View {
                     }), in: 0...100, onEditingChanged: { editing in
                         controls.setEditing(editing, monitor: monitor, feature: feature)
                     })
+                    .accessibilityLabel("\(title), \(monitor.name)")
+                    .accessibilityHelp(AppText.string(helpKey, locale: core.snapshot.settings?.locale))
                     Text("\(Int(shown.rounded()))%").monospacedDigit().frame(width: 42, alignment: .trailing).font(.caption)
                 }
                 if controls.status(monitor: monitor, feature: feature) == .failed {
@@ -169,11 +174,11 @@ private struct MonitorControls: View {
         }
     }
 
-    private func rowLabel(_ title: String) -> some View {
-        Text(title)
-            .frame(width: 112, alignment: .trailing)
-            .multilineTextAlignment(.trailing)
-            .fixedSize(horizontal: false, vertical: true)
-            .font(.caption)
+    private func controlIcon(_ symbol: String, help: String) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: 14))
+            .frame(width: 24)
+            .help(help)
+            .accessibilityHidden(true)
     }
 }

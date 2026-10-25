@@ -97,6 +97,15 @@
   <data name="flyout.reason.volume_unavailable" xml:space="preserve">
     <value>O volume não está disponível neste monitor</value>
   </data>
+  <data name="control.brightness.help" xml:space="preserve">
+    <value>Ajuste o brilho desta tela.</value>
+  </data>
+  <data name="control.volume.help" xml:space="preserve">
+    <value>Ajuste o volume dos alto-falantes deste monitor.</value>
+  </data>
+  <data name="control.protectionBrightness.help" xml:space="preserve">
+    <value>Escolha o brilho usado quando a proteção por presença ou pelo protetor de tela escurecer esta tela.</value>
+  </data>
   <data name="flyout.brightness" xml:space="preserve">
     <value>Brilho</value>
   </data>

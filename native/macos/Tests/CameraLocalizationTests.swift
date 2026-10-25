@@ -37,7 +37,22 @@ enum CameraLocalizationTests {
         expect(AppText.inferenceUnavailableLabel(id: "gpu:1002:164e:0", locale: "pt-BR"),
                equals: "Dispositivo indisponível: gpu:1002:164e:0")
         expectAdvancedInferenceKeys()
+        expectMonitorControlHelpKeys()
         expectMatchingMessageKeys()
+    }
+
+    private static func expectMonitorControlHelpKeys() {
+        let expected = [
+            "control.brightness.help", "control.volume.help", "control.protectionBrightness.help"
+        ]
+        for locale in ["en-US", "pt-BR"] {
+            for key in expected {
+                guard let value = AppText.translations[locale]?[key], !value.isEmpty else {
+                    fputs("Missing monitor control help string `\(key)` in \(locale)\n", stderr)
+                    exit(1)
+                }
+            }
+        }
     }
 
     private static func expectAdvancedInferenceKeys() {
