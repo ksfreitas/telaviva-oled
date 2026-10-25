@@ -438,3 +438,12 @@ Both native shells present brightness, volume and protection brightness with ali
 Each shell owns the three explanatory help keys in en-US and pt-BR. Passive icons expose hover tooltips; sliders retain localized accessible names with display identity and gain equivalent accessibility help. Existing ranges, visibility, locking, control bindings and dispatch paths remain unchanged. No public interface, core policy, dependency or network behavior changed.
 
 The decision is recorded in [ADR 0038](adr/0038-monitor-slider-icons-and-tooltips.md); the [archived plan](specs/archived/monitor-slider-icons-and-tooltips/plan.md) records implementation and validation. Windows Release built without warnings or errors and all 743 native tests passed. Native macOS execution and interactive visual, accessibility and physical monitor acceptance remain pending. The IDEA diagnostics helpers did not cover the changed Swift, C++, XAML or RESW files, and no IntelliJ inspections connection was available.
+
+
+## apply-macos-monitor-slider-icons — 2026-10-25
+
+The macOS slider implementation from ADR 0038 now uses SwiftUI `accessibilityHint` for the four explanatory help modifiers in the external and built-in display cards. The previous `accessibilityHelp` calls prevented compilation. Existing SF Symbols, localized icon tooltips, accessible slider names, numeric values, bindings and control behavior are retained. No core, public interface, settings, dependency or network behavior changes.
+
+The standard Apple Silicon build, packaged smoke test, popup layout and camera/localization tests passed. The packaged and installed signatures verified, the installed executable matched the build byte for byte, and the app was reopened from `/Applications/TelaViva OLED.app` after a normal quit and bundle backup. This supplements the earlier macOS validation status in the ADR 0038 section above. IntelliJ inspections returned no findings for the two changed Swift files; SonarLint skipped Swift and TypeScript had no applicable files. The preexisting `Sendable` warning in `MenuBarController.swift` remains, and interactive visual, tooltip hover, VoiceOver and physical monitor checks are still pending.
+
+The compatibility decision is recorded in [ADR 0039](adr/0039-apply-macos-monitor-slider-icons.md), with the execution record in the [archived plan](specs/archived/apply-macos-monitor-slider-icons/plan.md). The local installation does not constitute a release or change the application version.

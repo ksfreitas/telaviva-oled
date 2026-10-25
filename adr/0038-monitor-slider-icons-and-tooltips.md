@@ -35,3 +35,8 @@ The Windows Release build passed with zero warnings and errors, and all 743 nati
 - Icons remain enabled independently of a disabled slider so their tooltip can still explain the setting.
 - Protection brightness sets the target used by presence or screensaver protection; it is distinct from manual brightness. This presentation change must not alter current caps or restoration policy.
 - macOS popup sizing remains based on measured card heights; compact rows do not justify a new hardcoded popup height.
+
+
+## Follow-up — 2026-10-25
+
+[ADR 0039](0039-apply-macos-monitor-slider-icons.md) records the macOS compatibility correction from `accessibilityHelp` to `accessibilityHint`, the passing native build and smoke test, and the validated local installation. It also records the subsequent IntelliJ inspections pass for the two changed Swift files. These results supplement the initial validation status above; interactive visual, accessibility and physical monitor checks remain pending.

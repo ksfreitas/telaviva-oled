@@ -67,7 +67,7 @@ struct BuiltInCardView: View {
                 }), in: 0...100, onEditingChanged: { editing = $0 })
                 .disabled(sliderLocked)
                 .accessibilityLabel("\(AppText.string("brightness", locale: locale)), \(AppText.string("builtin.name", locale: locale))")
-                .accessibilityHelp(AppText.string("control.brightness.help", locale: locale))
+                .accessibilityHint(AppText.string("control.brightness.help", locale: locale))
                 Text("\(Int(level.rounded()))%").monospacedDigit().frame(width: 42, alignment: .trailing).font(.caption)
             }
             if sliderLocked {
@@ -113,7 +113,7 @@ struct BuiltInCardView: View {
                 core.updateSettings(settings)
             }), in: 1...50)
             .accessibilityLabel("\(AppText.string("protectionBrightness", locale: locale)), \(AppText.string("builtin.name", locale: locale))")
-            .accessibilityHelp(AppText.string("control.protectionBrightness.help", locale: locale))
+            .accessibilityHint(AppText.string("control.protectionBrightness.help", locale: locale))
             Text("\(Int(target.rounded()))%").monospacedDigit().frame(width: 42, alignment: .trailing).font(.caption)
         }
     }

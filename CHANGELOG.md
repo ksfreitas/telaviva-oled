@@ -21,6 +21,8 @@
 
 ### Fixed
 
+- Fix macOS compilation of the monitor sliders by using SwiftUI accessibility hints for localized explanatory help.
+
 - Calibration crash recovery on Windows now restores the external monitor's brightness once the monitor is available again, for up to 90 seconds after launch, as on macOS. Hardware checks are pending.
 - The camera is retried after it stops delivering images, after 30 s, then 1 min, then every 5 min, on macOS and Windows. Before, a camera left "busy" or "unavailable" stayed off until the app was restarted. Presence protection resumes by itself when the camera answers. Hardware checks are pending.
 

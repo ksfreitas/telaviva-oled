@@ -116,7 +116,7 @@ private struct MonitorControls: View {
                 core.updateSettings(settings)
             }), in: 1...50)
             .accessibilityLabel("\(AppText.string("protectionBrightness", locale: core.snapshot.settings?.locale)), \(monitor.name)")
-            .accessibilityHelp(AppText.string("control.protectionBrightness.help", locale: core.snapshot.settings?.locale))
+            .accessibilityHint(AppText.string("control.protectionBrightness.help", locale: core.snapshot.settings?.locale))
             Text("\(Int(target.rounded()))%").monospacedDigit().frame(width: 42, alignment: .trailing).font(.caption)
         }
     }
@@ -159,7 +159,7 @@ private struct MonitorControls: View {
                         controls.setEditing(editing, monitor: monitor, feature: feature)
                     })
                     .accessibilityLabel("\(title), \(monitor.name)")
-                    .accessibilityHelp(AppText.string(helpKey, locale: core.snapshot.settings?.locale))
+                    .accessibilityHint(AppText.string(helpKey, locale: core.snapshot.settings?.locale))
                     Text("\(Int(shown.rounded()))%").monospacedDigit().frame(width: 42, alignment: .trailing).font(.caption)
                 }
                 if controls.status(monitor: monitor, feature: feature) == .failed {
