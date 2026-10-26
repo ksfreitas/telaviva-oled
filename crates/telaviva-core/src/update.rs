@@ -26,11 +26,13 @@ struct Version {
     major: u64,
     minor: u64,
     patch: u64,
+    revision: u64,
     prerelease: bool,
 }
 
 impl Version {
-    /// Strict semver: MAJOR.MINOR.PATCH, optional -prerelease, optional +build (ignored).
+    /// Strict version: MAJOR.MINOR.PATCH with an optional fourth numeric revision,
+    /// optional -prerelease, and optional +build (ignored). Missing revision means zero.
     /// A leading `v` is not accepted here; tags strip it before calling this.
     fn parse(text: &str) -> Option<Self> {
         let (rest, build) = match text.split_once('+') {
@@ -51,17 +53,19 @@ impl Version {
                 return None;
             }
         }
-        let mut parts = core.split('.');
-        let major = parse_number(parts.next()?)?;
-        let minor = parse_number(parts.next()?)?;
-        let patch = parse_number(parts.next()?)?;
-        if parts.next().is_some() {
+        let parts = core.split('.').collect::<Vec<_>>();
+        if !(3..=4).contains(&parts.len()) {
             return None;
         }
+        let major = parse_number(parts[0])?;
+        let minor = parse_number(parts[1])?;
+        let patch = parse_number(parts[2])?;
+        let revision = parts.get(3).map_or(Some(0), |part| parse_number(part))?;
         Some(Self {
             major,
             minor,
             patch,
+            revision,
             prerelease: prerelease.is_some(),
         })
     }
@@ -69,8 +73,8 @@ impl Version {
 
 impl Ord for Version {
     fn cmp(&self, other: &Self) -> Ordering {
-        (self.major, self.minor, self.patch)
-            .cmp(&(other.major, other.minor, other.patch))
+        (self.major, self.minor, self.patch, self.revision)
+            .cmp(&(other.major, other.minor, other.patch, other.revision))
             // With equal numbers a pre-release sorts below the release.
             .then_with(|| other.prerelease.cmp(&self.prerelease))
     }
@@ -290,8 +294,36 @@ mod tests {
     }
 
     #[test]
+    fn four_component_release_tags_compare_with_three_component_versions() {
+        assert_eq!(
+            run("0.1.4", 200, &tag_body("v0.1.3.1"))["status"],
+            "up_to_date"
+        );
+        let update = run("0.1.3", 200, &tag_body("v0.1.3.1"));
+        assert_eq!(update["status"], "update_available");
+        assert_eq!(update["remote_version"], "0.1.3.1");
+        assert_eq!(
+            run("0.1.3", 200, &tag_body("v0.1.3.0"))["status"],
+            "up_to_date"
+        );
+        assert_eq!(
+            run("0.1.3.1", 200, &tag_body("v0.1.3"))["status"],
+            "up_to_date"
+        );
+    }
+
+    #[test]
     fn malformed_tags_are_invalid_response() {
-        for tag in ["1.2", "1.2.3.4", "01.2.3", "v", "", "1.2.x", "../x"] {
+        for tag in [
+            "1.2",
+            "1.2.3.4.5",
+            "01.2.3",
+            "v",
+            "",
+            "1.2.x",
+            "../x",
+            "1.2.3.04",
+        ] {
             assert_eq!(
                 run("1.0.0", 200, &tag_body(tag))["status"],
                 "invalid_response",

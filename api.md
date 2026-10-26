@@ -157,7 +157,7 @@ The core evaluates an update check and nothing else. The native shell performs t
 
 `tv_update_evaluate(installed, installed_len, http_status, body, body_len, out)` takes these parameters:
 
-- `installed` and `installed_len`: the installed version as UTF-8, in `MAJOR.MINOR.PATCH` form with an optional `-prerelease`. Empty input, invalid UTF-8 or a malformed version is rejected. The length may not exceed 64 bytes.
+- `installed` and `installed_len`: the installed version as UTF-8, in `MAJOR.MINOR.PATCH` form (optionally `MAJOR.MINOR.PATCH.REVISION`) with an optional `-prerelease`. Empty input, invalid UTF-8 or a malformed version is rejected. The length may not exceed 64 bytes.
 - `http_status`: the HTTP status code of the GitHub response.
 - `body` and `body_len`: the response body. The pointer may be null only when `body_len` is `0`. The body may not exceed 1 MiB.
 - `out`: receives the UpdateOutcome JSON.
@@ -190,11 +190,11 @@ On a 200 response the core reads `tag_name`, `draft` and `prerelease`; all other
 
 `release_url` is always built by the core as `https://github.com/ksfreitas/telaviva-oled/releases/tag/<tag_name>`. The `html_url` sent by the server is never used.
 
-Semver rules:
+Version comparison rules:
 
-- A version is `MAJOR.MINOR.PATCH`, three unsigned decimal numbers without leading zeros, with an optional `-prerelease` made of dot-separated `[0-9A-Za-z-]+` identifiers. An optional `+build` suffix is ignored. A single leading `v` or `V` is accepted for tags only.
-- Any other form, such as two or four parts, empty parts, signs or spaces, is malformed.
-- Versions compare by the numeric values of the three numbers, so `0.10.0` is newer than `0.9.0`. With equal numbers, a pre-release is lower than the release.
+- A version is `MAJOR.MINOR.PATCH`, optionally followed by a fourth numeric revision for compatibility with existing release tags such as `v0.1.3.1`. Each component is an unsigned decimal number without leading zeros. An optional `-prerelease` uses dot-separated `[0-9A-Za-z-]+` identifiers; optional `+build` metadata is ignored. A single leading `v` or `V` is accepted for tags only.
+- Two or more than four numeric parts, empty parts, signs or spaces are malformed.
+- Versions compare numerically in major/minor/patch/revision order; a missing revision is zero. Thus `0.1.3` equals `0.1.3.0`, `0.1.3.1` is newer than `0.1.3`, and `0.1.4` is newer than both. With equal numbers, a pre-release is lower than the release.
 - A remote pre-release is never offered as an update.
 
 ### Camera lifecycle and display sleep
