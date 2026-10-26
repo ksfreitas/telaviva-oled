@@ -5,6 +5,7 @@ This guide describes how each feature of TelaViva OLED behaves on macOS and Wind
 - [The popup or flyout](#the-popup-or-flyout)
 - [Settings](#settings)
 - [Presence protection](#presence-protection)
+- [Keep awake while present](#keep-awake-while-present)
 - [Screensaver protection](#screensaver-protection)
 - [Laptop screen protection](#laptop-screen-protection)
 - [Following the laptop brightness](#following-the-laptop-brightness)
@@ -39,17 +40,32 @@ Settings has General, Keyboard, Automatic brightness, Advanced and About pages o
 - **Monitored display:** the display whose brightness decides whether the camera runs. See [Laptop screen protection](#laptop-screen-protection).
 - **Sampling intervals:** the presence sampling interval defaults to 10 seconds (5 to 300 seconds). While dimmed, return checks default to 1 second (0.25 to 5 seconds).
 - **Battery behavior:** presence checking pauses on battery by default.
+- **Keep awake while present** (macOS General page): off by default. Keeps monitoring active, including on battery and below brightness thresholds, independently of brightness protection. See [Keep awake while present](#keep-awake-while-present).
 - **Check presence only above brightness:** the presence brightness threshold. It is a slider from 0 to 90%, 20% by default. Each display keeps its own value. See [Laptop screen protection](#laptop-screen-protection).
 - **Launch at login:** off by default.
 - **Hardware-key steps:** see [Keyboard and hardware keys](#keyboard-and-hardware-keys).
 - **Inference device** (Advanced page): where face detection runs. See [Inference device](#inference-device).
 - **Keep camera on** (Advanced page): on by default. Turning it off can cause detection problems, depending on the camera, and can produce insufficient-light events. See [Presence protection](#presence-protection).
 
+## Keep awake while present
+
+On macOS, in **Settings > General**, enable **Keep awake while a face is detected** (**Manter ativo enquanto um rosto for detectado** in Portuguese). This is separate from presence-based brightness protection. It keeps the camera open between scheduled checks even when **Keep camera on** is saved as off, and runs on battery, at low display brightness and without an external monitor. It does not change those saved preferences. Camera use and battery consumption can increase.
+
+While a face is detected, TelaViva makes temporary requests to keep the display and computer awake and reports activity to postpone automatic screensaver and locking. The first valid no-face result releases those requests immediately; the two-check confirmation for brightness protection is unchanged. Darkness, permission denial, camera failure and expired presence evidence also release them. A silent capture stall is bounded by the configured sampling interval plus 15 seconds. Detection occurs at the configured sampling interval, so leaving is not detected instantly.
+
+Releasing the requests allows the operating system to follow its existing timeouts. TelaViva does not force an immediate lock or sleep, change saved OS settings, or promise that a full new idle interval starts when you leave. Disabling the option restores the ordinary monitoring rules and keeps your saved battery, brightness and camera preferences.
+
+Manual lock, sleep, screensaver activation, display-off and lid actions take precedence. TelaViva never unlocks a session or wakes a sleeping computer when a face returns. Monitoring resumes when the session is usable again and requires a fresh positive detection. Actual system sleep and unavailable camera access prevent detection even with this option enabled.
+
+macOS activity posting may require permission; use the permission action shown in Settings when needed. Denied permission is shown as unavailable rather than silently changing security settings. Mandatory security policy takes precedence. Native request success is not proof that every OS lock mechanism is suppressed; physical acceptance, including manually started screensavers and elevated desktops, is tracked in the [feature validation report](../specs/keep-awake-with-presence/validation.md).
+
 ## Presence protection
 
 Presence protection is off until you enable it, and enabling it requests camera access. It detects any face locally. It does not identify people, enroll faces, save webcam images or send frames to a service.
 
 ### How it works
+
+**Protection brightness** is the dimmed target (1–50%), not the camera activation threshold. The separate **Check presence only above brightness** setting controls ordinary camera gating; **Keep awake while a face is detected** keeps local monitoring active independently of that brightness gate.
 
 - Two valid no-face checks dim the monitor, and a returning face clears the presence reason and restores the brightness.
 - Checks run at the sampling interval. While a monitor is dimmed, return checks run faster.
@@ -61,7 +77,7 @@ Presence protection is off until you enable it, and enabling it requests camera 
 
 With **Keep camera on** turned off, normal presence checks use one-frame sessions. When it is enabled (on by default, in Settings > Advanced), capture is retained between checks without increasing the inference frequency.
 
-Capture stops when:
+With **Keep awake while present** off, capture stops when:
 
 - presence protection is disabled;
 - battery suspension applies;

@@ -32,6 +32,8 @@ pub struct Settings {
     pub suspend_presence_on_battery: bool,
     #[serde(default)]
     pub presence_protection_enabled: bool,
+    #[serde(default)]
+    pub keep_awake_with_presence: bool,
     #[serde(default = "default_presence_min_brightness")]
     pub presence_min_brightness_percent: f64,
     // Per-display presence threshold, percent 0..=90, keyed by monitor id or "builtin". A display
@@ -256,6 +258,7 @@ impl Default for Settings {
             return_sampling_interval_s: 1.0,
             suspend_presence_on_battery: true,
             presence_protection_enabled: false,
+            keep_awake_with_presence: false,
             presence_min_brightness_percent: 20.0,
             presence_min_brightness_by_display: Default::default(),
             always_on_camera: true,

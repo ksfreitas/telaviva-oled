@@ -6,6 +6,7 @@ import Combine
 final class CoreBridge: ObservableObject {
     @Published private(set) var snapshot: CoreSnapshot = .unavailable
     @Published var hardwareKeyStatusKey = "hardwareKeys.status.disabled"
+    @Published var keepAwakeStatusKey = "keepAwake.status.disabled"
     @Published var hardwareKeyPermissions = HardwareKeyPermissions.current()
     /// Test seam: invoked on the worker queue at the start of every snapshot refresh run, before the core is read.
     var refreshRunObserver: (() -> Void)?
@@ -170,6 +171,31 @@ final class CoreBridge: ObservableObject {
         submit(["type": "update_settings", "settings": settings.json])
     }
 
+    /// Enqueues a merge of one protection target into the core's latest settings. `true` means accepted for enqueue;
+    /// the read and partial submit stay serialized with core snapshots and other commands without blocking the caller.
+    @discardableResult
+    func updateProtectionBrightness(displayID: String, value: Double) -> Bool {
+        guard !displayID.isEmpty, value.isFinite, (1...50).contains(value) else { return false }
+        #if TELAVIVA_CORE
+        guard core != nil, !isShuttingDown else { return false }
+        workerQueue.async { [weak self] in
+            guard let self, let core = self.core, !self.isShuttingDown else { return }
+            self.ffiLock.lock()
+            defer { self.ffiLock.unlock() }
+            guard var targets = self.readSnapshot(core)?.settings?.screensaver_targets else { return }
+            targets[displayID] = value
+            let command: [String: Any] = ["type": "update_settings", "settings": ["screensaver_targets": targets]]
+            guard let bytes = try? JSONSerialization.data(withJSONObject: command), bytes.count <= 65_536 else { return }
+            _ = bytes.withUnsafeBytes { raw in
+                tv_submit(core, raw.baseAddress!.assumingMemoryBound(to: UInt8.self), raw.count) == TV_OK
+            }
+        }
+        return true
+        #else
+        return false
+        #endif
+    }
+
     /// The only path that sends `selected_camera_id`. Call it when the user picks a device or "Use default camera".
     /// `nil` clears the core's history, so the app follows the system default from then on.
     @discardableResult
@@ -264,6 +290,8 @@ final class CoreBridge: ObservableObject {
 }
 
 struct CoreSnapshot: Decodable {
+    /// Monotonic receipt time used to account for time spent queued before the UI consumes a lease.
+    private(set) var decodedAtUptime: TimeInterval = ProcessInfo.processInfo.systemUptime
     var revision: UInt64?
     var settings: CoreSettings?
     var monitors: [CoreMonitor]?
@@ -274,18 +302,22 @@ struct CoreSnapshot: Decodable {
     var builtinProtection: CoreBuiltInProtection = .none
     /// The core's resolved monitored display. Snapshots from before it existed decode as automatic.
     var monitoredDisplay: CoreMonitoredDisplay = .automatic
+    /// Keep-awake request and finite presence lease. Missing on snapshots produced by older cores.
+    var keepAwake: CoreKeepAwake = .disabled
     enum CodingKeys: String, CodingKey {
         case revision, settings, monitors, pending_actions, camera, ambient, builtinProtection = "builtin_protection",
-             monitoredDisplay = "monitored_display"
+             monitoredDisplay = "monitored_display", keepAwake = "keep_awake"
     }
     static let unavailable = CoreSnapshot(revision: nil, settings: nil, monitors: [], pending_actions: [], camera: nil)
     private init(revision: UInt64?, settings: CoreSettings?, monitors: [CoreMonitor]?, pending_actions: [PendingAction]?, camera: CameraSnapshot?) {
+        decodedAtUptime = ProcessInfo.processInfo.systemUptime
         self.revision = revision; self.settings = settings; self.monitors = monitors
         self.pending_actions = pending_actions; self.camera = camera
     }
 
     /// Written by hand so `builtin_protection` and `monitored_display` can fall back; the other fields decode as the synthesized code would.
     init(from decoder: Decoder) throws {
+        decodedAtUptime = ProcessInfo.processInfo.systemUptime
         let container = try decoder.container(keyedBy: CodingKeys.self)
         revision = try container.decodeIfPresent(UInt64.self, forKey: .revision)
         settings = try container.decodeIfPresent(CoreSettings.self, forKey: .settings)
@@ -295,6 +327,36 @@ struct CoreSnapshot: Decodable {
         ambient = try container.decodeIfPresent(CoreAmbient.self, forKey: .ambient)
         builtinProtection = try container.decodeIfPresent(CoreBuiltInProtection.self, forKey: .builtinProtection) ?? .none
         monitoredDisplay = try container.decodeIfPresent(CoreMonitoredDisplay.self, forKey: .monitoredDisplay) ?? .automatic
+        keepAwake = try container.decodeIfPresent(CoreKeepAwake.self, forKey: .keepAwake) ?? .disabled
+    }
+
+    func keepAwakeRemainingMilliseconds(at uptime: TimeInterval = ProcessInfo.processInfo.systemUptime) -> UInt64 {
+        Self.remainingLeaseMilliseconds(keepAwake.validForMilliseconds, since: decodedAtUptime, at: uptime)
+    }
+
+    static func remainingLeaseMilliseconds(_ milliseconds: UInt64, since receivedAt: TimeInterval,
+                                           at uptime: TimeInterval) -> UInt64 {
+        guard milliseconds > 0 else { return 0 }
+        let elapsed = max(0, uptime - receivedAt)
+        let elapsedMilliseconds = UInt64(min(elapsed * 1_000, Double(UInt64.max)))
+        return milliseconds > elapsedMilliseconds ? milliseconds - elapsedMilliseconds : 0
+    }
+}
+
+struct CoreKeepAwake: Decodable, Equatable {
+    var enabled: Bool
+    var requested: Bool
+    var observationID: UInt64
+    var generation: UInt64
+    var validForMilliseconds: UInt64
+    var reason: String
+
+    static let disabled = CoreKeepAwake(enabled: false, requested: false, observationID: 0,
+                                        generation: 0, validForMilliseconds: 0, reason: "disabled")
+
+    enum CodingKeys: String, CodingKey {
+        case enabled, requested, observationID = "observation_id", generation
+        case validForMilliseconds = "valid_for_ms", reason
     }
 }
 
@@ -435,6 +497,8 @@ struct CoreSettings: Decodable {
     /// Holds automatic brightness off while the built-in display is dimmed for protection. Not optional: the core
     /// always sends it, and saves always emit it.
     var builtinAutoBrightnessOffOnProtection = false
+    /// Optional to decode snapshots written before the setting existed; saves always emit it.
+    var keep_awake_with_presence: Bool?
 
     /// Keys are listed explicitly because the three ambient fields use snake_case raw names.
     enum CodingKeys: String, CodingKey {
@@ -446,6 +510,7 @@ struct CoreSettings: Decodable {
         case protectionDisabled = "protection_disabled"
         case presenceMinBrightnessByDisplay = "presence_min_brightness_by_display"
         case builtinAutoBrightnessOffOnProtection = "builtin_auto_brightness_off_on_protection"
+        case keep_awake_with_presence
     }
 
     /// Omits `selected_camera_id` and `camera_history` on purpose: only `selectCamera(_:)` sends the camera, so an
@@ -463,7 +528,8 @@ struct CoreSettings: Decodable {
             "brightness_key_step": brightness_key_step ?? 5, "volume_key_step": volume_key_step ?? 5,
             "presence_min_brightness_percent": presence_min_brightness_percent ?? 20,
             "inference_device": inference_device ?? "auto",
-            "builtin_auto_brightness_off_on_protection": builtinAutoBrightnessOffOnProtection
+            "builtin_auto_brightness_off_on_protection": builtinAutoBrightnessOffOnProtection,
+            "keep_awake_with_presence": keep_awake_with_presence ?? false
         ]
         // Ambient keys are added only when set, so an unrelated save leaves the core's stored values untouched.
         if let ambientFollowEnabled { object["ambient_follow_enabled"] = ambientFollowEnabled }

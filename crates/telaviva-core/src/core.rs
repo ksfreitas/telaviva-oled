@@ -1,5 +1,6 @@
 use crate::builtin;
 use crate::diagnostics::{self, Diagnostics};
+use crate::keep_awake::KeepAwakePresence;
 use crate::settings::{self, AmbientCurve, Settings};
 use serde::{
     de::{MapAccess, SeqAccess, Visitor},
@@ -9,7 +10,7 @@ use serde_json::{json, Map, Number, Value};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 const MAX_ACTIONS: usize = 128;
@@ -116,6 +117,10 @@ pub struct Core {
     last_presence_ms: u64,
     // Result of the latest accepted face-mode sample; cleared on any camera generation change.
     last_presence: Option<&'static str>,
+    // Monotonic positive evidence for the independent keep-awake consumer. Snapshot reads never
+    // renew the lease.
+    keep_awake_presence: KeepAwakePresence,
+    session_active: bool,
     closed: bool,
     // Built-in display state reported by the shell. Runtime only, never persisted.
     builtin_available: bool,
@@ -132,6 +137,12 @@ pub struct Core {
 }
 
 impl Core {
+    fn bump_camera_generation(&mut self) {
+        self.camera_generation = self.camera_generation.saturating_add(1);
+        self.last_presence = None;
+        self.keep_awake_presence.invalidate();
+    }
+
     pub fn new(options: CoreOptions) -> Result<Self, String> {
         let settings = options
             .config_path
@@ -158,6 +169,8 @@ impl Core {
             resume_pending: false,
             last_presence_ms: 0,
             last_presence: None,
+            keep_awake_presence: KeepAwakePresence::default(),
+            session_active: false,
             closed: false,
             builtin_available: false,
             builtin_percent: None,
@@ -196,6 +209,7 @@ impl Core {
                     "camera_generation",
                     "camera_status",
                 ],
+                "keep_awake_session" => &["type", "active"],
                 "camera_status" => &["type", "status", "generation"],
                 "power" => &["type", "on_battery"],
                 "screensaver" => &["type", "state"],
@@ -229,6 +243,7 @@ impl Core {
             "monitor_observed" => self.observe_monitor(&value)?,
             "monitor_display_state" => self.display_state(&value)?,
             "presence_observation" => self.presence(&value)?,
+            "keep_awake_session" => self.keep_awake_session(&value)?,
             "power" => {
                 if !value
                     .get("on_battery")
@@ -239,8 +254,7 @@ impl Core {
                 }
                 let was_on_battery = self.on_battery == Some(true);
                 self.on_battery = value.get("on_battery").and_then(Value::as_bool);
-                self.camera_generation += 1;
-                self.last_presence = None;
+                self.bump_camera_generation();
                 if self.settings.suspend_presence_on_battery && self.on_battery != Some(false) {
                     for m in self.monitors.values_mut() {
                         m.presence_dimmed = false;
@@ -295,6 +309,7 @@ impl Core {
                 if ["unavailable", "busy", "permission", "error"]
                     .contains(&self.camera_status.as_str())
                 {
+                    self.keep_awake_presence.invalidate();
                     for monitor in self.monitors.values_mut() {
                         monitor.presence_dimmed = false;
                         monitor.misses = 0;
@@ -374,8 +389,7 @@ impl Core {
         self.connection_generations
             .insert(id.to_owned(), generation);
         self.actions.retain(|a| a.monitor_id != id);
-        self.camera_generation = self.camera_generation.saturating_add(1);
-        self.last_presence = None;
+        self.bump_camera_generation();
         // A replacement drops the old Monitor, so a dim it still holds is parked before it goes.
         self.park_dim(id);
         // A dim this core left on the device resumes only when the monitor returns at the same
@@ -560,8 +574,7 @@ impl Core {
         let resumed_display =
             was_asleep && state == "awake" && Self::monitor_is_camera_eligible(monitor, protected);
         self.actions.retain(|action| action.monitor_id != id);
-        self.camera_generation = self.camera_generation.saturating_add(1);
-        self.last_presence = None;
+        self.bump_camera_generation();
         if resumed_display {
             self.begin_camera_resume();
         }
@@ -672,6 +685,10 @@ impl Core {
                     next.presence_protection_enabled =
                         val.as_bool().ok_or("setting must be boolean")?
                 }
+                "keep_awake_with_presence" => {
+                    next.keep_awake_with_presence =
+                        val.as_bool().ok_or("setting must be boolean")?
+                }
                 "presence_min_brightness_percent" => {
                     next.presence_min_brightness_percent =
                         val.as_f64().ok_or("threshold must be number")?
@@ -776,6 +793,8 @@ impl Core {
         let camera_changed = next.selected_camera_id != self.settings.selected_camera_id;
         let presence_reenabled =
             !self.settings.presence_protection_enabled && next.presence_protection_enabled;
+        let keep_awake_reenabled =
+            !self.settings.keep_awake_with_presence && next.keep_awake_with_presence;
         // A save that changes nothing (for example reselecting the current front) keeps the
         // camera generation, so in-flight samples and the camera session are not restarted.
         // The monitored display is not camera input until its gating step, so changing it must not
@@ -810,8 +829,7 @@ impl Core {
         }
         self.settings = next;
         if settings_changed {
-            self.camera_generation += 1;
-            self.last_presence = None;
+            self.bump_camera_generation();
         }
         if camera_changed {
             self.camera_status = "unknown".into();
@@ -820,11 +838,38 @@ impl Core {
             self.low_light = false;
             self.usable_light_samples = 0;
         }
-        if presence_reenabled {
+        if presence_reenabled || keep_awake_reenabled {
             self.begin_camera_resume();
         }
         self.reconcile_camera();
         self.recompute_follow(None);
+        self.reconcile_all()
+    }
+
+    fn keep_awake_session(&mut self, v: &Value) -> Result<(), String> {
+        let active = v
+            .get("active")
+            .and_then(Value::as_bool)
+            .ok_or("active must be boolean")?;
+        if active == self.session_active {
+            return Ok(());
+        }
+        self.session_active = active;
+        if !self.settings.keep_awake_with_presence {
+            return Ok(());
+        }
+        self.bump_camera_generation();
+        if !active {
+            for monitor in self.monitors.values_mut() {
+                monitor.presence_dimmed = false;
+                monitor.misses = 0;
+            }
+            self.builtin.clear_presence();
+        }
+        if active {
+            self.begin_camera_resume();
+        }
+        self.reconcile_camera();
         self.reconcile_all()
     }
 
@@ -873,22 +918,38 @@ impl Core {
         match status {
             "present" => {
                 self.last_presence = Some("present");
+                if self.settings.keep_awake_with_presence && self.session_active {
+                    self.keep_awake_presence.observe_present(
+                        ts,
+                        gen,
+                        self.settings.presence_sampling_interval_s,
+                        Instant::now(),
+                    );
+                } else {
+                    self.keep_awake_presence.invalidate();
+                }
                 self.low_light = false;
                 self.usable_light_samples = 0;
-                for m in self.monitors.values_mut() {
-                    clear_presence_dim(&mut self.diagnostics, m);
-                    if !m.saver_dimmed {
-                        m.manual_override = false;
+                if self.brightness_presence_active() {
+                    for m in self.monitors.values_mut() {
+                        clear_presence_dim(&mut self.diagnostics, m);
+                        if !m.saver_dimmed {
+                            m.manual_override = false;
+                        }
                     }
+                    self.builtin.clear_presence();
                 }
-                self.builtin.clear_presence();
                 self.reconcile_all()?;
             }
             "absent" => {
+                self.keep_awake_presence.invalidate();
                 if self.camera_mode() != "face" {
                     return Ok(());
                 }
                 self.last_presence = Some("absent");
+                if !self.brightness_presence_active() {
+                    return Ok(());
+                }
                 let protection_disabled = &self.settings.protection_disabled;
                 for m in self.monitors.values_mut() {
                     if m.display_state == "asleep" {
@@ -917,17 +978,21 @@ impl Core {
                 self.reconcile_all()?;
             }
             "insufficient_light" => {
+                self.keep_awake_presence.invalidate();
                 self.last_presence = None;
                 self.low_light = true;
                 self.usable_light_samples = 0;
-                for m in self.monitors.values_mut() {
-                    clear_presence_dim(&mut self.diagnostics, m);
+                if self.brightness_presence_active() {
+                    for m in self.monitors.values_mut() {
+                        clear_presence_dim(&mut self.diagnostics, m);
+                    }
+                    self.builtin.clear_presence();
                 }
-                self.builtin.clear_presence();
                 self.reconcile_camera();
                 self.reconcile_all()?;
             }
             "unavailable" => {
+                self.keep_awake_presence.invalidate();
                 self.last_presence = None;
                 self.camera_status = v
                     .get("camera_status")
@@ -937,14 +1002,17 @@ impl Core {
                 if ["unavailable", "busy"].contains(&self.camera_status.as_str()) {
                     self.note_camera_failure();
                 }
-                for m in self.monitors.values_mut() {
-                    clear_presence_dim(&mut self.diagnostics, m);
+                if self.brightness_presence_active() {
+                    for m in self.monitors.values_mut() {
+                        clear_presence_dim(&mut self.diagnostics, m);
+                    }
+                    self.builtin.clear_presence();
                 }
-                self.builtin.clear_presence();
                 self.reconcile_camera();
                 self.reconcile_all()?;
             }
             "usable_light" => {
+                self.keep_awake_presence.invalidate();
                 self.usable_light_samples = self.usable_light_samples.saturating_add(1);
                 if self.usable_light_samples >= 2 {
                     self.low_light = false;
@@ -958,8 +1026,22 @@ impl Core {
     }
 
     fn reconcile_camera(&mut self) {
-        if !self.settings.presence_protection_enabled
+        let keep_awake_monitoring = self.keep_awake_monitoring_active();
+        let brightness_suspended = !self.settings.presence_protection_enabled
             || (self.settings.suspend_presence_on_battery && self.on_battery != Some(false))
+            || self.all_eligible_displays_asleep();
+        if brightness_suspended {
+            for monitor in self.monitors.values_mut() {
+                monitor.presence_dimmed = false;
+                monitor.misses = 0;
+            }
+            self.builtin.clear_presence();
+        }
+        if (!self.settings.presence_protection_enabled && !self.settings.keep_awake_with_presence)
+            || (!keep_awake_monitoring
+                && self.settings.suspend_presence_on_battery
+                && self.on_battery != Some(false))
+            || (self.settings.keep_awake_with_presence && !self.session_active)
         {
             self.camera_status = "unknown".into();
             self.last_presence = None;
@@ -968,7 +1050,7 @@ impl Core {
                 monitor.misses = 0;
             }
             self.builtin.clear_presence();
-        } else if self.all_eligible_displays_asleep() {
+        } else if !keep_awake_monitoring && self.all_eligible_displays_asleep() {
             if !["unavailable", "busy", "permission", "error"]
                 .contains(&self.camera_status.as_str())
             {
@@ -989,7 +1071,7 @@ impl Core {
     // Clears state that a suspended period leaves behind so the first sample after a resume
     // starts clean. Permission and error need user action and are kept.
     fn begin_camera_resume(&mut self) {
-        if !self.settings.presence_protection_enabled {
+        if !self.settings.presence_protection_enabled && !self.settings.keep_awake_with_presence {
             return;
         }
         self.camera_failures = 0;
@@ -1015,15 +1097,42 @@ impl Core {
         );
     }
 
+    fn keep_awake_monitoring_active(&self) -> bool {
+        self.settings.keep_awake_with_presence && self.session_active && !self.closed
+    }
+
+    fn brightness_presence_active(&self) -> bool {
+        self.settings.presence_protection_enabled
+            && !(self.settings.suspend_presence_on_battery && self.on_battery != Some(false))
+            && !self.all_eligible_displays_asleep()
+            && self.camera_gate_active()
+    }
+
+    fn keep_awake_effective_state(&self, now: Instant) -> (bool, u64) {
+        if !self.keep_awake_monitoring_active() {
+            return (false, 0);
+        }
+        let remaining = self
+            .keep_awake_presence
+            .valid_for_ms(self.camera_generation, now);
+        (remaining > 0, remaining)
+    }
+
     fn camera_mode(&self) -> &'static str {
-        if self.closed || !self.settings.presence_protection_enabled {
-            "disabled"
-        } else if (self.settings.suspend_presence_on_battery && self.on_battery != Some(false))
-            || !self.camera_gate_active()
+        let keep_awake_monitoring = self.keep_awake_monitoring_active();
+        let suspended = (self.settings.keep_awake_with_presence && !self.session_active)
             || (self.camera_status != "unknown"
                 && ["unavailable", "busy", "permission", "error"]
                     .contains(&self.camera_status.as_str()))
+            || (!keep_awake_monitoring
+                && ((self.settings.suspend_presence_on_battery && self.on_battery != Some(false))
+                    || !self.camera_gate_active()));
+        if self.closed
+            || (!self.settings.presence_protection_enabled
+                && !self.settings.keep_awake_with_presence)
         {
+            "disabled"
+        } else if suspended {
             "suspended"
         } else if self.low_light {
             "light_only"
@@ -1198,8 +1307,7 @@ impl Core {
         if entered.is_empty() && left.is_empty() {
             return;
         }
-        self.camera_generation = self.camera_generation.saturating_add(1);
-        self.last_presence = None;
+        self.bump_camera_generation();
         for id in &entered {
             if let Some(monitor) = self.monitors.get_mut(id) {
                 monitor.misses = 0;
@@ -1260,6 +1368,7 @@ impl Core {
                 "busy" => "busy",
                 "permission" => "permission",
                 "error" => "error",
+                _ if self.settings.keep_awake_with_presence && !self.session_active => "suspended",
                 _ if self.settings.suspend_presence_on_battery && self.on_battery == Some(true) => {
                     "suspended_battery"
                 }
@@ -1874,6 +1983,8 @@ impl Core {
         };
         let capture_mode = if camera_mode == "disabled" || camera_mode == "suspended" {
             "stopped"
+        } else if self.keep_awake_monitoring_active() {
+            "continuous_monitoring"
         } else if camera_mode == "face" && self.any_presence_dimmed() {
             "continuous_return"
         } else if self.settings.always_on_camera {
@@ -1894,18 +2005,46 @@ impl Core {
             None => Value::Null,
         };
         let retry_in_ms = if ["busy", "unavailable"].contains(&self.camera_status.as_str())
-            && self.settings.presence_protection_enabled
+            && (self.settings.presence_protection_enabled || self.settings.keep_awake_with_presence)
             && !self.closed
+            && (!self.settings.keep_awake_with_presence || self.session_active)
         {
             json!(CAMERA_RETRY_MS[(self.camera_failures.max(1) as usize - 1).min(2)])
         } else {
             Value::Null
         };
+        let (keep_awake_requested, keep_awake_valid_for_ms) =
+            self.keep_awake_effective_state(Instant::now());
+        let keep_awake_reason = if !self.settings.keep_awake_with_presence {
+            "disabled"
+        } else if !self.session_active {
+            "session_inactive"
+        } else if keep_awake_requested {
+            "present"
+        } else if self
+            .keep_awake_presence
+            .expired_for(self.camera_generation, Instant::now())
+        {
+            "evidence_expired"
+        } else if self.low_light {
+            "insufficient_light"
+        } else if ["permission", "unavailable", "busy", "error"]
+            .contains(&self.camera_status.as_str())
+        {
+            self.camera_status.as_str()
+        } else {
+            match self.last_presence {
+                Some("absent") => "absent",
+                _ => "presence_unknown",
+            }
+        };
+        let observation_id = self.keep_awake_presence.observation_id();
         let value = json!({"revision":self.revision,"settings":self.settings,"monitors":monitors,"pending_actions":actions,
             "ambient":{"enabled":self.settings.ambient_follow_enabled,"available":self.builtin_available,"active":self.settings.ambient_follow_enabled&&self.builtin_available,"calibrating":self.calibrating,"builtin_percent":self.builtin_percent},
             "builtin_protection":{"protectable":self.builtin.protectable,"protected":self.builtin.protectable&&!self.settings.protection_disabled.contains(builtin::BUILTIN_ID),"available":self.builtin_available,"reasons":builtin_reasons,"target_percent":self.builtin_target_percent(),"hold_auto_brightness":self.settings.builtin_auto_brightness_off_on_protection&&!builtin_reasons.is_empty(),"holding":self.builtin.holding},
             "monitored_display":{"id":monitored_id,"automatic":self.settings.monitored_display_history.is_empty()},
             "camera":{"mode":camera_mode,"capture_mode":capture_mode,"status":self.camera_status,"display_status":display_status,"next_sample_in_ms":if camera_mode=="disabled"||camera_mode=="suspended"{Value::Null}else{json!(cadence)},"generation":self.camera_generation,"presence":presence,"retry_in_ms":retry_in_ms},
+            "keep_awake":{"enabled":self.settings.keep_awake_with_presence,"requested":keep_awake_requested,"observation_id":observation_id,"generation":self.camera_generation,"valid_for_ms":keep_awake_valid_for_ms,"reason":keep_awake_reason},
             "power":{"on_battery":self.on_battery},"screensaver":{"state":self.saver_state},"status":"ready"});
         let bytes = serde_json::to_vec(&value).map_err(|e| e.to_string())?;
         if bytes.len() > 8 * 1024 * 1024 {

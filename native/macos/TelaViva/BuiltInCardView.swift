@@ -26,6 +26,7 @@ struct BuiltInCardView: View {
     @ObservedObject var protection: BuiltInProtectionController
     @State private var level = 0.0
     @State private var editing = false
+    @State private var protectionBrightnessDraft = ProtectionBrightnessDraft()
 
     private var locale: String? { core.snapshot.settings?.locale }
     private var bp: CoreBuiltInProtection { core.snapshot.builtinProtection }
@@ -102,19 +103,27 @@ struct BuiltInCardView: View {
 
     /// Fixed 1...50 range, clamped like the monitor rows: protection brightness does not depend on the screen's current level.
     private var protectionBrightness: some View {
-        let target = min(max(core.snapshot.settings?.screensaver_targets[BuiltInProtectionController.displayID] ?? 1, 1), 50)
+        let target = protectionBrightnessDraft.displayed(snapshotValue: core.snapshot.settings?.screensaver_targets[BuiltInProtectionController.displayID])
         return HStack(spacing: 8) {
             controlIcon("shield", help: AppText.string("control.protectionBrightness.help", locale: locale))
             Slider(value: Binding(get: {
-                min(max(core.snapshot.settings?.screensaver_targets[BuiltInProtectionController.displayID] ?? 1, 1), 50)
+                protectionBrightnessDraft.displayed(snapshotValue: core.snapshot.settings?.screensaver_targets[BuiltInProtectionController.displayID])
             }, set: { value in
-                guard var settings = core.snapshot.settings else { return }
-                settings.screensaver_targets[BuiltInProtectionController.displayID] = min(max(value, 1), 50)
-                core.updateSettings(settings)
-            }), in: 1...50)
+                let target = protectionBrightnessDraft.set(value)
+                core.updateProtectionBrightness(displayID: BuiltInProtectionController.displayID, value: target)
+            }), in: 1...50, onEditingChanged: { editing in
+                if editing {
+                    protectionBrightnessDraft.begin(snapshotValue: core.snapshot.settings?.screensaver_targets[BuiltInProtectionController.displayID])
+                } else {
+                    protectionBrightnessDraft.endEditing()
+                }
+            })
             .accessibilityLabel("\(AppText.string("protectionBrightness", locale: locale)), \(AppText.string("builtin.name", locale: locale))")
             .accessibilityHint(AppText.string("control.protectionBrightness.help", locale: locale))
             Text("\(Int(target.rounded()))%").monospacedDigit().frame(width: 42, alignment: .trailing).font(.caption)
+        }
+        .onChange(of: core.snapshot.settings?.screensaver_targets[BuiltInProtectionController.displayID]) { _, value in
+            protectionBrightnessDraft.receive(snapshotValue: value)
         }
     }
 

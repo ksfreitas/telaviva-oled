@@ -39,6 +39,7 @@ enum CameraLocalizationTests {
         expectAdvancedInferenceKeys()
         expectMonitorControlHelpKeys()
         expectMatchingMessageKeys()
+        expectKeepAwakeStrings()
     }
 
     private static func expectMonitorControlHelpKeys() {
@@ -81,6 +82,27 @@ enum CameraLocalizationTests {
         let missingInEnUS = Set(ptBR.keys).subtracting(enUS.keys).sorted()
         guard missingInPtBR.isEmpty && missingInEnUS.isEmpty else {
             fputs("Message keys differ. Missing in pt-BR: \(missingInPtBR). Missing in en-US: \(missingInEnUS)\n", stderr)
+            exit(1)
+        }
+    }
+
+    private static func expectKeepAwakeStrings() {
+        let expected = [
+            "keepAwake.toggle", "keepAwake.help", "keepAwake.monitoring", "keepAwake.requestPermission",
+            "keepAwake.openPrivacy", "keepAwake.status.disabled", "keepAwake.status.awaiting",
+            "keepAwake.status.active", "keepAwake.status.permission", "keepAwake.status.unavailable",
+            "keepAwake.status.suspended"
+        ]
+        for locale in ["en-US", "pt-BR"] {
+            for key in expected where AppText.string(key, locale: locale) == key {
+                fputs("Missing keep-awake localization `\(key)` in \(locale)\n", stderr)
+                exit(1)
+            }
+        }
+        let en = Set(AppText.keepAwakeTranslations["en-US"]?.keys ?? Dictionary<String, String>().keys)
+        let pt = Set(AppText.keepAwakeTranslations["pt-BR"]?.keys ?? Dictionary<String, String>().keys)
+        guard en == pt else {
+            fputs("Keep-awake localization keys differ between en-US and pt-BR\n", stderr)
             exit(1)
         }
     }

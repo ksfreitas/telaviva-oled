@@ -21,7 +21,8 @@
 - **Every external monitor in one place.** A brightness slider and a volume slider per monitor, sent over DDC/CI. Controls a monitor does not support are shown as unavailable instead of failing silently.
 - **Presence protection (optional).** Local face detection dims a monitor when you step away and restores it when you come back. It detects any face: it never identifies anyone and needs no enrollment. Poor lighting pauses detection instead of being mistaken for absence.
 - **Screensaver protection (optional).** Dim each monitor to a brightness you choose while the screensaver runs.
-- **Battery aware.** Presence checks pause on battery by default and while every eligible monitor is asleep.
+- **Keep awake while present (optional, macOS).** Keep presence monitoring active independently of brightness protection and request that automatic screensaver, locking and sleep wait while a face is detected. The first no-face result or unavailable detection releases those requests. Manual lock and sleep take precedence; [OS acceptance is tracked separately](specs/keep-awake-with-presence/validation.md).
+- **Battery aware.** Brightness protection pauses on battery by default. On macOS, Keep awake while present overrides the camera's battery and brightness gates while enabled.
 - **Follow your laptop (optional).** On a MacBook or a Windows laptop, external monitors can follow the built-in panel's brightness, including its automatic brightness, through calibration points you manage.
 - **Protect the laptop screen.** The built-in screen of a MacBook or a Windows laptop dims like an external monitor when you step away or the screensaver starts, and is restored afterwards. An optional setting turns off the system's automatic brightness while the screen is protected. A **Monitored display** choice (Automatic by default, remembered by priority like the camera) decides when the camera runs, and the built-in camera is ignored while the lid is closed.
 - **Hardware keys (optional).** Volume, mute and (on macOS) brightness keys can drive the external monitor.
@@ -44,7 +45,7 @@ Both apps are native shells over one shared Rust core, with face detection by th
 
 ## Status
 
-This checkout reports application version 0.1.3 and remains under active development. The CI badges above show workflow status; hardware validation is still partial on both platforms:
+This checkout reports application version 0.1.4 and remains under active development. The CI badges above show workflow status; hardware validation is still partial on both platforms:
 
 - DDC support depends on the monitor, the port, the cable, any adapter or dock, and the graphics hardware. It is not uniform, and a passing check on one setup says nothing about another.
 - Only a small number of monitors and computers have been used for physical checks. Many checks are still pending, among them camera sharing with video calls, multi-monitor and dock setups, monitor sleep and wake, Laptop follow on real laptops, laptop screen protection and its automatic brightness option (the Windows laptop checks are not yet recorded), and keyboard routing on other keyboards.

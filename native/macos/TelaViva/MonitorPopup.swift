@@ -77,6 +77,7 @@ private struct MonitorControls: View {
     let monitor: CoreMonitor
     let core: CoreBridge
     @ObservedObject var controls: ManualMonitorControls
+    @State private var protectionBrightnessDraft = ProtectionBrightnessDraft()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -105,19 +106,27 @@ private struct MonitorControls: View {
 
     /// Fixed 1...50 range, independent of the screen's brightness: with ambient follow the monitor's brightness can sit near 0.
     private var screensaverTarget: some View {
-        let target = min(max(core.snapshot.settings?.screensaver_targets[monitor.id] ?? 1, 1), 50)
+        let target = protectionBrightnessDraft.displayed(snapshotValue: core.snapshot.settings?.screensaver_targets[monitor.id])
         return HStack(spacing: 8) {
             controlIcon("shield", help: AppText.string("control.protectionBrightness.help", locale: core.snapshot.settings?.locale))
             Slider(value: Binding(get: {
-                min(max(core.snapshot.settings?.screensaver_targets[monitor.id] ?? 1, 1), 50)
+                protectionBrightnessDraft.displayed(snapshotValue: core.snapshot.settings?.screensaver_targets[monitor.id])
             }, set: { value in
-                guard var settings = core.snapshot.settings else { return }
-                settings.screensaver_targets[monitor.id] = min(max(value, 1), 50)
-                core.updateSettings(settings)
-            }), in: 1...50)
+                let target = protectionBrightnessDraft.set(value)
+                core.updateProtectionBrightness(displayID: monitor.id, value: target)
+            }), in: 1...50, onEditingChanged: { editing in
+                if editing {
+                    protectionBrightnessDraft.begin(snapshotValue: core.snapshot.settings?.screensaver_targets[monitor.id])
+                } else {
+                    protectionBrightnessDraft.endEditing()
+                }
+            })
             .accessibilityLabel("\(AppText.string("protectionBrightness", locale: core.snapshot.settings?.locale)), \(monitor.name)")
             .accessibilityHint(AppText.string("control.protectionBrightness.help", locale: core.snapshot.settings?.locale))
             Text("\(Int(target.rounded()))%").monospacedDigit().frame(width: 42, alignment: .trailing).font(.caption)
+        }
+        .onChange(of: core.snapshot.settings?.screensaver_targets[monitor.id]) { _, value in
+            protectionBrightnessDraft.receive(snapshotValue: value)
         }
     }
 

@@ -2,8 +2,11 @@
 
 ## Unreleased
 
+## 0.1.4 - 2026-10-26
+
 ### Added
 
+- Keep awake while a face is detected, off by default: continuous presence monitoring keeps the display and computer active while a face is detected, independently of brightness protection, battery preferences and display brightness. The first no-face result or unavailable detection releases the inactivity requests and restores normal operating-system behavior. Manual lock, screensaver and sleep actions take precedence. The option and its status are available in English and Portuguese.
 - Laptop screen protection on Windows: the built-in panel appears in the popup and in Settings > General as "Laptop" (Notebook in Portuguese), with a protection switch, a brightness slider and a Protection brightness slider, and no volume control. It dims when no face is detected and when the screensaver starts, and it is restored afterwards. Hardware checks are pending.
 - An option, off by default, that turns off "Change brightness automatically when lighting changes" in the active power plan while the Windows laptop panel is protected, for AC and DC power. The app restores the setting afterwards, unless you turned it on during protection, and it recovers the setting and the panel brightness at the next launch after a crash. Hardware checks are pending.
 - A Monitored display selector on Windows, with Automatic (the main external display, otherwise the laptop panel), the remembered displays and the laptop panel as choices. The camera follows the monitored display. Hardware checks are pending.
@@ -21,6 +24,9 @@
 
 ### Fixed
 
+- Fix update checks for existing release tags with a fourth numeric version component, such as `v0.1.3.1`, instead of reporting an invalid response.
+- Keep macOS protection-brightness sliders responsive while settings snapshots arrive asynchronously, preserving the selected 1–50% target.
+- Keep local presence monitoring active while keep-awake posting is paused for screensaver/display state or an awake clamshell session. Correct camera suspension reporting so a blocked session is not described as low display brightness.
 - Fix macOS compilation of the monitor sliders by using SwiftUI accessibility hints for localized explanatory help.
 
 - Calibration crash recovery on Windows now restores the external monitor's brightness once the monitor is available again, for up to 90 seconds after launch, as on macOS. Hardware checks are pending.

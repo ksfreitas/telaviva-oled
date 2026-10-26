@@ -17,8 +17,11 @@ private struct CoreBridgeTests {
         presenceThresholdByDisplayDecodes()
         presenceThresholdByDisplayJSON()
         coreSettingsInferenceDeviceJSON()
+        keepAwakeSettingMigrationAndJSON()
+        keepAwakeSnapshotDecodes()
         cameraHistoryDecodesAndStaysOutOfSaves()
         inferenceDeviceRoundTripsThroughCore()
+        protectionBrightnessSettingsUpdatesDoNotReplaceStaleTargets()
         cameraSelectionRoundTripsThroughCore()
         coreSettingsAmbientFieldsJSON()
         ambientCurvePointsJSON()
@@ -200,6 +203,36 @@ private struct CoreBridgeTests {
                "absent presence brightness threshold is emitted as the default of 20")
     }
 
+    private static func keepAwakeSettingMigrationAndJSON() {
+        let migrated = decodeSettings([:])
+        expect(migrated.keep_awake_with_presence == nil, "older settings decode the added Boolean as absent")
+        expect(migrated.json["keep_awake_with_presence"] as? Bool == false,
+               "saving an older settings snapshot emits the disabled default")
+        var enabled = migrated
+        enabled.keep_awake_with_presence = true
+        expect(enabled.json["keep_awake_with_presence"] as? Bool == true,
+               "full settings payload round-trips the enabled value")
+        expect(enabled.json["suspend_presence_on_battery"] as? Bool == true,
+               "keep-awake settings serialization retains the battery preference")
+    }
+
+    private static func keepAwakeSnapshotDecodes() {
+        let data = try! JSONSerialization.data(withJSONObject: [
+            "keep_awake": ["enabled": true, "requested": true, "observation_id": 42,
+                           "generation": 7, "valid_for_ms": 25_000, "reason": "present", "future": "ignored"]
+        ])
+        let snapshot = try! JSONDecoder().decode(CoreSnapshot.self, from: data)
+        expect(snapshot.keepAwake == CoreKeepAwake(enabled: true, requested: true, observationID: 42,
+                                                   generation: 7, validForMilliseconds: 25_000, reason: "present"),
+               "keep-awake lease decodes its token and remaining TTL")
+        let older = try! JSONDecoder().decode(CoreSnapshot.self, from: Data("{}".utf8))
+        expect(older.keepAwake == .disabled, "missing additive snapshot data defaults to disabled")
+        expect(CoreSnapshot.remainingLeaseMilliseconds(25_000, since: 10, at: 30) == 5_000,
+               "time queued before UI delivery is deducted from the first lease snapshot")
+        expect(CoreSnapshot.remainingLeaseMilliseconds(25_000, since: 10, at: 35) == 0,
+               "a lease queued past its deadline reaches the controller expired")
+    }
+
     /// The per-display thresholds decode from a snapshot that carries them, and read as nil when it lacks them.
     private static func presenceThresholdByDisplayDecodes() {
         let withMap = decodeSettings(["presence_min_brightness_by_display": ["monitor-a": 12, "builtin": 40]])
@@ -309,6 +342,96 @@ private struct CoreBridgeTests {
         var shutdownFinished = false
         bridge.beginShutdown { shutdownFinished = true }
         expect(waitUntil { shutdownFinished }, "shutdown completes before the temporary directory is removed")
+    }
+
+    private static func protectionBrightnessSettingsUpdatesDoNotReplaceStaleTargets() {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("telaviva-protection-target-tests-\(UUID().uuidString)", isDirectory: true)
+        try! FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let bridge = CoreBridge(configPath: directory.appendingPathComponent("settings.json"))
+        expect(waitUntil { bridge.snapshot.settings != nil }, "initial settings publish before protection target updates")
+        var initial = bridge.snapshot.settings!
+        initial.screensaver_targets = ["monitor-c": 18]
+        initial.presence_protection_enabled = false
+        initial.keep_awake_with_presence = false
+        bridge.updateSettings(initial)
+        expect(waitUntil { bridge.snapshot.settings?.screensaver_targets["monitor-c"] == 18 },
+               "initial protection target is stored")
+
+        // This represents the UI's cached settings value while another preference update lands.
+        let stale = bridge.snapshot.settings!
+        var latest = stale
+        latest.presence_protection_enabled = true
+        latest.keep_awake_with_presence = true
+        bridge.updateSettings(latest)
+        expect(waitUntil {
+            bridge.snapshot.settings?.presence_protection_enabled == true &&
+                bridge.snapshot.settings?.keep_awake_with_presence == true
+        }, "new protection preferences are stored before the slider commands")
+
+        expect(!bridge.updateProtectionBrightness(displayID: "", value: 12),
+               "empty display IDs are rejected")
+        expect(!bridge.updateProtectionBrightness(displayID: "monitor-a", value: .nan),
+               "non-finite protection targets are rejected")
+        expect(!bridge.updateProtectionBrightness(displayID: "monitor-a", value: 51),
+               "values outside the slider range are rejected")
+
+        // Hold the bridge's serial worker to prove slider setters only enqueue work and return immediately.
+        let workerEntered = DispatchSemaphore(value: 0)
+        let releaseWorker = DispatchSemaphore(value: 0)
+        let observerLock = NSLock()
+        var shouldBlockWorker = true
+        bridge.refreshRunObserver = {
+            observerLock.lock()
+            let block = shouldBlockWorker
+            shouldBlockWorker = false
+            observerLock.unlock()
+            if block {
+                workerEntered.signal()
+                _ = releaseWorker.wait(timeout: .now() + 5)
+            }
+        }
+        bridge.refresh()
+        expect(workerEntered.wait(timeout: .now() + 5) == .success,
+               "the test blocks the core worker before submitting slider changes")
+
+        let callerReturned = DispatchSemaphore(value: 0)
+        let callerFinished = DispatchSemaphore(value: 0)
+        let resultLock = NSLock()
+        var acceptedCalls = false
+        DispatchQueue.global(qos: .userInitiated).async {
+            let firstAccepted = bridge.updateProtectionBrightness(displayID: "monitor-a", value: 12)
+            let secondAccepted = bridge.updateProtectionBrightness(displayID: "monitor-b", value: 34)
+            resultLock.lock()
+            acceptedCalls = firstAccepted && secondAccepted
+            resultLock.unlock()
+            callerReturned.signal()
+            callerFinished.signal()
+        }
+
+        let returnedBeforeWorkerRelease = callerReturned.wait(timeout: .now() + 0.5) == .success
+        releaseWorker.signal()
+        expect(returnedBeforeWorkerRelease, "slider setters return while the core worker is occupied")
+        expect(callerFinished.wait(timeout: .now() + 5) == .success,
+               "both protection target updates are enqueued")
+        resultLock.lock()
+        let accepted = acceptedCalls
+        resultLock.unlock()
+        expect(accepted, "both display target updates are accepted for enqueue")
+
+        expect(waitUntil {
+            bridge.snapshot.settings?.screensaver_targets["monitor-a"] == 12 &&
+                bridge.snapshot.settings?.screensaver_targets["monitor-b"] == 34 &&
+                bridge.snapshot.settings?.screensaver_targets["monitor-c"] == 18 &&
+                bridge.snapshot.settings?.presence_protection_enabled == true &&
+                bridge.snapshot.settings?.keep_awake_with_presence == true
+        }, "queued target updates merge latest entries and preserve unrelated settings")
+
+        var shutdownFinished = false
+        bridge.beginShutdown { shutdownFinished = true }
+        expect(waitUntil { shutdownFinished }, "core shuts down before the temporary directory is removed")
     }
 
     /// Decodes a full snapshot object, the shape `tv_snapshot` returns, so any optional section can be left out.

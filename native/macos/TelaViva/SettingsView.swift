@@ -13,6 +13,9 @@ struct SettingsView: View {
     var requestHardwareKeyPermission: () -> Void = {
         (NSApp.delegate as? MenuBarController)?.requestHardwareKeyPermission()
     }
+    var requestKeepAwakePermission: () -> Void = {
+        (NSApp.delegate as? MenuBarController)?.requestKeepAwakePermission()
+    }
     @ObservedObject var ambientAvailability: AmbientAvailability = AmbientAvailability()
     @ObservedObject var inferenceReport: InferenceDeviceSelection.Report
     var calibration: AmbientCalibrationController? = nil
@@ -22,6 +25,7 @@ struct SettingsView: View {
     @State private var presence = false
     @State private var alwaysOnCamera = true
     @State private var screensaver = false
+    @State private var keepAwakeWithPresence = false
     @State private var battery = true
     @State private var login = false
     @State private var hardwareKeys = false
@@ -100,6 +104,7 @@ struct SettingsView: View {
         .onChange(of: hardwareKeys) { _, _ in save() }
         .onChange(of: alwaysOnCamera) { _, _ in save() }
         .onChange(of: screensaver) { _, _ in save() }
+        .onChange(of: keepAwakeWithPresence) { _, _ in save() }
         .onChange(of: battery) { _, _ in save() }
         .onChange(of: presentInterval) { _, _ in save() }
         .onChange(of: returnInterval) { _, _ in save() }
@@ -143,6 +148,23 @@ struct SettingsView: View {
             Section(AppText.string("protection", locale: locale)) {
                 Toggle(AppText.string("presence", locale: locale), isOn: $presence)
                     .help(AppText.string("presenceHelp", locale: locale))
+                Toggle(AppText.string("keepAwake.toggle", locale: locale), isOn: $keepAwakeWithPresence)
+                    .help(AppText.string("keepAwake.help", locale: locale))
+                Text(AppText.string("keepAwake.monitoring", locale: locale))
+                    .font(.caption).foregroundStyle(.secondary)
+                Text(AppText.string(core.keepAwakeStatusKey, locale: locale))
+                    .font(.caption).foregroundStyle(.secondary)
+                if core.keepAwakeStatusKey == "keepAwake.status.permission" {
+                    HStack {
+                        Button(AppText.string("keepAwake.requestPermission", locale: locale), action: requestKeepAwakePermission)
+                        Button(AppText.string("keepAwake.openPrivacy", locale: locale)) {
+                            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }
+                    }
+                    .controlSize(.small)
+                }
                 // Threshold below which the camera stays off; editable only while presence protection is on.
                 VStack(alignment: .leading, spacing: 4) {
                     LabeledContent(AppText.string("presenceMinBrightness", locale: locale)) {
@@ -313,6 +335,7 @@ struct SettingsView: View {
         locale = value.locale; presence = value.presence_protection_enabled
         alwaysOnCamera = value.always_on_camera ?? true
         screensaver = value.screensaver_protection_enabled; battery = value.suspend_presence_on_battery
+        keepAwakeWithPresence = value.keep_awake_with_presence ?? false
         login = value.launch_at_login; presentInterval = Double(value.presence_sampling_interval_s)
         hardwareKeys = value.hardware_keys_enabled ?? false
         brightnessKeyStep = Double(value.brightness_key_step ?? 5)
@@ -328,6 +351,7 @@ struct SettingsView: View {
         settings.locale = locale; settings.presence_protection_enabled = presence
         settings.always_on_camera = alwaysOnCamera
         settings.screensaver_protection_enabled = screensaver; settings.suspend_presence_on_battery = battery
+        settings.keep_awake_with_presence = keepAwakeWithPresence
         settings.launch_at_login = login; settings.presence_sampling_interval_s = presentInterval
         settings.return_sampling_interval_s = returnInterval
         settings.hardware_keys_enabled = hardwareKeys

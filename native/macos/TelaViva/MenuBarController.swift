@@ -20,8 +20,15 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     })
     private lazy var manualControls = ManualMonitorControls(driver: controls)
     let camera = PresenceCamera()
+    private let keepAwakeBackend = MacKeepAwakeBackend()
+    private lazy var keepAwakeController = KeepAwakeController(backend: keepAwakeBackend)
     /// Keeps the camera off the built-in camera while the lid is closed.
-    private lazy var lidMonitor = LidStateMonitor { [weak self] closed in self?.camera.setLidClosed(closed) }
+    private lazy var lidMonitor = LidStateMonitor { [weak self] closed in
+        guard let self else { return }
+        self.camera.setLidClosed(closed)
+        self.keepAwakeBackend.setLidClosed(closed)
+        self.reportKeepAwakeSession()
+    }
     private lazy var ddc = MacDDCController(core: core)
     private lazy var hardwareKeyRouter = HardwareKeyRouter(controls: controls)
     private let defaultAudioOutput = DefaultAudioOutputMonitor()
@@ -102,6 +109,14 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     private var wakeObserver: NSObjectProtocol?
     private var screensWakeObserver: NSObjectProtocol?
     private var displaySleepObserver: NSObjectProtocol?
+    private var systemSleepObserver: NSObjectProtocol?
+    private var sessionResignObserver: NSObjectProtocol?
+    private var sessionBecomeObserver: NSObjectProtocol?
+    private var lastKeepAwakeDiagnostic: String?
+    private var lockedObserver: NSObjectProtocol?
+    private var unlockedObserver: NSObjectProtocol?
+    private var saverStartObserver: NSObjectProtocol?
+    private var saverStopObserver: NSObjectProtocol?
     private var settingsCloseObserver: NSObjectProtocol?
     /// Last state and locale applied to the status item; the icon is only reset when one of them changes.
     private var appliedIconState: PresenceIconState?
@@ -122,6 +137,23 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePopover(_:))
         statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        keepAwakeController.onStatusChange = { [weak core = self.core] status in
+            DispatchQueue.main.async {
+                let key: String
+                switch status {
+                case .disabled: key = "keepAwake.status.disabled"
+                case .awaitingPresence: key = "keepAwake.status.awaiting"
+                case .active: key = "keepAwake.status.active"
+                case .permissionRequired: key = "keepAwake.status.permission"
+                case .unavailable: key = "keepAwake.status.unavailable"
+                case .suspended: key = "keepAwake.status.suspended"
+                }
+                core?.keepAwakeStatusKey = key
+            }
+        }
+        keepAwakeBackend.setLidClosed(DisplayServicesBackend.lidClosed())
+        keepAwakeBackend.setDisplayAsleep(Self.currentDisplaysAreAsleep())
+        reconcileKeepAwakeSession()
         popover = NSPopover()
         popover.behavior = .transient
         let openSettingsAction: () -> Void = { [weak self] in self?.openSettings() }
@@ -141,6 +173,10 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                 self.camera.setInferenceDevice(inferenceDevice)
             }
             self.camera.apply(snapshot, core: self.core)
+            let keepAwake = snapshot.keepAwake
+            self.keepAwakeController.update(enabled: keepAwake.enabled, requested: keepAwake.requested,
+                                            generation: keepAwake.generation, observationID: keepAwake.observationID,
+                                            validForMilliseconds: snapshot.keepAwakeRemainingMilliseconds())
             // Before the terminating guard, so snapshots keep reaching the core during shutdown restoration.
             self.controls.observe(snapshot)
             self.ddc.process(snapshot)
@@ -210,21 +246,51 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         // Availability is re-read on display changes, system wake, and display sleep and wake; there is no polling for it.
         screenObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             self?.builtInMonitor.refreshAvailability()
+            self?.keepAwakeBackend.setDisplayAsleep(Self.currentDisplaysAreAsleep())
+            self?.reportKeepAwakeSession()
         }
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             self?.builtInMonitor.refreshAvailability()
+            self?.keepAwakeBackend.setSystemSleeping(false)
+            self?.keepAwakeBackend.setDisplayAsleep(Self.currentDisplaysAreAsleep())
+            self?.reportKeepAwakeSession()
             // A lid change can be missed around sleep, so the state is read again on wake.
             self?.camera.setLidClosed(DisplayServicesBackend.lidClosed())
         }
         displaySleepObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: .main) { [weak self] _ in
             self?.calibration.end(.displaySleep)
             self?.builtInMonitor.refreshAvailability()
+            self?.keepAwakeBackend.setDisplayAsleep(true)
+            self?.reportKeepAwakeSession()
         }
         screensWakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main) { [weak self] _ in
             self?.builtInMonitor.refreshAvailability()
+            self?.keepAwakeBackend.setDisplayAsleep(Self.currentDisplaysAreAsleep())
+            self?.reportKeepAwakeSession()
             self?.camera.setLidClosed(DisplayServicesBackend.lidClosed())
             // The display can still read asleep when the notification arrives, so availability is checked again shortly after.
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.builtInMonitor.refreshAvailability() }
+        }
+        systemSleepObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.keepAwakeBackend.setSystemSleeping(true)
+            self?.reportKeepAwakeSession()
+        }
+        sessionResignObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.sessionDidResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.keepAwakeBackend.setSessionActive(false)
+            self?.reportKeepAwakeSession()
+        }
+        sessionBecomeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.sessionDidBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.keepAwakeBackend.setSessionActive(true)
+            self?.reportKeepAwakeSession()
+        }
+        lockedObserver = DistributedNotificationCenter.default().addObserver(forName: Notification.Name("com.apple.screenIsLocked"), object: nil, queue: .main) { [weak self] _ in
+            self?.keepAwakeBackend.setSessionLocked(true)
+            self?.reportKeepAwakeSession()
+        }
+        unlockedObserver = DistributedNotificationCenter.default().addObserver(forName: Notification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main) { [weak self] _ in
+            self?.keepAwakeBackend.setSessionLocked(false)
+            self?.keepAwakeBackend.setSessionActive(true)
+            self?.reportKeepAwakeSession()
         }
         observeScreensaver()
         // Started after the camera exists; the first callback sets the lid state the camera starts with.
@@ -244,12 +310,59 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
 
     func requestInputMonitoringPermission() { hardwareKeyRouter.requestInputMonitoringFromUserAction() }
 
+    func requestKeepAwakePermission() {
+        keepAwakeController.requestPostingPermissionFromUserAction()
+    }
+
+    private func reconcileKeepAwakeSession() {
+        reportKeepAwakeSession()
+    }
+
+    /// Applies the local veto before sending it to the core so an already queued positive snapshot cannot
+    /// post activity after a manual lock, saver, sleep, display-off or lid transition.
+    private func reportKeepAwakeSession() {
+        let safety = keepAwakeBackend.safetyState()
+        let active = KeepAwakeSafety.cameraMonitoringAllowed(for: safety)
+        let diagnostic = keepAwakeBackend.diagnosticState()
+        if diagnostic != lastKeepAwakeDiagnostic {
+            lastKeepAwakeDiagnostic = diagnostic
+            DiagnosticLog.core("keep_awake_guard \(diagnostic)")
+        }
+        keepAwakeController.setSessionEligible(active)
+        keepAwakeController.safetyDidChange()
+        _ = core.submit(["type": "keep_awake_session", "active": active])
+    }
+
+    private static func currentDisplaysAreAsleep() -> Bool {
+        var count: UInt32 = 0
+        guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else { return true }
+        var displays = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        var actual = count
+        guard CGGetActiveDisplayList(count, &displays, &actual) == .success, actual > 0 else { return true }
+        return displays.prefix(Int(actual)).contains { CGDisplayIsAsleep($0) != 0 }
+    }
+
     /// Removes the permission observers; safe to call more than once.
     private func removePermissionObservers() {
         if let activationObserver { NotificationCenter.default.removeObserver(activationObserver) }
         if let accessibilityObserver { DistributedNotificationCenter.default().removeObserver(accessibilityObserver) }
         activationObserver = nil
         accessibilityObserver = nil
+    }
+
+    private func removeKeepAwakeObservers() {
+        let workspace = NSWorkspace.shared.notificationCenter
+        for observer in [wakeObserver, displaySleepObserver, screensWakeObserver, systemSleepObserver,
+                         sessionResignObserver, sessionBecomeObserver] {
+            if let observer { workspace.removeObserver(observer) }
+        }
+        let distributed = DistributedNotificationCenter.default()
+        for observer in [lockedObserver, unlockedObserver, saverStartObserver, saverStopObserver] {
+            if let observer { distributed.removeObserver(observer) }
+        }
+        wakeObserver = nil; displaySleepObserver = nil; screensWakeObserver = nil; systemSleepObserver = nil
+        sessionResignObserver = nil; sessionBecomeObserver = nil
+        lockedObserver = nil; unlockedObserver = nil; saverStartObserver = nil; saverStopObserver = nil
     }
 
     /// Stops the built-in monitor and removes its observers; safe to call more than once.
@@ -370,8 +483,18 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
 
     private func observeScreensaver() {
         let center = DistributedNotificationCenter.default()
-        center.addObserver(forName: Notification.Name("com.apple.screensaver.didstart"), object: nil, queue: .main) { [weak self] _ in self?.core.submit(["type": "screensaver", "state": "active"]) }
-        center.addObserver(forName: Notification.Name("com.apple.screensaver.didstop"), object: nil, queue: .main) { [weak self] _ in self?.core.submit(["type": "screensaver", "state": "inactive"]) }
+        saverStartObserver = center.addObserver(forName: Notification.Name("com.apple.screensaver.didstart"), object: nil, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            self.keepAwakeBackend.setScreensaverActive(true)
+            self.reportKeepAwakeSession()
+            self.core.submit(["type": "screensaver", "state": "active"])
+        }
+        saverStopObserver = center.addObserver(forName: Notification.Name("com.apple.screensaver.didstop"), object: nil, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            self.keepAwakeBackend.setScreensaverActive(false)
+            self.reportKeepAwakeSession()
+            self.core.submit(["type": "screensaver", "state": "inactive"])
+        }
         core.submit(["type": "screensaver", "state": "unknown"])
     }
 
@@ -389,6 +512,9 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !terminating else { return .terminateLater }
         terminating = true
+        keepAwakeBackend.setSessionActive(false)
+        reportKeepAwakeSession()
+        keepAwakeController.shutdown()
         terminationReply = { [weak self] allow in
             guard let self else { return }
             self.terminationPoll?.cancel(); self.terminationDeadline?.cancel()
@@ -405,6 +531,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         defaultAudioOutput.stop()
         hardwareKeyRouter.shutdown()
         removePermissionObservers()
+        removeKeepAwakeObservers()
         calibration.end(.appQuit)
         protection.restoreNow()
         stopBuiltInMonitor()
