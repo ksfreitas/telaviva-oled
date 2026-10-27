@@ -173,6 +173,19 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
                 self.camera.setInferenceDevice(inferenceDevice)
             }
             self.camera.apply(snapshot, core: self.core)
+            if snapshot.settings?.keep_awake_with_presence == true,
+               snapshot.camera?.mode == "suspended", snapshot.camera?.display_status == "suspended" {
+                let localSafety = self.keepAwakeBackend.safetyState()
+                let localMonitoringAllowed = KeepAwakeSafety.cameraMonitoringAllowed(for: localSafety)
+                if let active = KeepAwakeSessionReconciliation.sessionValueToResubmit(
+                    keepAwakeEnabled: true, cameraMode: snapshot.camera?.mode,
+                    displayStatus: snapshot.camera?.display_status,
+                    localMonitoringAllowed: localMonitoringAllowed
+                ) {
+                    DiagnosticLog.core("keep_awake_session_reconcile core_display_status=suspended local_active=\(active)")
+                    self.reportKeepAwakeSession(safety: localSafety)
+                }
+            }
             let keepAwake = snapshot.keepAwake
             self.keepAwakeController.update(enabled: keepAwake.enabled, requested: keepAwake.requested,
                                             generation: keepAwake.generation, observationID: keepAwake.observationID,
@@ -322,6 +335,10 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     /// post activity after a manual lock, saver, sleep, display-off or lid transition.
     private func reportKeepAwakeSession() {
         let safety = keepAwakeBackend.safetyState()
+        reportKeepAwakeSession(safety: safety)
+    }
+
+    private func reportKeepAwakeSession(safety: KeepAwakeSafety) {
         let active = KeepAwakeSafety.cameraMonitoringAllowed(for: safety)
         let diagnostic = keepAwakeBackend.diagnosticState()
         if diagnostic != lastKeepAwakeDiagnostic {
@@ -330,7 +347,8 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
         }
         keepAwakeController.setSessionEligible(active)
         keepAwakeController.safetyDidChange()
-        _ = core.submit(["type": "keep_awake_session", "active": active])
+        let accepted = core.submit(["type": "keep_awake_session", "active": active])
+        DiagnosticLog.core("keep_awake_session_submit active=\(active) accepted=\(accepted)")
     }
 
     private static func currentDisplaysAreAsleep() -> Bool {

@@ -19,6 +19,7 @@ private struct CoreBridgeTests {
         coreSettingsInferenceDeviceJSON()
         keepAwakeSettingMigrationAndJSON()
         keepAwakeSnapshotDecodes()
+        keepAwakeSessionReconcilesOffToOnThroughTheCore()
         cameraHistoryDecodesAndStaysOutOfSaves()
         inferenceDeviceRoundTripsThroughCore()
         protectionBrightnessSettingsUpdatesDoNotReplaceStaleTargets()
@@ -231,6 +232,57 @@ private struct CoreBridgeTests {
                "time queued before UI delivery is deducted from the first lease snapshot")
         expect(CoreSnapshot.remainingLeaseMilliseconds(25_000, since: 10, at: 35) == 0,
                "a lease queued past its deadline reaches the controller expired")
+    }
+
+    private static func keepAwakeSessionReconcilesOffToOnThroughTheCore() {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("telaviva-keep-awake-session-tests-\(UUID().uuidString)", isDirectory: true)
+        try! FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let bridge = CoreBridge(configPath: directory.appendingPathComponent("settings.json"))
+        expect(waitUntil { bridge.snapshot.revision != nil }, "core starts before the keep-awake session transition")
+        expect(bridge.submit(["type": "power", "on_battery": false]), "AC power state is accepted")
+        expect(bridge.submit(["type": "builtin_display", "available": true, "brightness": 80.0,
+                              "calibrating": false, "protectable": true]), "awake built-in display is accepted")
+        expect(bridge.submit(["type": "keep_awake_session", "active": false]), "inactive session is accepted")
+        expect(bridge.submit(["type": "update_settings", "settings": [
+            "presence_protection_enabled": true, "keep_awake_with_presence": false
+        ]]), "keep-awake off state is accepted")
+        expect(waitUntil { bridge.snapshot.camera?.mode == "face" || bridge.snapshot.camera?.mode == "light_only" },
+               "camera runs with presence protection while keep-awake is off; got \(String(describing: bridge.snapshot.camera?.mode))/\(String(describing: bridge.snapshot.camera?.display_status))")
+
+        expect(bridge.submit(["type": "update_settings", "settings": ["keep_awake_with_presence": true]]),
+               "keep-awake on transition is accepted")
+        expect(waitUntil { bridge.snapshot.camera?.mode == "suspended"
+            && bridge.snapshot.camera?.display_status == "suspended" },
+               "stale inactive core session suspends the camera after keep-awake is enabled")
+        guard let resumeValue = KeepAwakeSessionReconciliation.sessionValueToResubmit(
+            keepAwakeEnabled: bridge.snapshot.settings?.keep_awake_with_presence ?? false,
+            cameraMode: bridge.snapshot.camera?.mode,
+            displayStatus: bridge.snapshot.camera?.display_status,
+            localMonitoringAllowed: true
+        ) else { fatalError("CoreBridgeTests: unlocked stale core gate should request reconciliation") }
+        expect(bridge.submit(["type": "keep_awake_session", "active": resumeValue]),
+               "unlocked local state is accepted as the reconciliation value")
+        expect(waitUntil { bridge.snapshot.camera?.mode == "face" },
+               "camera resumes after the current unlocked session is reconciled")
+
+        expect(bridge.submit(["type": "keep_awake_session", "active": false]), "manual lock state is accepted")
+        expect(waitUntil { bridge.snapshot.camera?.display_status == "suspended" },
+               "manual lock suspends keep-awake camera monitoring")
+        let lockedResume = KeepAwakeSessionReconciliation.sessionValueToResubmit(
+            keepAwakeEnabled: bridge.snapshot.settings?.keep_awake_with_presence ?? false,
+            cameraMode: bridge.snapshot.camera?.mode,
+            displayStatus: bridge.snapshot.camera?.display_status,
+            localMonitoringAllowed: false
+        )
+        expect(lockedResume == nil, "locked local state does not submit an active session")
+        expect(bridge.snapshot.camera?.mode == "suspended", "camera remains suspended while locked")
+
+        var shutdownFinished = false
+        bridge.beginShutdown { shutdownFinished = true }
+        expect(waitUntil { shutdownFinished }, "core shutdown finishes before its temporary config is removed")
     }
 
     /// The per-display thresholds decode from a snapshot that carries them, and read as nil when it lacks them.

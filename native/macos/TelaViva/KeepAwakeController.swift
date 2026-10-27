@@ -47,6 +47,17 @@ enum KeepAwakeStatus: Equatable {
     case suspended
 }
 
+enum KeepAwakeSessionReconciliation {
+    /// The core's generic suspended state means its session gate is inactive. Re-report local state
+    /// only for that exact disagreement; other suspension reasons must not cause repeated commands.
+    static func sessionValueToResubmit(keepAwakeEnabled: Bool, cameraMode: String?, displayStatus: String?,
+                                       localMonitoringAllowed: Bool) -> Bool? {
+        guard keepAwakeEnabled, localMonitoringAllowed,
+              cameraMode == "suspended", displayStatus == "suspended" else { return nil }
+        return localMonitoringAllowed
+    }
+}
+
 protocol KeepAwakeCancelable: AnyObject { func cancel() }
 
 protocol KeepAwakeScheduling: AnyObject {

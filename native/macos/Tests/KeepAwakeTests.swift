@@ -250,6 +250,32 @@ private func runGuardResumeFenceTests() {
     controller.shutdown()
 }
 
+private func runSessionReconciliationTests() {
+    // Enabling keep-awake can expose a stale false session gate in the core. Its generic suspended
+    // status is the signal to reconcile from the current local guard state.
+    let resumed = KeepAwakeSessionReconciliation.sessionValueToResubmit(
+        keepAwakeEnabled: true, cameraMode: "suspended", displayStatus: "suspended",
+        localMonitoringAllowed: true
+    )
+    expect(resumed == true, "enabling keep-awake reconciles a stale inactive core session while unlocked")
+
+    // A real lock must remain authoritative even when the core still reports the same generic state.
+    let lockedResume = KeepAwakeSessionReconciliation.sessionValueToResubmit(
+        keepAwakeEnabled: true, cameraMode: "suspended", displayStatus: "suspended",
+        localMonitoringAllowed: false
+    )
+    expect(lockedResume == nil, "a locally locked session is never reopened by reconciliation")
+
+    expect(KeepAwakeSessionReconciliation.sessionValueToResubmit(
+        keepAwakeEnabled: false, cameraMode: "disabled", displayStatus: "disabled",
+        localMonitoringAllowed: true
+    ) == nil, "turning keep-awake off does not trigger a session reconciliation")
+    expect(KeepAwakeSessionReconciliation.sessionValueToResubmit(
+        keepAwakeEnabled: true, cameraMode: "suspended", displayStatus: "suspended_display_sleep",
+        localMonitoringAllowed: true
+    ) == nil, "display sleep suspension does not trigger a session reconciliation")
+}
+
 @main
 private struct KeepAwakeTestMain {
     static func main() {
@@ -259,6 +285,7 @@ private struct KeepAwakeTestMain {
         runGuardOverrideTests()
         runCameraEligibilityTests()
         runGuardResumeFenceTests()
+        runSessionReconciliationTests()
         print("KeepAwakeTests: all checks passed")
     }
 }

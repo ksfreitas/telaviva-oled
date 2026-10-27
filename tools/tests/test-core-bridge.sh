@@ -19,7 +19,9 @@ swiftc -D TELAVIVA_CORE \
   "$ROOT/native/macos/TelaViva/ManualMonitorControls.swift" \
   "$ROOT/native/macos/TelaViva/ControlsBridge.swift" \
   "$ROOT/native/macos/TelaViva/ControlsDriver.swift" \
+  "$ROOT/native/macos/TelaViva/KeepAwakeController.swift" \
   "$ROOT/native/macos/Tests/CoreBridgeTests.swift" \
   "$CORE_LIB" -lc++ -lz \
+  -framework AppKit -framework ApplicationServices -framework IOKit \
   -o "$TEMP_DIR/core-bridge-tests"
 "$TEMP_DIR/core-bridge-tests"

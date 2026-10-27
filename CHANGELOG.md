@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- Resume macOS presence monitoring when keep-awake is enabled and the local session is unlocked but the core still holds an inactive session state after a lock or wake transition.
+
 ## 0.1.4 - 2026-10-26
 
 ### Added
