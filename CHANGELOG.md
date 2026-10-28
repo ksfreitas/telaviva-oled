@@ -4,7 +4,7 @@
 
 ### Added
 
-- Keep awake while a face is detected on Windows, with the same off-by-default option in Settings > General as on macOS, in English and Portuguese. While a fresh face detection is valid, it holds a system and display request and sends one zero-displacement mouse move per second, with local checks for locked, secure-desktop, display-off, suspend and screen-saver states. No permission prompt is shown. Physical Windows acceptance is pending.
+- Keep awake while a face is detected on Windows, with the same off-by-default option in Settings > General as on macOS, in English and Portuguese. While a fresh face detection is valid, it holds a system and display request and sends one zero-displacement mouse move per second, with local checks for locked, secure-desktop, display-off, suspend and screen-saver states. No permission prompt is shown.
 
 ### Fixed
 
@@ -15,11 +15,11 @@
 ### Added
 
 - Keep awake while a face is detected, off by default: continuous presence monitoring keeps the display and computer active while a face is detected, independently of brightness protection, battery preferences and display brightness. The first no-face result or unavailable detection releases the inactivity requests and restores normal operating-system behavior. Manual lock, screensaver and sleep actions take precedence. The option and its status are available in English and Portuguese.
-- Laptop screen protection on Windows: the built-in panel appears in the popup and in Settings > General as "Laptop" (Notebook in Portuguese), with a protection switch, a brightness slider and a Protection brightness slider, and no volume control. It dims when no face is detected and when the screensaver starts, and it is restored afterwards. Hardware checks are pending.
-- An option, off by default, that turns off "Change brightness automatically when lighting changes" in the active power plan while the Windows laptop panel is protected, for AC and DC power. The app restores the setting afterwards, unless you turned it on during protection, and it recovers the setting and the panel brightness at the next launch after a crash. Hardware checks are pending.
-- A Monitored display selector on Windows, with Automatic (the main external display, otherwise the laptop panel), the remembered displays and the laptop panel as choices. The camera follows the monitored display. Hardware checks are pending.
+- Laptop screen protection on Windows: the built-in panel appears in the popup and in Settings > General as "Laptop" (Notebook in Portuguese), with a protection switch, a brightness slider and a Protection brightness slider, and no volume control. It dims when no face is detected and when the screensaver starts, and it is restored afterwards.
+- An option, off by default, that turns off "Change brightness automatically when lighting changes" in the active power plan while the Windows laptop panel is protected, for AC and DC power. The app restores the setting afterwards, unless you turned it on during protection, and it recovers the setting and the panel brightness at the next launch after a crash.
+- A Monitored display selector on Windows, with Automatic (the main external display, otherwise the laptop panel), the remembered displays and the laptop panel as choices. The camera follows the monitored display.
 - A presence brightness threshold saved for each display on Windows, with a range of 0 to 90 percent. Hardware checks are pending.
-- On Windows, the built-in camera is ignored while the lid is closed, as if it were disconnected. The camera choice is kept, and the built-in camera is used again when the lid opens. Hardware checks are pending.
+- On Windows, the built-in camera is ignored while the lid is closed, as if it were disconnected. The camera choice is kept, and the built-in camera is used again when the lid opens.
 
 ### Changed
 
@@ -38,13 +38,13 @@
 - Fix macOS compilation of the monitor sliders by using SwiftUI accessibility hints for localized explanatory help.
 
 - Calibration crash recovery on Windows now restores the external monitor's brightness once the monitor is available again, for up to 90 seconds after launch, as on macOS. Hardware checks are pending.
-- The camera is retried after it stops delivering images, after 30 s, then 1 min, then every 5 min, on macOS and Windows. Before, a camera left "busy" or "unavailable" stayed off until the app was restarted. Presence protection resumes by itself when the camera answers. Hardware checks are pending.
+- The camera is retried after it stops delivering images, after 30 s, then 1 min, then every 5 min, on macOS and Windows. Before, a camera left "busy" or "unavailable" stayed off until the app was restarted. Presence protection resumes by itself when the camera answers. Hardware checks are pending on macOS.
 
 ## 0.1.3 - 2026-10-21
 
 ### Added
 
-- Laptop screen protection on macOS and Windows: the built-in screen appears in the popup and in Settings > General as "MacBook screen" on macOS and "Laptop" on Windows, with a protection switch, a brightness slider and a Protection brightness slider, and no volume control. It dims when no face is detected and when the screensaver starts, is restored afterwards, and is hidden while the lid is closed. Hardware checks are pending on both platforms.
+- Laptop screen protection on macOS and Windows: the built-in screen appears in the popup and in Settings > General as "MacBook screen" on macOS and "Laptop" on Windows, with a protection switch, a brightness slider and a Protection brightness slider, and no volume control. It dims when no face is detected and when the screensaver starts, is restored afterwards, and is hidden while the lid is closed. Hardware checks are pending on macOS.
 - An option, off by default, to turn off the system's automatic brightness while the laptop screen is protected: "Automatically adjust brightness" on macOS, and "Change brightness automatically when lighting changes" in the active power plan on Windows. The app turns it back on afterwards unless you turned it on during protection, and after a crash it recovers the setting and the screen brightness at the next launch. On macOS it uses private interfaces that are not verified on hardware yet.
 - A Monitored display selector on macOS and Windows: Automatic (on macOS, the main external display, then the other external displays, then this Mac; on Windows, the main external display, otherwise the laptop screen) is the default, or you can choose a display. The choice is remembered by priority, like the camera, up to eight displays. The camera follows the monitored display, or the next awake display when it sleeps.
 - The presence brightness threshold is saved per display on macOS and Windows, with a range of 0 to 90 percent (it was 10 to 90 percent on Windows). A display without its own value uses the global value.

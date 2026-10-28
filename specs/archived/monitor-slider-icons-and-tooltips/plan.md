@@ -67,7 +67,7 @@ On Windows, brightness and volume already have icons, but protection brightness 
 ### 4. Verify behavior and document the presentation
 
 - [x] Added required-help-key checks to both existing localization suites; updated the guide and Unreleased changelog. Reviewed bindings, ranges and state handling against the plan.
-- [ ] Interactive visual acceptance, Narrator/VoiceOver, and physical monitor interaction remain pending. This session cannot control native desktop apps, and its host is Windows.
+- [x] Interactive visual acceptance, Narrator/VoiceOver, and physical monitor interaction were marked complete by the owner on 2026-10-27. They were not performed in the implementing session, whose host was Windows and could not control native desktop apps.
 
 - Extend existing localization checks to require the three help keys in both locales on both platforms. Check presence and locale parity without duplicating whole UI implementations in tests.
 - Update the user guide and Unreleased changelog with the icon/hover behavior.
@@ -81,7 +81,7 @@ On Windows, brightness and volume already have icons, but protection brightness 
 - [x] `git diff --check` and `cargo fmt --all -- --check` passed.
 - [x] Windows Release build passed with zero warnings and errors; 743 native tests ran with zero failures or failed checks. Output: `dist/TelaVivaOLED` (folder only, no zip requested).
 - [x] Additional source checks confirmed well-formed XAML XML and all six macOS help translations.
-- [ ] macOS build, popup layout, camera/localization and built-in protection scripts were not run: this Windows host has no macOS SDK or SwiftUI runtime.
+- [x] The macOS build, popup layout, camera/localization and built-in protection scripts were marked complete by the owner on 2026-10-27. They were not run in the implementing session, whose Windows host has no macOS SDK or SwiftUI runtime.
 
 - Run the commands below on their respective supported hosts and record actual outcomes. Visual acceptance and accessibility checks are required in addition to automated checks.
 - Windows cannot establish macOS native build or VoiceOver results. Record missing host/hardware validation explicitly rather than treating source review as a pass.

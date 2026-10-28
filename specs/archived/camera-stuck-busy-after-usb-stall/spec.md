@@ -147,7 +147,7 @@ Done on 2026-10-23, with one change to the plan: steps 1-2, 3 and 4 ran in paral
 - [x] 3. macOS shell: decode, retry timer, label. Verified by a decode check of `30000.0` into `UInt64?` (the core emits an `f64`) and by building the app.
 - [x] 4. Windows shell: codec, driver retry timer, label, 5 driver tests and 2 codec tests. Reviewed by reading only: nothing could be compiled on this Mac. The cancel for the retry timer lives in `onSnapshot`, not in `cancelPolicyTimers`, because `stopCapture` runs on every suspended snapshot and would postpone the retry.
 - [x] 5. Docs: ADR 0036, amendments to ADR 0034 and ADR 0022, `api.md`, `ARCHITECTURE.md`, user guide, CHANGELOG.
-- [ ] 6. Windows tests (`tests.exe`) and the manual hardware check from Validation Commands are still pending.
+- [x] 6. Windows tests (`tests.exe`) pass (777 tests, 0 failed, 2026-10-27), and the manual hardware check from Validation Commands was marked complete by the owner on 2026-10-27, with no values recorded.
 
 ## Validation Commands
 
@@ -169,5 +169,5 @@ Reproduce before the fix (core test fails to compile or fails on the missing fie
 - The hardware stall itself (USB isochronous errors) is not something the app can prevent. The fix makes the app recover from it; it does not stop it.
 - Out of scope, found while reading: `error` is cleared only by a camera change, presence off or battery (`core.rs:797`, `:941`), and the macOS shell never sends `unknown` for it; the comment at `core.rs:966-967` and `api.md:218` say `permission` and `error` are kept, but `core.rs:938-941` clears them on battery or presence-off; the Windows driver ignores a stream that only produces warmup frames (`CameraLifecycleDriver.cpp:237-245`); and an ABI fault is shown to the user as "busy" (`CameraLifecycle.swift:102-112`). Worth separate tickets.
 - Backoff values (30 s, 60 s, 300 s) are a proposal. Each retry costs one camera session start and a few frames, so the 5-minute floor keeps the LED and battery cost small.
-- Hardware verification is pending on both platforms, as with the other recent changes; do not claim it in the changelog.
+- Hardware verification was pending on both platforms when this was written, as with the other recent changes; do not claim it in the changelog. The owner marked the Windows hardware check complete on 2026-10-27.
 - Execution follows the global rule: Haiku agents edit, the orchestrator verifies. Plan for 1 agent for step 1 and 2 (same files), then 2 in parallel for steps 3 and 4, then 1 for step 5, each announced before it is launched.

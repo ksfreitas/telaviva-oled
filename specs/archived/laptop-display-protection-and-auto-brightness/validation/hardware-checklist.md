@@ -470,13 +470,13 @@ Notes:
 
 ## Windows
 
-Status: Not run. The Windows implementation exists in code with passing unit tests (2026-10 work in specs/windows-laptop-parity/plan.md) and no Windows hardware row has been run; every Windows row below stays "Not run". For the owner, on a Windows laptop, after the work in ../windows-handoff.md.
+Status: Pass (marked by the owner on 2026-10-27; no observed values recorded). The Windows implementation exists in code with passing unit tests (2026-10 work in specs/windows-laptop-parity/plan.md); the owner marked every Windows row below as passed. For the owner, on a Windows laptop, after the work in ../windows-handoff.md.
 
 Names: the Windows UI says "Laptop" in en-US and "Notebook" in pt-BR. Use the name the app shows. The rows below cover the built-in laptop panel only, except W-L10, which covers an external DDC monitor. Their steps are written for the owner to run after the Windows work is done, and they are not verified.
 
 ### W-L4. Protection dims and restores the laptop panel (FR-016, SC-001, SC-002)
 
-Status: Not run
+Status: Pass (marked by the owner on 2026-10-27; no values recorded)
 
 Preconditions: A Windows laptop whose panel the app can read and set through WMI. Presence or screensaver protection is on, and the Laptop (Notebook in pt-BR) protection switch is on. Record the panel brightness L from Windows Settings > System > Display.
 
@@ -504,7 +504,7 @@ Notes:
 
 ### W-L5. Adaptive brightness off during protection when the option is on, restored after, per AC and DC (FR-006, FR-007, FR-016)
 
-Status: Not run
+Status: Pass (marked by the owner on 2026-10-27; no values recorded)
 
 Preconditions: The Laptop (Notebook in pt-BR) option that turns off Windows adaptive brightness during protection is available and off by default. Record the active power plan name, and the values of "Enable adaptive brightness" for "Plugged in" and "On battery", from Power Options > Change plan settings > Change advanced power settings > Display.
 
@@ -539,7 +539,7 @@ Notes:
 
 ### W-L6. Force-quit recovery (US-006, FR-010, SC-003)
 
-Status: Not run
+Status: Pass (marked by the owner on 2026-10-27; no values recorded)
 
 Preconditions: The Laptop (Notebook in pt-BR) option is on, and presence or screensaver protection is on. Record the panel level L, and the "Enable adaptive brightness" values for Plugged in and On battery.
 
@@ -569,7 +569,7 @@ Notes:
 
 ### W-L7. Laptop screen absent from the lists with the lid closed (FR-002, SC-009)
 
-Status: Not run
+Status: Pass (marked by the owner on 2026-10-27; no values recorded)
 
 Preconditions: A Windows laptop with an external display connected. In Power Options, under "When I close the lid", set "Plugged in" to "Do nothing", so the laptop keeps running with the lid closed. Record the current value first.
 
@@ -593,7 +593,7 @@ Notes:
 
 ### W-L8. Monitored display picker decides the camera (FR-021, architecture Decision 14)
 
-Status: Not run
+Status: Pass (marked by the owner on 2026-10-27; no values recorded)
 
 Preconditions: A Windows laptop whose built-in panel the app can read and set through WMI, and at least one external monitor that the app controls through DDC. Presence protection is on. Record which display is the primary display in Windows Settings > System > Display, and the current Monitored display value in the app.
 
@@ -621,7 +621,7 @@ Notes:
 
 ### W-L9. Lid closed: built-in camera not used, camera choice kept (FR-020)
 
-Status: Not run
+Status: Pass (marked by the owner on 2026-10-27; no values recorded)
 
 Preconditions: A Windows laptop with a built-in camera. An external USB camera is optional. Presence protection is on. In Power Options, under "When I close the lid", set "Plugged in" to "Do nothing", as in W-L7. Record the current value, and the camera selected in the Settings camera picker.
 
@@ -648,7 +648,7 @@ Notes:
 
 ### W-L10. Sleep while dimmed with a DDC monitor (wake rediscovery)
 
-Status: Not run
+Status: Pass (marked by the owner on 2026-10-27; no values recorded)
 
 Preconditions: A Windows 11 x64 PC with an external monitor that the app controls through DDC. Presence or screensaver protection is on, and the monitor's protection switch is on. Include a monitor whose DDC brightness maximum is not 100, if you have one, and record its model and maximum if you can find it. Record the monitor's brightness B from its own on-screen menu, and the protection brightness value.
 
@@ -692,4 +692,4 @@ Notes:
 | L | Laptop alone, no external monitor (FR-002, FR-003) | Not run | |
 | M | Sleep while dimmed: the same monitor returns and gets its brightness back, a new level is kept | Not run | |
 | N | No read/write loop after a slider set | Not run | |
-| Windows | Rows W-L4 to W-L10, for the owner on Windows (FR-016) | Not run | |
+| Windows | Rows W-L4 to W-L10, for the owner on Windows (FR-016) | Pass | 2026-10-27 |
