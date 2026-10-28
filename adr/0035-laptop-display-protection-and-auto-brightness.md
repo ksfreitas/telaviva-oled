@@ -50,7 +50,7 @@ The owner set the scope on 2026-10-20 and 2026-10-21: controls without volume, a
 - A laptop with no external monitor runs the camera for the built-in screen, which adds camera use. The steady camera cost is recorded in plan T043 and is not changed here.
 - Automatic brightness is changed only when the option is on. A crash while dimmed is recovered at the next launch from the two records.
 - The shared core change reaches Windows through the protection level (applied to presence as well as to the screensaver, plan T040), the presence threshold minimum of 0, and the snapshot and settings keys. The Windows slider ranges and the threshold help text need the follow-up tasks in `windows-handoff.md`.
-- Hardware verification is pending for the private setters, the force-quit recovery, lid transitions and the per-display thresholds. This decision does not claim hardware support.
+- The owner marked the hardware checks of the private setters, the force-quit recovery and lid transitions complete on macOS on 2026-10-27, with no values recorded. Hardware verification of the per-display thresholds on Windows is still pending. This decision does not claim hardware support beyond what was recorded.
 
 ## Non-Obvious Constraints
 

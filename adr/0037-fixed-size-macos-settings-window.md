@@ -31,7 +31,7 @@ The size was written in four places (`App.swift`, and three lines in `MenuBarCon
 - On a display whose visible area is shorter than about 748 points (the window plus its title bar), the user can no longer shrink the window. AppKit constrains a titled window to the visible screen when it is shown, so it is not placed off-screen, but its bottom edge may be clipped. This is not checked on any hardware or scaling setting.
 - The green button's zoom and full-screen actions are disabled.
 - The window is created once per run, so the change is seen after a restart. The window has no frame autosave name, so no earlier size is restored.
-- No automated test renders the window. The check that the edges give no resize cursor, that the zoom button is disabled and that all five tabs are usable is manual and is still pending.
+- No automated test renders the window. The check that the edges give no resize cursor, that the zoom button is disabled and that all five tabs are usable is manual; the owner marked it complete on 2026-10-27, with no values recorded.
 
 ## Non-Obvious Constraints
 

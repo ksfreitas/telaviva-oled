@@ -395,7 +395,7 @@ Two shell records live in `~/Library/Application Support/TelaVivaOLED/`. Each is
 
 - Core: `crates/telaviva-core/tests/builtin_protection_contract.rs` and `monitored_display_contract.rs`, plus the settings tests in `crates/telaviva-core/tests/core_contract.rs`.
 - macOS: `native/macos/Tests/BuiltInProtectionTests.swift`, `BuiltInAutoBrightnessOwnerTests.swift` and `AmbientCalibrationTests.swift`, run by `tools/tests/test-builtin-protection.sh`, `test-builtin-auto-brightness-owner.sh` and `test-ambient-calibration.sh`. `CameraSelectionTests.swift` covers the lid rule and runs through `test-camera-lifecycle.sh`. The tests use fake backends.
-- Hardware: the macOS rows of the feature hardware checklist are pending.
+- Hardware: the owner marked every macOS and Windows row of the feature hardware checklist as passed on 2026-10-27, with no values recorded.
 
 ### Verification status
 
@@ -423,13 +423,13 @@ A camera that reports `busy` or `unavailable` is no longer left suspended until 
 
 Each shell arms one one-shot timer from `retry_in_ms` for the current camera generation. When it elapses, the shell sends the existing `camera_status` command with status `unknown`. The core then sets `resume_pending`, so the next sample comes after 1 s, and the normal sample path probes the camera again. Other snapshots do not postpone the timer. The counter resets when an accepted sample reports `ready` and on every resume event. The core writes `camera_failure` and `camera_retry` lines to its diagnostic ring, which both shells drain into the macOS unified log and `telaviva.log` on Windows, with no device identifier. The change adds no setting, dependency, network use or ABI change. It also relabels `busy` from "busy" and "ocupada" to "no image" and "sem imagem" on both platforms, because the status does not mean that another app holds the camera.
 
-The decision is recorded in [ADR 0036](adr/0036-camera-failure-retry-in-the-core.md), and the bug plan is at [specs/archived/camera-stuck-busy-after-usb-stall/spec.md](specs/archived/camera-stuck-busy-after-usb-stall/spec.md). Hardware checks are pending on both platforms. The Windows changes are unverified until a Windows build or CI run passes, and the hardware stall itself is not prevented.
+The decision is recorded in [ADR 0036](adr/0036-camera-failure-retry-in-the-core.md), and the bug plan is at [specs/archived/camera-stuck-busy-after-usb-stall/spec.md](specs/archived/camera-stuck-busy-after-usb-stall/spec.md). The owner marked the hardware checks complete on both platforms on 2026-10-27, with no values recorded. The Windows build and tests pass, and the hardware stall itself is not prevented.
 
 ## lock-macos-settings-window-size — 2026-10-23
 
 The macOS Settings window has a fixed size of 760 by 720 points and cannot be resized. `SettingsWindowLayout` holds the size, the style mask (title, close and minimize, without resize) and a view modifier that both the menu-bar-launched window and the SwiftUI `Settings` scene use, and the scene also sets `.windowResizability(.contentSize)`. Tab content that does not fit scrolls inside the window. The Windows Settings window is unchanged, because the owner scoped the request to macOS. The change adds no setting, string, dependency, network use or ABI change.
 
-The decision is recorded in [ADR 0037](adr/0037-fixed-size-macos-settings-window.md), and the chore plan is at [specs/archived/lock-macos-settings-window-size/plan.md](specs/archived/lock-macos-settings-window-size/plan.md). On displays whose visible area is shorter than about 748 points the window may be clipped at the bottom. The manual window check (no resize cursor, zoom button disabled, all tabs usable) is pending.
+The decision is recorded in [ADR 0037](adr/0037-fixed-size-macos-settings-window.md), and the chore plan is at [specs/archived/lock-macos-settings-window-size/plan.md](specs/archived/lock-macos-settings-window-size/plan.md). On displays whose visible area is shorter than about 748 points the window may be clipped at the bottom. The manual window check (no resize cursor, zoom button disabled, all tabs usable) was marked complete by the owner on 2026-10-27, with no values recorded.
 
 ## monitor-slider-icons-and-tooltips — 2026-10-25
 

@@ -20,7 +20,7 @@
 - Keep camera on is now on by default and moved to Settings > Advanced on macOS and Windows, with a note that turning it off can cause detection problems, depending on the camera, and "insufficient light" events. Hardware checks are pending.
 - Upgrade note: existing installs keep their saved value; turn the option on in Settings > Advanced.
 - The camera status "busy" (Portuguese "ocupada") now reads "no image" (Portuguese "sem imagem") on macOS and Windows. It is shown when no frame arrives in time or the camera fails to start while the device is present, not when another app holds the camera. Hardware checks are pending.
-- The macOS Settings window is now a fixed size (760 by 720 points) and can no longer be resized; content that does not fit scrolls. Hardware checks are pending.
+- The macOS Settings window is now a fixed size (760 by 720 points) and can no longer be resized; content that does not fit scrolls.
 
 ### Fixed
 
@@ -29,13 +29,13 @@
 - Keep local presence monitoring active while keep-awake posting is paused for screensaver/display state or an awake clamshell session. Correct camera suspension reporting so a blocked session is not described as low display brightness.
 - Resume macOS presence monitoring when keep-awake is enabled and the local session is unlocked but the core still holds an inactive session state after a lock or wake transition.
 - Calibration crash recovery on Windows now restores the external monitor's brightness once the monitor is available again, for up to 90 seconds after launch, as on macOS. Hardware checks are pending.
-- The camera is retried after it stops delivering images, after 30 s, then 1 min, then every 5 min, on macOS and Windows. Before, a camera left "busy" or "unavailable" stayed off until the app was restarted. Presence protection resumes by itself when the camera answers. Hardware checks are pending on macOS.
+- The camera is retried after it stops delivering images, after 30 s, then 1 min, then every 5 min, on macOS and Windows. Before, a camera left "busy" or "unavailable" stayed off until the app was restarted. Presence protection resumes by itself when the camera answers.
 
 ## 0.1.3 - 2026-10-21
 
 ### Added
 
-- Laptop screen protection on macOS and Windows: the built-in screen appears in the popup and in Settings > General as "MacBook screen" on macOS and "Laptop" on Windows, with a protection switch, a brightness slider and a Protection brightness slider, and no volume control. It dims when no face is detected and when the screensaver starts, is restored afterwards, and is hidden while the lid is closed. Hardware checks are pending on macOS.
+- Laptop screen protection on macOS and Windows: the built-in screen appears in the popup and in Settings > General as "MacBook screen" on macOS and "Laptop" on Windows, with a protection switch, a brightness slider and a Protection brightness slider, and no volume control. It dims when no face is detected and when the screensaver starts, is restored afterwards, and is hidden while the lid is closed.
 - An option, off by default, to turn off the system's automatic brightness while the laptop screen is protected: "Automatically adjust brightness" on macOS, and "Change brightness automatically when lighting changes" in the active power plan on Windows. The app turns it back on afterwards unless you turned it on during protection, and after a crash it recovers the setting and the screen brightness at the next launch. On macOS it uses private interfaces that are not verified on hardware yet.
 - A Monitored display selector on macOS and Windows: Automatic (on macOS, the main external display, then the other external displays, then this Mac; on Windows, the main external display, otherwise the laptop screen) is the default, or you can choose a display. The choice is remembered by priority, like the camera, up to eight displays. The camera follows the monitored display, or the next awake display when it sleeps.
 - The presence brightness threshold is saved per display on macOS and Windows, with a range of 0 to 90 percent (it was 10 to 90 percent on Windows). A display without its own value uses the global value.

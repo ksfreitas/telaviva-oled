@@ -41,7 +41,7 @@ No code is copied from open-source references. Only API facts are used.
 
 ## Non-Obvious Constraints
 
-- `DisplayServicesSetBrightness` and the automatic-brightness setter were not invoked during research. Only the getters ran, on a MacBook Pro (Apple M4 Pro, macOS 27.0.1). Both setters are pending hardware acceptance.
+- `DisplayServicesSetBrightness` and the automatic-brightness setter were not invoked during research. Only the getters ran, on a MacBook Pro (Apple M4 Pro, macOS 27.0.1). The owner marked the hardware acceptance of both setters complete on 2026-10-27, with no values recorded.
 - The result type of the automatic-brightness getter comes from reflection. It is not confirmed by any documented contract.
 - A failed brightness read is unknown, not zero. The monitor keeps the last good value.
 - A failure to read or toggle automatic brightness during calibration is non-fatal. Calibration continues and shows a notice that the level may drift.

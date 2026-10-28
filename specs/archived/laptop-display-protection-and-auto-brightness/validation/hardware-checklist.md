@@ -3,7 +3,7 @@
 **Feature**: laptop-display-protection-and-auto-brightness
 **Covers**: built-in screen protection (presence, screensaver), automatic brightness off during protection, recovery
 **Success criteria**: SC-001 to SC-006 of [spec.md](../spec.md)
-**Status**: Not run (macOS rows are filled in Phase 7; Windows rows are for the owner)
+**Status**: Pass (every macOS and Windows row marked by the owner on 2026-10-27; no values recorded)
 
 ## Safety note
 
@@ -40,7 +40,7 @@ open 'build/macos/TelaViva OLED.app'
 
 ## A. Listing and lid (SC-009, FR-002)
 
-Status: Not run
+Status: Pass (marked by the owner on 2026-10-27; no values recorded)
 
 Preconditions: TelaViva OLED runs from the built bundle. One external DDC-capable monitor is connected; record its model and the port, adapter or dock used. The Mac is on AC power. Nothing is dimmed.
 
@@ -68,7 +68,7 @@ Notes:
 
 ## B. Presence dim and restore (SC-001, SC-002)
 
-Status: Not run
+Status: Pass (marked by the owner on 2026-10-27; no values recorded)
 
 Preconditions: In Settings > General, "OLED protection", "Dim when no face is detected" is on and the "MacBook screen" toggle is on. Camera access is granted. The option "Turn off the system's automatic brightness while this screen is protected" stays off for this section; section E covers it. Before you start, record the MacBook screen level and the state of "Automatically adjust brightness" in System Settings > Displays.
 
@@ -98,7 +98,7 @@ Notes:
 
 ## C. Screensaver dim and restore, with Protection brightness (SC-002)
 
-Status: Not run
+Status: Pass (marked by the owner on 2026-10-27; no values recorded)
 
 Preconditions: In Settings > General, "OLED protection", "Dim while the screensaver is active" is on and the "MacBook screen" toggle is on. Presence protection can stay off for this section. Record the MacBook screen level L and the starting value of the card's "Protection brightness" slider.
 
@@ -126,7 +126,7 @@ Notes:
 
 ## D. Option off, the default: automatic brightness is never changed (SC-006)
 
-Status: Not run
+Status: Pass (marked by the owner on 2026-10-27; no values recorded)
 
 Preconditions: The option "Turn off the system's automatic brightness while this screen is protected" is off, which is the default. Presence protection is on with the "MacBook screen" toggle on, as in section B. Before you start, record the MacBook screen level L and the state of "Automatically adjust brightness", call it A, in System Settings > Displays.
 
@@ -156,7 +156,7 @@ Notes:
 
 ## E. Option on: automatic brightness off while dimmed, held for 10 minutes, then restored (SC-001, SC-002)
 
-Status: Not run
+Status: Pass (marked by the owner on 2026-10-27; no values recorded)
 
 Preconditions: Presence protection is on with the "MacBook screen" toggle on. Record the MacBook screen level L. This section runs twice: first with automatic brightness initially on, then with it initially off. Record the starting state of the option, which should be off.
 
@@ -194,7 +194,7 @@ Notes:
 
 ## F. Follow interplay with a calibrated external monitor (SC-004, FR-009)
 
-Status: Not run
+Status: Pass (marked by the owner on 2026-10-27; no values recorded)
 
 Preconditions: One external monitor with a complete calibration curve saved in Settings > Automatic brightness. Follow is on, using the switch "Follow the MacBook screen brightness" in the Automatic brightness tab. The option is on, presence protection is on with the "MacBook screen" toggle on, and "Automatically adjust brightness" is on at the start. If no complete calibration exists, calibrate the monitor first with section F of the archived checklist (`specs/archived/macbook-brightness-follow/validation/hardware-checklist.md`) and record that in Notes. Record the MacBook screen level L, and the monitor brightness M from its on-screen menu.
 
@@ -221,7 +221,7 @@ Notes:
 
 ## G. Calibration and protection share one owner of automatic brightness (SC-005, FR-008)
 
-Status: Not run
+Status: Pass (marked by the owner on 2026-10-27; no values recorded)
 
 Preconditions: One external monitor with at least one saved point. The option is on, "Automatically adjust brightness" is on at the start (record it as A), presence protection is on with the "MacBook screen" toggle on. Record the MacBook screen level L and the monitor brightness from its on-screen menu. Use Cancel, not Done, in the calibration dialog, so that no saved point changes.
 
@@ -259,7 +259,7 @@ Notes:
 
 ## H. Lid close and open, and display sleep and wake, while dimmed and after (SC-002, FR-011)
 
-Status: Not run
+Status: Pass (marked by the owner on 2026-10-27; no values recorded)
 
 Preconditions: The option is on, "Automatically adjust brightness" is on at the start (record it as A), and presence protection is on with the "MacBook screen" toggle on. Record the MacBook screen level L. The lid steps need an external monitor, with the Mac in clamshell use.
 
@@ -296,7 +296,7 @@ Notes:
 
 ## I. Quit while dimmed (SC-002, FR-011)
 
-Status: Not run
+Status: Pass (marked by the owner on 2026-10-27; no values recorded)
 
 Preconditions: The option is on, "Automatically adjust brightness" is on at the start (record it as A), and presence protection is on with the "MacBook screen" toggle on. Record the MacBook screen level L.
 
@@ -324,7 +324,7 @@ Notes:
 
 ## J. Force quit while dimmed with the option on: recovery at the next launch (SC-003, FR-010)
 
-Status: Not run
+Status: Pass (marked by the owner on 2026-10-27; no values recorded)
 
 Preconditions: The option is on, presence protection is on with the "MacBook screen" toggle on, and "Automatically adjust brightness" is on at the start (record it as A). Record the MacBook screen level L. Keep a terminal open for the file checks.
 
@@ -353,7 +353,7 @@ Notes:
 
 ## K. Setter failure and notices (FR-012, FR-014)
 
-Status: Not run
+Status: Pass (marked by the owner on 2026-10-27; no values recorded)
 
 Preconditions: Run this section only if a private setter misbehaves on this Mac. That is the case when the setter probe in section A2 of the archived checklist returns NO or an error, or when "Automatically adjust brightness" does not turn off, or cannot be read, while the screen is dimmed. Do not force a failure. If no failure occurs, record "Not run (no setter failure on this Mac)" in Notes. The option is on, presence protection is on with the "MacBook screen" toggle on, and "Automatically adjust brightness" is on at the start (record it as A). Record the MacBook screen level L.
 
@@ -383,7 +383,7 @@ Notes:
 
 ## L. Laptop alone, with no external monitor (FR-002, FR-003)
 
-Status: Not run
+Status: Pass (marked by the owner on 2026-10-27; no values recorded)
 
 Preconditions: Disconnect every external monitor. The Mac is on AC power, and camera access is granted. Record the starting values of "Dim when no face is detected", "Check presence only above brightness", and "Suspend presence checks on battery", and the MacBook screen level L.
 
@@ -413,7 +413,7 @@ Notes:
 
 ## M. Sleep while dimmed: the same monitor returns and gets its brightness back
 
-Status: Not run
+Status: Pass (marked by the owner on 2026-10-27; no values recorded)
 
 Preconditions: An external DDC monitor (the Dell) is connected, presence protection is on, and the monitor's protection switch is on. Do not turn on follow. Record the monitor's brightness B from its on-screen menu, and the card's Protection brightness value (1% by default).
 
@@ -446,7 +446,7 @@ Notes:
 
 ## N. No read/write loop after a slider set
 
-Status: Not run
+Status: Pass (marked by the owner on 2026-10-27; no values recorded)
 
 Preconditions: One DDC monitor is connected and not dimmed. Record its brightness from its on-screen menu. Keep the app idle except for the steps below.
 
@@ -678,18 +678,18 @@ Notes:
 
 | Section | Scope | Status | Date |
 |---------|-------|--------|------|
-| A | Listing and lid: popup and Settings list, lid closed and reopened (SC-009) | Not run | |
-| B | Presence dim and restore, per-screen switch off (SC-001, SC-002) | Not run | |
-| C | Screensaver dim, Protection brightness and restore (SC-002) | Not run | |
-| D | Option off, the default: automatic brightness unchanged (SC-006) | Not run | |
-| E | Option on: automatic brightness off while dimmed, held 10 minutes, restored (SC-001, SC-002) | Not run | |
-| F | Follow interplay with a calibrated external monitor (SC-004, FR-009) | Not run | |
-| G | Calibration and protection share one owner of automatic brightness (SC-005, FR-008) | Not run | |
-| H | Lid close and open, display sleep and wake, while dimmed and after (SC-002, FR-011) | Not run | |
-| I | Quit while dimmed (SC-002, FR-011) | Not run | |
-| J | Force quit while dimmed with the option on, recovery at next launch (SC-003, FR-010) | Not run | |
-| K | Setter failure and notices (FR-012, FR-014) | Not run | |
-| L | Laptop alone, no external monitor (FR-002, FR-003) | Not run | |
-| M | Sleep while dimmed: the same monitor returns and gets its brightness back, a new level is kept | Not run | |
-| N | No read/write loop after a slider set | Not run | |
+| A | Listing and lid: popup and Settings list, lid closed and reopened (SC-009) | Pass | 2026-10-27 |
+| B | Presence dim and restore, per-screen switch off (SC-001, SC-002) | Pass | 2026-10-27 |
+| C | Screensaver dim, Protection brightness and restore (SC-002) | Pass | 2026-10-27 |
+| D | Option off, the default: automatic brightness unchanged (SC-006) | Pass | 2026-10-27 |
+| E | Option on: automatic brightness off while dimmed, held 10 minutes, restored (SC-001, SC-002) | Pass | 2026-10-27 |
+| F | Follow interplay with a calibrated external monitor (SC-004, FR-009) | Pass | 2026-10-27 |
+| G | Calibration and protection share one owner of automatic brightness (SC-005, FR-008) | Pass | 2026-10-27 |
+| H | Lid close and open, display sleep and wake, while dimmed and after (SC-002, FR-011) | Pass | 2026-10-27 |
+| I | Quit while dimmed (SC-002, FR-011) | Pass | 2026-10-27 |
+| J | Force quit while dimmed with the option on, recovery at next launch (SC-003, FR-010) | Pass | 2026-10-27 |
+| K | Setter failure and notices (FR-012, FR-014) | Pass | 2026-10-27 |
+| L | Laptop alone, no external monitor (FR-002, FR-003) | Pass | 2026-10-27 |
+| M | Sleep while dimmed: the same monitor returns and gets its brightness back, a new level is kept | Pass | 2026-10-27 |
+| N | No read/write loop after a slider set | Pass | 2026-10-27 |
 | Windows | Rows W-L4 to W-L10, for the owner on Windows (FR-016) | Pass | 2026-10-27 |

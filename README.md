@@ -48,7 +48,7 @@ Both apps are native shells over one shared Rust core, with face detection by th
 This checkout reports application version 0.1.4 and remains under active development. The CI badges above show workflow status; hardware validation is still partial on both platforms:
 
 - DDC support depends on the monitor, the port, the cable, any adapter or dock, and the graphics hardware. It is not uniform, and a passing check on one setup says nothing about another.
-- Only a small number of monitors and computers have been used for physical checks. Many checks are still pending, among them camera sharing with video calls, multi-monitor and dock setups, monitor sleep and wake, Laptop follow on real laptops, laptop screen protection and its automatic brightness option (the Windows laptop checks are not yet recorded), and keyboard routing on other keyboards.
+- Only a small number of monitors and computers have been used for physical checks. Many checks are still pending, among them camera sharing with video calls, multi-monitor and dock setups, monitor sleep and wake, Laptop follow on real laptops, and keyboard routing on other keyboards.
 - The Windows build is not code-signed, and the macOS app is ad-hoc signed and not notarized, so each system may warn the first time you open a downloaded copy.
 - Setting brightness to zero does not guarantee that an OLED panel turns completely off, and it does not prevent all burn-in.
 

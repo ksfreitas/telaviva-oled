@@ -46,7 +46,7 @@ The core reads no clock ([ADR 0014](0014-camera-lifecycle-in-the-core.md)), so i
 - `permission` and `error` still need user action, as before.
 - The label now describes what the shells can observe. "no image" covers a stream that stops, a start that is slow, and a start that fails with the device present. It does not claim that another app holds the camera.
 - **Not fixed: the hardware stall itself.** USB isochronous errors come from the device, its cable, the hub or the bus, outside the app. This change makes the app recover from a stall. It does not prevent the stall.
-- **Hardware verification is pending on both platforms.** Automated checks cover the core policy and the shells' decoding. The macOS timer in `PresenceCamera.swift` is covered only by a manual check, because no Swift test compiles it. The Windows driver and codec changes compile only on Windows and stay unverified until a Windows build or CI run passes. This decision does not claim that the retry recovers a real stalled camera on either platform.
+- **Hardware verification was marked complete by the owner on 2026-10-27, with no values recorded.** Automated checks cover the core policy and the shells' decoding. The macOS timer in `PresenceCamera.swift` is covered only by a manual check, because no Swift test compiles it. The Windows driver and codec changes build and pass the Windows tests. This decision does not claim that the retry recovers a real stalled camera on either platform beyond what was recorded.
 - **Out of scope, unchanged.** `error` is cleared only by a camera change, presence switched off or battery. The Windows driver ignores a stream that produces only warm-up frames. An ABI fault is still reported as `busy`, so it now reads "no image".
 
 ## Non-Obvious Constraints
