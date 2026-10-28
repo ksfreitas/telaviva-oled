@@ -28,6 +28,7 @@
 #include "Platform/InferenceFailureStore.h"
 #include "Platform/InferenceHost.h"
 #include "Platform/JsonCodec.h"
+#include "Platform/KeepAwakeController.h"
 #include "Platform/KeyHook.h"
 #include "Platform/KeyRoute.h"
 #include "Platform/LaptopDetection.h"
@@ -45,6 +46,7 @@
 #include "Platform/SystemSleeper.h"
 #include "Platform/UpdateChecker.h"
 #include "Platform/Win32Efficiency.h"
+#include "Platform/Win32KeepAwakeBackend.h"
 #include "Platform/WinHttpGet.h"
 
 #include <winrt/Windows.System.Threading.h>
@@ -686,6 +688,12 @@ struct AppController::Services {
     bool screensaverAccepting = true;
     bool screensaverEnabled = false;
 
+    // ---- Keep awake with presence. Built in the constructor before the session, power and screensaver
+    // callbacks, which reach them through weak copies. Declared after the screensaver probe, the scheduler
+    // and the clock they use, so they are destroyed before those. Reset in ~AppController after the bridge join. ----
+    std::shared_ptr<Win32KeepAwakeBackend> keepAwakeBackend;
+    std::shared_ptr<KeepAwakeController> keepAwake;
+
     // ---- Efficiency mode (T101). Built and used on the UI thread only. ----
     Win32Efficiency efficiency;
     std::unique_ptr<EfficiencyController> efficiencyController;
@@ -758,7 +766,8 @@ struct AppController::Services {
         driver->onSnapshot(snapshot);
         {
             std::lock_guard<std::mutex> lock(screensaverMutex);
-            const bool enabled = snapshot.settings.screensaver_protection_enabled;
+            // Keep awake needs the screensaver state too, so the monitor runs for either setting.
+            const bool enabled = snapshot.settings.screensaver_protection_enabled || snapshot.settings.keep_awake_with_presence;
             if (screensaverAccepting && enabled != screensaverEnabled) {
                 screensaverEnabled = enabled;
                 screensaver->setEnabled(enabled);
@@ -1262,11 +1271,17 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
         return LRESULT{ 0 };
     });
 
+    // Keep awake with presence. Built here, before the session, power and screensaver callbacks below, which
+    // report to it through the weak copy. The backend reads the screensaver probe, which lives in Services.
+    s.keepAwakeBackend = std::make_shared<Win32KeepAwakeBackend>(s.screensaverProbe);
+    s.keepAwake = std::make_shared<KeepAwakeController>(*s.keepAwakeBackend, s.scheduler, s.clock);
+    const std::weak_ptr<Win32KeepAwakeBackend> keepAwakeBackendWeak = s.keepAwakeBackend;
+
     // The DDC controller is the only target of these callbacks, and it outlives the session object.
     DdcController* ddc = s.ddc.get();
     SessionEventCallbacks events;
     // The display going off ends a calibration: the panel and the monitor would be read while nothing is shown.
-    events.onDisplayState = [ddc, &s](bool displayOn) {
+    events.onDisplayState = [this, ddc, &s, keepAwakeBackendWeak](bool displayOn) {
         s.diagnostics.log(LogLevel::Notice, displayOn ? "display_wake" : "display_sleep");
         s.diagnostics.log(LogLevel::Notice, displayOn ? "display_power on=true" : "display_power on=false");
         ddc->onDisplayState(displayOn);
@@ -1276,10 +1291,31 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
         if (!displayOn && s.calibration->isActive()) {
             s.calibration->end(CalibrationEndReason::DisplaySleep);
         }
+        if (const auto backend = keepAwakeBackendWeak.lock()) {
+            backend->setDisplayAsleep(!displayOn);
+            reportKeepAwakeSession();
+        }
     };
-    events.onResume = [ddc, &s] {
+    events.onResume = [this, ddc, &s, keepAwakeBackendWeak] {
         s.diagnostics.log(LogLevel::Notice, "resume_refresh");
         ddc->refresh();
+        if (const auto backend = keepAwakeBackendWeak.lock()) {
+            backend->setSystemSleeping(false);
+            reportKeepAwakeSession();
+        }
+    };
+    // Runs in the suspend notification with a tight time budget, so it does nothing else.
+    events.onSuspend = [this, keepAwakeBackendWeak] {
+        if (const auto backend = keepAwakeBackendWeak.lock()) {
+            backend->setSystemSleeping(true);
+            reportKeepAwakeSession();
+        }
+    };
+    events.onSessionLock = [this, keepAwakeBackendWeak](bool locked) {
+        if (const auto backend = keepAwakeBackendWeak.lock()) {
+            backend->setSessionLocked(locked ? std::optional<bool>(true) : std::optional<bool>(false));
+            reportKeepAwakeSession();
+        }
     };
     events.onTopologyChanged = [ddc, &s] {
         s.diagnostics.log(LogLevel::Notice, "topology_refresh");
@@ -1373,12 +1409,16 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
     powerCallbacks.onPower = [bridge](std::optional<bool> onBattery) { bridge->submit(buildPower(onBattery)); };
     // The lid callback runs on the UI thread. A lid closed during calibration goes through the window
     // message, the same path the snapshot thread uses for an unavailable Laptop.
-    powerCallbacks.onLid = [&s](bool open) {
+    powerCallbacks.onLid = [&s, keepAwakeBackendWeak](bool open) {
         s.laptopEnvironment.recordLidState(open);
         s.laptopFollower->onLidChanged(open);
         s.driver->setLidClosed(!open);
         if (!open && s.calibration->isActive()) {
             PostMessageW(s.uiWindow, kLaptopUnavailableMessage, 0, 0);
+        }
+        // Diagnostic only: a closed lid does not veto keep awake, so no report follows.
+        if (const auto backend = keepAwakeBackendWeak.lock()) {
+            backend->setLidClosed(!open);
         }
     };
     s.power = std::make_shared<PowerEvents>(s.powerReader, std::move(powerCallbacks));
@@ -1396,8 +1436,17 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
     // The camera driver starts with the lid state the Laptop logic uses. Unknown counts as open.
     s.driver->setLidClosed(!s.laptopEnvironment.lidOpen().value_or(true));
 
+    // Runs on a scheduler thread, or on the publish() thread when setEnabled publishes. An inactive, unknown or
+    // unavailable state clears the notification, so the live probe in the backend decides.
     s.screensaver =std::make_unique<ScreensaverMonitor>(s.scheduler, s.screensaverProbe,
-        [bridge](ScreensaverState state) { bridge->submit(buildScreensaver(screensaverStateString(state))); });
+        [this, bridge, keepAwakeBackendWeak](ScreensaverState state) {
+            bridge->submit(buildScreensaver(screensaverStateString(state)));
+            if (const auto backend = keepAwakeBackendWeak.lock()) {
+                backend->setScreensaverActive(state == ScreensaverState::Active ? std::optional<bool>(true)
+                                                                                : std::nullopt);
+                reportKeepAwakeSession();
+            }
+        });
 
     // ---- Efficiency mode (T101). Requested once, here on the UI thread, which is the thread the
     // flyout and Settings windows are shown on.
@@ -1440,8 +1489,28 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
         s.diagnostics.log(LogLevel::Error, "calibration recovery failed; record kept for the next launch");
     }
 
-    // Added last: the sink uses every part above.
-    s.bridge->addSink([&s](const Snapshot& snapshot) { s.publish(snapshot); });
+    // Added last: the sink uses every part above. The keep-awake part runs after publish() returns, on the same
+    // thread, so no lock of publish() is held.
+    s.bridge->addSink([this, &s](const Snapshot& snapshot) {
+        s.publish(snapshot);
+        // A core that stays suspended re-reports the local state, as the macOS menu bar does.
+        if (keepAwakeAccepting_ && snapshot.settings.keep_awake_with_presence &&
+            snapshot.camera.mode == "suspended" && snapshot.camera.displayStatus == "suspended" &&
+            keepAwakeCameraMonitoringAllowed(s.keepAwakeBackend->safetyState())) {
+            reportKeepAwakeSession();
+        }
+        // The lease is applied under keepAwakeReportMutex_ and only while accepting, so it cannot land after shutdown.
+        std::lock_guard<std::mutex> lock(keepAwakeReportMutex_);
+        if (keepAwakeAccepting_) {
+            const auto& kw = snapshot.keepAwake;
+            s.keepAwake->update(kw.enabled, kw.requested, kw.generation, kw.observationId,
+                keepAwakeRemainingMilliseconds(kw.validForMs, snapshot.decodedAtSteadySeconds,
+                    s.clock.steadySeconds()));
+        }
+    });
+    // Reports the session state once at startup, so the core's eligibility reflects reality without waiting for
+    // a screensaver observer.
+    reportKeepAwakeSession();
 }
 
 AppController::~AppController()
@@ -1466,6 +1535,10 @@ AppController::~AppController()
     // Joins the snapshot thread, which still calls ddc, controls, driver and calibration. The driver and the
     // controls must outlive this join, because publish() calls them on that thread.
     s.bridge.reset();
+    // Keep awake goes after the join, since the snapshot thread reaches it through the sink until then. The
+    // controller goes first, because it releases the request through the backend.
+    s.keepAwake.reset();
+    s.keepAwakeBackend.reset();
     // The calibration is reset after the join, because publish() calls its onSnapshot until the join completes.
     s.calibration.reset();
     s.calibrationSettings.reset();
@@ -1510,6 +1583,13 @@ void AppController::shutdown()
         return;
     }
     s.stopped = true;
+    // Keep awake stops first, so the OS request is released before the rest of teardown. The flag is cleared
+    // under the report mutex, so no report or lease update reaches the controller after this.
+    {
+        std::lock_guard<std::mutex> lock(keepAwakeReportMutex_);
+        keepAwakeAccepting_ = false;
+    }
+    s.keepAwake->shutdown();
     // The Laptop slider stops before the restores below, so a late slider value cannot overwrite the restored level.
     s.stopBuiltinWrites();
 
@@ -1830,6 +1910,34 @@ InferenceReport AppController::inferenceReport()
     InferenceReport report;
     report.requestedId = currentSettings().inference_device;
     return report;
+}
+
+// ---- Keep awake with presence ----
+
+void AppController::reportKeepAwakeSession()
+{
+    Services& s = *services_;
+    // Held across the core call, so the reports reach the core in the order they were decided. The core never
+    // calls a sink from inside submit, so the snapshot thread cannot be waiting on this mutex from there.
+    std::lock_guard<std::mutex> lock(keepAwakeReportMutex_);
+    if (!keepAwakeAccepting_) {
+        return;
+    }
+    const bool active = keepAwakeCameraMonitoringAllowed(s.keepAwakeBackend->safetyState());
+    s.keepAwake->setSessionEligible(active);
+    s.keepAwake->safetyDidChange();
+    s.bridge->submit(buildKeepAwakeSession(active));
+}
+
+std::string AppController::keepAwakeStatus()
+{
+    Services& s = *services_;
+    // A copy of the pointer, as the controller is only cleared in the destructor.
+    const std::shared_ptr<KeepAwakeController> controller = s.keepAwake;
+    if (!controller) {
+        return "disabled";
+    }
+    return keepAwakeStatusName(controller->status());
 }
 
 }  // namespace telaviva::host

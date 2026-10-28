@@ -139,6 +139,13 @@ std::optional<LRESULT> SessionEvents::handlePower(WPARAM wParam, LPARAM lParam)
         // Resume is not ours alone; other handlers must see it too.
         return std::nullopt;
     }
+    if (wParam == static_cast<WPARAM>(PBT_APMSUSPEND)) {
+        if (callbacks_.onSuspend) {
+            callbacks_.onSuspend();
+        }
+        // Suspend is not ours alone; other handlers must see it too.
+        return std::nullopt;
+    }
     if (wParam != static_cast<WPARAM>(PBT_POWERSETTINGCHANGE) || lParam == 0) {
         return std::nullopt;
     }

@@ -184,6 +184,33 @@
   <data name="presenceMinBrightnessHelp" xml:space="preserve">
     <value>The camera stays off while the monitored display is at or below this brightness.</value>
   </data>
+  <data name="keepAwake.toggle" xml:space="preserve">
+    <value>Keep awake while a face is detected</value>
+  </data>
+  <data name="keepAwake.help" xml:space="preserve">
+    <value>Keeps monitoring active on battery and at any brightness. The camera and local face detection use power while this option is on. Windows policies and manual lock, screen saver or sleep actions still take precedence.</value>
+  </data>
+  <data name="keepAwake.monitoring" xml:space="preserve">
+    <value>Presence monitoring is active independently of OLED protection and the saved battery preference.</value>
+  </data>
+  <data name="keepAwake.status.disabled" xml:space="preserve">
+    <value>Keep awake is off</value>
+  </data>
+  <data name="keepAwake.status.awaiting" xml:space="preserve">
+    <value>Waiting for a fresh face detection</value>
+  </data>
+  <data name="keepAwake.status.active" xml:space="preserve">
+    <value>Keep awake is in use. System policies may still take precedence.</value>
+  </data>
+  <data name="keepAwake.status.policy" xml:space="preserve">
+    <value>Windows is blocking simulated input, so Keep awake cannot reset the idle timers.</value>
+  </data>
+  <data name="keepAwake.status.unavailable" xml:space="preserve">
+    <value>Could not keep the computer awake.</value>
+  </data>
+  <data name="keepAwake.status.suspended" xml:space="preserve">
+    <value>Paused while the session or screen is unavailable.</value>
+  </data>
   <data name="alwaysOnCamera" xml:space="preserve">
     <value>Keep camera on</value>
   </data>

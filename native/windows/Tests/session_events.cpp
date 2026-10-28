@@ -65,6 +65,7 @@ LRESULT valueOrNone(const std::optional<LRESULT>& result)
 struct Recorder {
     std::string display;  // one char per call: '0' off, '1' on
     int resumes = 0;
+    int suspends = 0;
     int topology = 0;
     std::string locks;  // '1' locked, '0' unlocked
 
@@ -73,6 +74,7 @@ struct Recorder {
         SessionEventCallbacks callbacks;
         callbacks.onDisplayState = [this](bool on) { display += on ? '1' : '0'; };
         callbacks.onResume = [this] { ++resumes; };
+        callbacks.onSuspend = [this] { ++suspends; };
         callbacks.onTopologyChanged = [this] { ++topology; };
         callbacks.onSessionLock = [this](bool locked) { locks += locked ? '1' : '0'; };
         return callbacks;
@@ -133,14 +135,27 @@ TEST(session_events_resume_fires_and_passes_through)
     CHECK_EQ(rec.resumes, 1);
 }
 
+TEST(session_events_suspend_fires_once_and_passes_through)
+{
+    Recorder rec;
+    FakeScheduler scheduler;
+    SessionEvents events(scheduler, rec.callbacks());
+
+    const auto result = events.handleMessage(WM_POWERBROADCAST, PBT_APMSUSPEND, 0);
+    CHECK(!result.has_value());
+    CHECK_EQ(rec.suspends, 1);
+    CHECK_EQ(rec.resumes, 0);
+}
+
 TEST(session_events_other_power_broadcast_is_ignored)
 {
     Recorder rec;
     FakeScheduler scheduler;
     SessionEvents events(scheduler, rec.callbacks());
 
-    CHECK(!events.handleMessage(WM_POWERBROADCAST, PBT_APMSUSPEND, 0).has_value());
+    CHECK(!events.handleMessage(WM_POWERBROADCAST, PBT_APMQUERYSUSPEND, 0).has_value());
     CHECK_EQ(rec.resumes, 0);
+    CHECK_EQ(rec.suspends, 0);
     CHECK_EQ(rec.display, std::string(""));
 }
 
@@ -236,6 +251,7 @@ TEST(session_events_null_callbacks_do_not_crash)
     // A consumed display message still returns TRUE even without a callback.
     CHECK_EQ(valueOrNone(events.handleMessage(WM_POWERBROADCAST, PBT_POWERSETTINGCHANGE, asLParam(on))), kTrue);
     CHECK(!events.handleMessage(WM_POWERBROADCAST, PBT_APMRESUMEAUTOMATIC, 0).has_value());
+    CHECK(!events.handleMessage(WM_POWERBROADCAST, PBT_APMSUSPEND, 0).has_value());
     CHECK(!events.handleMessage(WM_DISPLAYCHANGE, 0, 0).has_value());
     CHECK(!events.handleMessage(WM_DEVICECHANGE, static_cast<WPARAM>(DBT_DEVICEARRIVAL), asLParam(monitor)).has_value());
     CHECK(!events.handleMessage(WM_WTSSESSION_CHANGE, static_cast<WPARAM>(WTS_SESSION_LOCK), 1).has_value());

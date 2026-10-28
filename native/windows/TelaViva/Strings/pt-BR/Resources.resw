@@ -184,6 +184,33 @@
   <data name="presenceMinBrightnessHelp" xml:space="preserve">
     <value>A câmera fica desligada enquanto a tela monitorada estiver com brilho igual ou inferior a este valor.</value>
   </data>
+  <data name="keepAwake.toggle" xml:space="preserve">
+    <value>Manter ativo enquanto um rosto for detectado</value>
+  </data>
+  <data name="keepAwake.help" xml:space="preserve">
+    <value>Mantém o monitoramento ativo na bateria e em qualquer nível de brilho. A câmera e a detecção facial local consomem energia enquanto esta opção estiver ligada. As políticas do Windows e ações manuais de bloqueio, protetor de tela ou suspensão continuam prevalecendo.</value>
+  </data>
+  <data name="keepAwake.monitoring" xml:space="preserve">
+    <value>O monitoramento de presença funciona independentemente da proteção OLED e do ajuste de bateria salvo.</value>
+  </data>
+  <data name="keepAwake.status.disabled" xml:space="preserve">
+    <value>Manter ativo está desligado</value>
+  </data>
+  <data name="keepAwake.status.awaiting" xml:space="preserve">
+    <value>Aguardando uma nova detecção de rosto</value>
+  </data>
+  <data name="keepAwake.status.active" xml:space="preserve">
+    <value>Manter ativo está em uso. Políticas do sistema ainda podem prevalecer.</value>
+  </data>
+  <data name="keepAwake.status.policy" xml:space="preserve">
+    <value>O Windows está bloqueando a entrada simulada, então Manter ativo não consegue reiniciar os temporizadores de inatividade.</value>
+  </data>
+  <data name="keepAwake.status.unavailable" xml:space="preserve">
+    <value>Não foi possível manter o computador ativo.</value>
+  </data>
+  <data name="keepAwake.status.suspended" xml:space="preserve">
+    <value>Pausado enquanto a sessão ou a tela estiver indisponível.</value>
+  </data>
   <data name="alwaysOnCamera" xml:space="preserve">
     <value>Manter a câmera ligada</value>
   </data>

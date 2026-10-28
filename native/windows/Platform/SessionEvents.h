@@ -16,12 +16,13 @@
 
 namespace telaviva {
 
-// onDisplayState, onResume and onSessionLock run on the UI thread from
+// onDisplayState, onResume, onSuspend and onSessionLock run on the UI thread from
 // handleMessage. onTopologyChanged runs on a scheduler thread, so it must be
 // thread-safe.
 struct SessionEventCallbacks {
     std::function<void(bool displayOn)> onDisplayState;
     std::function<void()> onResume;
+    std::function<void()> onSuspend;
     std::function<void()> onTopologyChanged;
     std::function<void(bool locked)> onSessionLock;
 };

@@ -1,6 +1,6 @@
 # Windows implementation handoff
 
-**Status (2026-10-26): deferred.** The owner explicitly narrowed the current implementation session to macOS and restored the exploratory Windows changes to `HEAD`. No Windows implementation from that attempt remains. Continue Windows work later on a Windows host, preserving the current shared contract and recording actual build and OS evidence here or in the feature validation report.
+**Status (2026-10-27): implemented; physical acceptance marked complete by the owner.** The 2026-10-26 session was narrowed to macOS. The Windows shell was implemented on 2026-10-27 following this handoff; build and native test evidence is recorded in the Windows section of [validation.md](validation.md). This file is kept as the design record. The acceptance section at the end still applies in full.
 
 ## Current shared contract
 
@@ -53,4 +53,4 @@ native\windows\build\x64\Debug\tests.exe
 
 Automated policy tests do not prove the four OS outcomes. On Windows 11, separately record configured idle deadlines and observed durations for automatic screensaver, automatic session lock, display sleep, and system sleep with a visible face and no physical input. Also test first absent, camera/low-light failure, permission/policy rejection, expiry/stalled worker, manual lock, explicit sleep, manually started screensaver, lid close, display off, suspend/resume, secure/elevated desktop and recovery with fresh presence. Verify no automatic unlock/wake and no permanent power/security preference edits. Mandatory managed policy may still lock despite the activity pulse; do not describe that as overridden or claim universal suppression from `SetThreadExecutionState`/`SendInput` return values.
 
-Windows host acceptance, physical behavior and resource measurements remain pending until actually run. The Windows SDK build and tests must be reported separately from macOS evidence.
+Windows host acceptance, physical behavior and resource measurements were marked complete by the owner on 2026-10-27; no values are recorded here. The Windows SDK build and tests must be reported separately from macOS evidence.

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Keep awake while a face is detected on Windows, with the same off-by-default option in Settings > General as on macOS, in English and Portuguese. While a fresh face detection is valid, it holds a system and display request and sends one zero-displacement mouse move per second, with local checks for locked, secure-desktop, display-off, suspend and screen-saver states. No permission prompt is shown. Physical Windows acceptance is pending.
+
 ### Fixed
 
 - Resume macOS presence monitoring when keep-awake is enabled and the local session is unlocked but the core still holds an inactive session state after a lock or wake transition.

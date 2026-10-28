@@ -85,6 +85,10 @@ struct ISettingsHost {
     virtual std::vector<DeviceOption> inferenceDevices() { return {}; }
     // What the inference host is using or was refused, from InferenceHost::report().
     virtual InferenceReport inferenceReport() { return {}; }
+
+    // Keep awake with presence status name: disabled, awaiting, active, policy, unavailable or suspended.
+    // Defaults keep existing implementations compiling. Safe from any thread.
+    virtual std::string keepAwakeStatus() { return "disabled"; }
 };
 
 }  // namespace telaviva::host

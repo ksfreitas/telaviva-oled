@@ -2,7 +2,7 @@
 
 - Status: Accepted design; physical OS acceptance pending
 - Date: 2026-10-26
-- Feature: [Keep awake with presence](../specs/keep-awake-with-presence/spec.md)
+- Feature: [Keep awake with presence](../specs/archived/keep-awake-with-presence/spec.md)
 
 ## Context
 
@@ -27,6 +27,6 @@ Use process-owned idle-display/system requests plus guarded activity reporting. 
 
 ## Consequences
 
-The feature uses more camera time when enabled and may need event-posting permission on macOS. Synthetic activity can be rejected or ignored; successful API calls do not prove all lock policies are suppressed. macOS uses the private IORegistry `IOConsoleLocked` property and a typed read-only `ScreenSaverController` runtime query alongside session/saver notifications. Unknown data blocks activity. These platform-specific limitations must be tested on target OS versions. Automated fake-backend tests cannot replace OS idle-deadline and manual-saver acceptance. A failing acceptance case must be recorded and fixed before claiming full support.
+The feature uses more camera time when enabled and may need event-posting permission on macOS. Synthetic activity can be rejected or ignored; successful API calls do not prove all lock policies are suppressed. macOS uses the private IORegistry `IOConsoleLocked` property and a typed read-only `ScreenSaverController` runtime query alongside session/saver notifications. Windows uses `SetThreadExecutionState` and zero-displacement `SendInput` mouse moves, needs no permission prompt, and reports a policy block instead of pulsing when synthetic input resets are blocked; its implementation is compiled and fake-backend tested, with physical acceptance pending. Unknown data blocks activity. These platform-specific limitations must be tested on target OS versions. Automated fake-backend tests cannot replace OS idle-deadline and manual-saver acceptance. A failing acceptance case must be recorded and fixed before claiming full support.
 
-Implementation details and actual validation evidence remain in [architecture.md](../specs/keep-awake-with-presence/architecture.md), [contracts.md](../specs/keep-awake-with-presence/contracts.md) and [validation.md](../specs/keep-awake-with-presence/validation.md).
+Implementation details and actual validation evidence remain in [architecture.md](../specs/archived/keep-awake-with-presence/architecture.md), [contracts.md](../specs/archived/keep-awake-with-presence/contracts.md) and [validation.md](../specs/archived/keep-awake-with-presence/validation.md).

@@ -4,8 +4,10 @@
 #include "Host/FlyoutState.h"
 #include "Host/SettingsHost.h"
 
+#include <atomic>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 
 namespace telaviva {
@@ -88,13 +90,25 @@ public:
     std::vector<DeviceOption> inferenceDevices() override;
     InferenceReport inferenceReport() override;
 
+    // ISettingsHost, keep awake with presence. Safe from any thread.
+    std::string keepAwakeStatus() override;
+
 private:
+    // Sends the keep-awake session state to the core. Callable from the UI thread, the snapshot thread and
+    // scheduler threads. Runs entirely under keepAwakeReportMutex_, so a stale value cannot follow a newer one.
+    // Never called while holding settingsMutex or any other AppController mutex.
+    void reportKeepAwakeSession();
+
     struct Services;
     std::unique_ptr<Services> services_;
     // Built in the constructor from the core version. Declared after services_, so it is destroyed
     // first; it shares no state with the other services.
     std::string appVersion_;
     std::shared_ptr<telaviva::UpdateChecker> updateChecker_;
+    // Cleared by shutdown() under keepAwakeReportMutex_, before the controller is shut down. Every report
+    // and lease update checks it under that mutex, so none reaches the controller after shutdown.
+    std::atomic<bool> keepAwakeAccepting_{ true };
+    std::mutex keepAwakeReportMutex_;
 };
 
 }  // namespace telaviva::host

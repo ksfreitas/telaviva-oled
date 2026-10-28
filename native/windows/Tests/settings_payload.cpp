@@ -168,6 +168,7 @@ const std::set<std::string> kSettingsKeys = {
     "presence_min_brightness_percent",
     "always_on_camera",
     "screensaver_protection_enabled",
+    "keep_awake_with_presence",
     "launch_at_login",
     "hardware_keys_enabled",
     "brightness_key_step",
@@ -191,7 +192,7 @@ TEST(settings_payload_has_exactly_the_core_keys)
     CHECK_EQ(root.size(), std::size_t{2});
 
     const std::vector<std::string> keys = keysAtDepth(json, 2);
-    CHECK_EQ(keys.size(), std::size_t{18});
+    CHECK_EQ(keys.size(), std::size_t{19});
     const std::set<std::string> actual(keys.begin(), keys.end());
     CHECK(actual == kSettingsKeys);
 
@@ -215,6 +216,7 @@ TEST(settings_payload_default_values)
     CHECK_EQ(scalarFor(draft, "presence_min_brightness_percent"), std::string("20"));
     CHECK_EQ(scalarFor(draft, "always_on_camera"), std::string("true"));
     CHECK_EQ(scalarFor(draft, "screensaver_protection_enabled"), std::string("false"));
+    CHECK_EQ(scalarFor(draft, "keep_awake_with_presence"), std::string("false"));
     CHECK_EQ(scalarFor(draft, "launch_at_login"), std::string("false"));
     CHECK_EQ(scalarFor(draft, "hardware_keys_enabled"), std::string("false"));
     CHECK_EQ(scalarFor(draft, "brightness_key_step"), std::string("5"));
@@ -464,6 +466,7 @@ TEST(settings_payload_round_trip_non_default_values)
                                  R"("return_sampling_interval_s":2.5,"suspend_presence_on_battery":false,)"
                                  R"("presence_protection_enabled":true,"presence_min_brightness_percent":35,)"
                                  R"("always_on_camera":false,"screensaver_protection_enabled":true,)"
+                                 R"("keep_awake_with_presence":true,)"
                                  R"("launch_at_login":true,"hardware_keys_enabled":true,)"
                                  R"("brightness_key_step":3,"volume_key_step":7,)"
                                  R"("screensaver_targets":{"win-a":25},"ambient_follow_enabled":true,)"
@@ -475,7 +478,8 @@ TEST(settings_payload_round_trip_non_default_values)
                          R"("presence_sampling_interval_s":30,"return_sampling_interval_s":2.5,)"
                          R"("suspend_presence_on_battery":false,"presence_protection_enabled":true,)"
                          R"("presence_min_brightness_percent":35,"always_on_camera":false,)"
-                         R"("screensaver_protection_enabled":true,"launch_at_login":true,)"
+                         R"("screensaver_protection_enabled":true,"keep_awake_with_presence":true,)"
+                         R"("launch_at_login":true,)"
                          R"("hardware_keys_enabled":true,"brightness_key_step":3,"volume_key_step":7,)"
                          R"("inference_device":"auto",)"
                          R"("screensaver_targets":{"win-a":25},"ambient_follow_enabled":true,)"
@@ -546,4 +550,42 @@ TEST(settings_payload_presence_by_display_boundaries_are_kept)
     draft.presenceMinBrightnessByDisplay = {{"win-zero", 0.0}, {"win-max", 90.0}};
     const std::string json = telaviva::buildSettingsPayload(draft);
     CHECK(contains(json, R"("presence_min_brightness_by_display":{"win-max":90,"win-zero":0})"));
+}
+
+TEST(settings_payload_keep_awake_missing_key_defaults_to_false)
+{
+    // A settings file without the key, such as one written before the option existed, must read as false.
+    const telaviva::Snapshot s = telaviva::parseSnapshot(R"({"settings":{"locale":"auto"}})");
+    const telaviva::SettingsDraft draft = telaviva::draftFromSnapshotSettings(s.settings);
+    CHECK(!draft.keepAwakeWithPresence);
+    CHECK_EQ(scalarFor(draft, "keep_awake_with_presence"), std::string("false"));
+}
+
+TEST(settings_payload_keep_awake_true_survives_draft_from_snapshot)
+{
+    const telaviva::Snapshot s = telaviva::parseSnapshot(R"({"settings":{"keep_awake_with_presence":true}})");
+    const telaviva::SettingsDraft draft = telaviva::draftFromSnapshotSettings(s.settings);
+    CHECK(draft.keepAwakeWithPresence);
+    CHECK_EQ(scalarFor(draft, "keep_awake_with_presence"), std::string("true"));
+}
+
+TEST(settings_payload_keep_awake_toggle_changes_only_its_own_value)
+{
+    telaviva::SettingsDraft off;
+    telaviva::SettingsDraft on;
+    on.keepAwakeWithPresence = true;
+
+    const std::string offJson = compact(telaviva::buildSettingsPayload(off));
+    const std::string onJson = compact(telaviva::buildSettingsPayload(on));
+    CHECK(onJson.find(R"("keep_awake_with_presence":true)") != std::string::npos);
+
+    // Replacing the one value in the off payload must give exactly the on payload.
+    std::string expected = offJson;
+    const std::string from = R"("keep_awake_with_presence":false)";
+    const std::size_t pos = expected.find(from);
+    CHECK(pos != std::string::npos);
+    if (pos != std::string::npos) {
+        expected.replace(pos, from.size(), R"("keep_awake_with_presence":true)");
+    }
+    CHECK_EQ(onJson, expected);
 }

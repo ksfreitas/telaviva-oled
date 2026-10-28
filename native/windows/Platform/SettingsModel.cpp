@@ -186,6 +186,7 @@ SettingsDraft draftFromSnapshotSettings(const SettingsSnapshot& settings)
     draft.presenceMinBrightnessPercent = settings.presence_min_brightness_percent;
     draft.alwaysOnCamera = settings.always_on_camera;
     draft.screensaverProtectionEnabled = settings.screensaver_protection_enabled;
+    draft.keepAwakeWithPresence = settings.keep_awake_with_presence;
     draft.hardwareKeysEnabled = settings.hardware_keys_enabled;
     draft.brightnessKeyStep = settings.brightness_key_step;
     draft.volumeKeyStep = settings.volume_key_step;
@@ -270,6 +271,7 @@ std::string buildSettingsPayload(const SettingsDraft& input)
     settings.add("presence_min_brightness_percent", numberText(draft.presenceMinBrightnessPercent));
     settings.add("always_on_camera", boolText(draft.alwaysOnCamera));
     settings.add("screensaver_protection_enabled", boolText(draft.screensaverProtectionEnabled));
+    settings.add("keep_awake_with_presence", boolText(draft.keepAwakeWithPresence));
     settings.add("launch_at_login", boolText(draft.launchAtLogin));
     settings.add("hardware_keys_enabled", boolText(draft.hardwareKeysEnabled));
     settings.add("brightness_key_step", std::to_string(draft.brightnessKeyStep));

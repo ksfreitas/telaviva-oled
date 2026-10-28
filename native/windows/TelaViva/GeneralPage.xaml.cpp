@@ -54,6 +54,8 @@ constexpr double kMinBrightnessMax = 90.0;
 
 // One second in 100 ns ticks, the unit of TimeSpan.
 constexpr std::int64_t kOneSecondTicks = 10'000'000;
+// Keep-awake status refresh interval, two seconds.
+constexpr std::int64_t kTwoSecondsTicks = 2 * kOneSecondTicks;
 
 int indexOfLocale(std::string_view locale)
 {
@@ -304,6 +306,8 @@ namespace winrt::TelaViva::implementation
             tryLoad();
             reloadCameras();
             startPolling();
+            // Restarts the keep-awake refresh when the page is shown again with the switch on.
+            setKeepAwakeTimerRunning(host_ && host_->currentSettings().keep_awake_with_presence);
             // Programmatic focus on the first control, so arriving from the navigation pane lands in the page.
             if (languageBox_) {
                 static_cast<void>(languageBox_.Focus(xaml::FocusState::Programmatic));
@@ -313,6 +317,7 @@ namespace winrt::TelaViva::implementation
             if (poll_) {
                 poll_.Stop();
             }
+            setKeepAwakeTimerRunning(false);
         });
         RefreshStrings();
     }
@@ -486,6 +491,33 @@ namespace winrt::TelaViva::implementation
         });
         fillMonitoredBox(snapshot);
         RowsPanel().Children().Append(telaviva::host::MakeSettingRow(loc("monitoredDisplay"), loc("monitoredDisplayHelp"), monitoredBox_));
+
+        // Keep awake while a face is detected. Its status line follows the host and is refreshed by a timer while on.
+        const bool keepAwakeOn = settings.keep_awake_with_presence;
+        const winrt::hstring keepAwakeHeader = loc("keepAwake.toggle");
+        xc::ToggleSwitch keepAwakeSwitch = makeSwitch(keepAwakeOn, keepAwakeHeader);
+        keepAwakeSwitch.Toggled([this](auto const& sender, auto const&) {
+            const bool enabled = sender.as<xc::ToggleSwitch>().IsOn();
+            edit([enabled](telaviva::SettingsDraft& draft) { draft.keepAwakeWithPresence = enabled; });
+            // Shown at once, without waiting for the host; the timer takes over from the host state while on.
+            if (keepAwakeStatus_) {
+                const std::string_view key = enabled ? std::string_view{ "keepAwake.status.awaiting" }
+                                                     : std::string_view{ "keepAwake.status.disabled" };
+                keepAwakeStatus_.Text(loc(key));
+            }
+            setKeepAwakeTimerRunning(enabled);
+        });
+        RowsPanel().Children().Append(telaviva::host::MakeSettingRow(keepAwakeHeader, loc("keepAwake.help"), keepAwakeSwitch));
+        RowsPanel().Children().Append(telaviva::host::MakeCaption(loc("keepAwake.monitoring")));
+
+        // Status under the switch, the same wrapped line the keyboard page uses.
+        keepAwakeStatus_ = xc::TextBlock{};
+        keepAwakeStatus_.TextWrapping(xaml::TextWrapping::Wrap);
+        keepAwakeStatus_.FontSize(12.0);
+        RowsPanel().Children().Append(keepAwakeStatus_);
+        updateKeepAwakeStatus(keepAwakeOn);
+        // Only while the page is shown; a rebuild before the page loads starts the refresh from Loaded.
+        setKeepAwakeTimerRunning(keepAwakeOn && IsLoaded());
 
         const winrt::hstring saverHeader = loc("saver");
         xc::ToggleSwitch saverSwitch = makeSwitch(settings.screensaver_protection_enabled, saverHeader);
@@ -874,5 +906,34 @@ namespace winrt::TelaViva::implementation
         suppress_ = true;
         thresholdBox_.Value(presenceThresholdFor(snapshot.settings, thresholdTarget_));
         suppress_ = false;
+    }
+
+    void GeneralPage::updateKeepAwakeStatus(bool on)
+    {
+        if (!keepAwakeStatus_) {
+            return;
+        }
+        // Off always reads as the disabled text; on shows the host's state, or the disabled text with no host.
+        const std::string key = (on && host_ != nullptr) ? "keepAwake.status." + host_->keepAwakeStatus()
+                                                        : std::string("keepAwake.status.disabled");
+        keepAwakeStatus_.Text(loc(key));
+    }
+
+    void GeneralPage::setKeepAwakeTimerRunning(bool running)
+    {
+        if (!running) {
+            if (keepAwakeTimer_) {
+                keepAwakeTimer_.Stop();
+            }
+            return;
+        }
+        if (!keepAwakeTimer_) {
+            // Created once and reused, so rebuilding the rows never adds a second tick handler.
+            keepAwakeTimer_ = DispatcherQueue().CreateTimer();
+            keepAwakeTimer_.Interval(winrt::Windows::Foundation::TimeSpan{ kTwoSecondsTicks });
+            // The timer runs only while the switch is on, so the tick always reports the on state.
+            keepAwakeTimer_.Tick([this](auto const&, auto const&) { updateKeepAwakeStatus(true); });
+        }
+        keepAwakeTimer_.Start();
     }
 }

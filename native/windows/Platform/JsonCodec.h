@@ -53,6 +53,7 @@ struct SettingsSnapshot {
     double presence_min_brightness_percent = 20.0;
     bool always_on_camera = true;
     bool screensaver_protection_enabled = false;
+    bool keep_awake_with_presence = false;
     bool launch_at_login = false;
     int brightness_key_step = 5;
     std::map<std::string, double> screensaver_targets;
@@ -146,6 +147,16 @@ struct ScreensaverSnapshot {
     std::string state;
 };
 
+// The snapshot object keep_awake. Defaults are the inert state for a snapshot that omits it.
+struct KeepAwakeSnapshot {
+    bool enabled = false;
+    bool requested = false;
+    uint64_t observationId = 0;
+    uint64_t generation = 0;
+    uint64_t validForMs = 0;
+    std::string reason;
+};
+
 struct Snapshot {
     uint64_t revision = 0;
     std::string status;
@@ -158,6 +169,9 @@ struct Snapshot {
     CameraSnapshot camera;
     PowerSnapshot power;
     ScreensaverSnapshot screensaver;
+    KeepAwakeSnapshot keepAwake;
+    // Steady-clock seconds when parseSnapshot read this snapshot; keep-awake windows count down from it.
+    double decodedAtSteadySeconds = 0.0;
 };
 
 // Returns text as a quoted, escaped JSON string literal.
@@ -168,6 +182,7 @@ std::string buildMonitorDisconnected(const std::string& monitorId);
 std::string buildMonitorDisplayState(const std::string& monitorId, uint64_t generation, const std::string& state);
 std::string buildPower(std::optional<bool> onBattery);
 std::string buildScreensaver(const std::string& state);
+std::string buildKeepAwakeSession(bool active);
 std::string buildPresenceObservation(const std::string& status, uint64_t capturedAtMs, uint64_t cameraGeneration,
                                      const std::optional<std::string>& cameraStatus);
 std::string buildCameraStatus(const std::string& status, std::optional<uint64_t> generation);
@@ -203,5 +218,9 @@ std::string buildControlsShutdown(double now);
 // or missing or mistyped fields.
 Snapshot parseSnapshot(const std::string& json);
 ControlsResult parseControlsResult(const std::string& json);
+
+// Milliseconds left in a keep-awake window of validForMs that was read at decodedAtSteadySeconds.
+// Zero when validForMs is zero or the window has run out; a clock that moved backwards counts as no elapsed time.
+uint64_t keepAwakeRemainingMilliseconds(uint64_t validForMs, double decodedAtSteadySeconds, double nowSteadySeconds);
 
 }  // namespace telaviva

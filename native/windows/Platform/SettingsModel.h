@@ -21,6 +21,7 @@ struct SettingsDraft {
     double presenceMinBrightnessPercent = 20;
     bool alwaysOnCamera = true;
     bool screensaverProtectionEnabled = false;
+    bool keepAwakeWithPresence = false;
     bool hardwareKeysEnabled = false;
     int brightnessKeyStep = 5;
     int volumeKeyStep = 5;

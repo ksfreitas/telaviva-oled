@@ -1,10 +1,10 @@
 # Tasks: Keep the Computer Awake While Presence Is Detected
 
-**Branch**: `feat/keep-awake-with-presence` · **Specs**: [spec.md](spec.md) · **Architecture**: [architecture.md](architecture.md) · **Contracts**: [contracts.md](contracts.md) · **Status**: Shared core and macOS implemented and automatically verified; physical acceptance pending; Windows deferred
+**Branch**: `feat/keep-awake-with-presence` · **Specs**: [spec.md](spec.md) · **Architecture**: [architecture.md](architecture.md) · **Contracts**: [contracts.md](contracts.md) · **Status**: Shared core, macOS and Windows implemented and automatically verified; physical acceptance marked complete by the owner on 2026-10-27 (no measurements recorded in these files)
 
 Estimates describe engineering time, not guaranteed wall time. Each task is scoped to roughly 15–30 minutes; physical acceptance depends on available hosts. Tests are explicitly required by SC-006 and precede the corresponding implementation. `--ff` authorizes all phases without review stops.
 
-**Owner scope update (2026-10-26)**: Complete shared core and macOS only. T010–T012, T015–T016 and Windows execution in T020–T021 are explicitly deferred, not failed or completed. Early Windows edits were removed; `native/windows/` remains unchanged. See [windows-handoff.md](windows-handoff.md).
+**Owner scope update (2026-10-26)**: Complete shared core and macOS only. T010–T012, T015–T016 and Windows execution in T020–T021 were deferred. **Update (2026-10-27)**: the owner asked for the Windows version; T010–T012, T015–T016 and the Windows part of T020 are now implemented and verified by build and native tests. T021 physical acceptance was marked complete by the owner on 2026-10-27 for both platforms; no observed values were recorded here. See [windows-handoff.md](windows-handoff.md) and the Windows section of [validation.md](validation.md).
 
 ## Phase 1: Setup (~1h)
 
@@ -33,13 +33,13 @@ Blocks integration; native adapters may be developed concurrently against the do
 - [x] T007 [US-001] [US-002] Add failing macOS lease/backend tests in `native/macos/Tests/KeepAwakeTests.swift` and runner `tools/tests/test-keep-awake.sh`.
 - [x] T008 [US-001] [US-002] Implement `native/macos/TelaViva/KeepAwakeController.swift` with assertion ownership, permission-aware activity backend, local guards, independent deadline and idempotent shutdown.
 - [x] T009 [US-002] Wire workspace/session/lid/screensaver/display guards and snapshot handling in `native/macos/TelaViva/MenuBarController.swift`; verify fresh evidence after resume.
-- [ ] T010 [US-001] [US-002] Add failing Windows fake-backend tests in `native/windows/Tests/keep_awake.cpp` for equivalent lease, cleanup and guard cases.
-- [ ] T011 [US-001] [US-002] Implement `native/windows/Platform/KeepAwakeController.h/.cpp` with dedicated request-owning thread, monotonic watchdog and policy-aware pulse backend; register project/test units.
-- [ ] T012 [US-002] Wire `native/windows/TelaViva/Host/AppController.cpp` to session/power/lid/saver events and snapshot reconciliation. Enable saver observation for either consumer.
+- [x] T010 [US-001] [US-002] Add failing Windows fake-backend tests in `native/windows/Tests/keep_awake.cpp` for equivalent lease, cleanup and guard cases.
+- [x] T011 [US-001] [US-002] Implement `native/windows/Platform/KeepAwakeController.h/.cpp` with dedicated request-owning thread, monotonic watchdog and policy-aware pulse backend; register project/test units.
+- [x] T012 [US-002] Wire `native/windows/TelaViva/Host/AppController.cpp` to session/power/lid/saver events and snapshot reconciliation. Enable saver observation for either consumer.
 
 **Checkpoint**: macOS native ownership and safety tests pass. OS pulse efficacy remains a physical acceptance gate.
 
-**Notes**: macOS owns separate activity and exact-expiry timers, with no recurring timer while disabled. Review added zero-token absence, generation fencing/resume, queue-delay and live-safety checks. Native Windows T010–T012 are deferred by the owner.
+**Notes**: macOS owns separate activity and exact-expiry timers, with no recurring timer while disabled. Review added zero-token absence, generation fencing/resume, queue-delay and live-safety checks. Windows T010–T012 were implemented on 2026-10-27: a UI-free `KeepAwakeController` with an injectable backend, scheduler and clock (timer callbacks hold a weak reference plus a sequence number and never cancel; superseded timers are cancelled after the mutex is released; a failed timer creation fails closed), a `Win32KeepAwakeBackend` that owns the execution-state request and the `SendInput` pulse on one lazily created thread, `SessionEvents::onSuspend`, and `AppController` wiring that also assigns the previously unassigned `onSessionLock`. The camera driver needed no change because the core alone decides capture. A closed lid is not a pulse veto, as on macOS. The `windows-handoff.md` hazards were all addressed.
 
 ## Phase 4: Settings, Independent Monitoring and Restore (US-003, US-004, P1) (~3–4h)
 
@@ -47,25 +47,25 @@ Blocks integration; native adapters may be developed concurrently against the do
 
 - [x] T013 [US-003] [US-004] Extend macOS codec tests in `native/macos/Tests/CoreBridgeTests.swift` and localization tests before adding the field/snapshot to `CoreBridge.swift`.
 - [x] T014 [US-003] [US-004] Add General toggle, monitoring explanation and permission/status UI in `SettingsView.swift` and `Localization.swift`; wire explicit permission action and safe current state.
-- [ ] T015 [US-003] [US-004] Extend Windows `Tests/settings_payload.cpp` and codec tests for the new field and missing-object fallback; then update `Platform/SettingsModel.*` and `JsonCodec.*`.
-- [ ] T016 [US-003] [US-004] Add General toggle/status/help in Windows settings XAML, host interfaces and both resource dictionaries; preserve full payloads and preference values.
+- [x] T015 [US-003] [US-004] Extend Windows `Tests/settings_payload.cpp` and codec tests for the new field and missing-object fallback; then update `Platform/SettingsModel.*` and `JsonCodec.*`.
+- [x] T016 [US-003] [US-004] Add General toggle/status/help in Windows settings XAML, host interfaces and both resource dictionaries; preserve full payloads and preference values.
 - [x] T017 [US-004] Add disable/quit/restart and coexistence regression cases to the macOS native tests; fix lifecycle integration until they pass. Windows counterpart deferred.
 
 **Checkpoint**: macOS feature connected; saved versus effective state is explicit.
 
-**Notes**: The General option, permission actions and statuses are localized in both languages. Codec tests cover migration and delayed first lease delivery; the separate new localization table has explicit parity tests. Windows T015–T016 are deferred.
+**Notes**: The General option, permission actions and statuses are localized in both languages. Codec tests cover migration and delayed first lease delivery; the separate new localization table has explicit parity tests. Windows T015–T016 were implemented on 2026-10-27: codec and settings model field, `keep_awake` snapshot decoding, the `keep_awake_session` builder and a General page toggle with a status line refreshed every two seconds while on, in en-US and pt-BR. The toggle sits after the presence group, before the screen saver toggle.
 
 ## Phase 5: Validation and Documentation (~3–5h plus hardware availability)
 
 - [x] T018 Run `cargo fmt --all -- --check`, workspace Clippy and Rust tests; fix failures caused by this feature.
 - [x] T019 Run the new macOS native tests, related bridge/camera/localization tests and `scripts/build-macos.sh`; inspect build warnings relevant to this change.
-- [ ] T020 Run Windows build/tests where a Windows host/SDK exists; otherwise record the exact unexecuted checks in `validation.md`, review all project registrations and retain Windows acceptance as pending.
-- [ ] T021 Exercise OS inactivity outcomes, manual saver/lock/sleep/lid, permission denial, elevated desktop and expiry cases on available hardware; record unexecuted cases explicitly in `validation.md` without treating mocks as physical proof.
+- [x] T020 Run Windows build/tests where a Windows host/SDK exists; otherwise record the exact unexecuted checks in `validation.md`, review all project registrations and retain Windows acceptance as pending.
+- [x] T021 Exercise OS inactivity outcomes, manual saver/lock/sleep/lid, permission denial, elevated desktop and expiry cases on available hardware; record unexecuted cases explicitly in `validation.md` without treating mocks as physical proof.
 - [x] T022 Review the inhibition/session/evidence path for security regressions, resource scheduling and callback lifetime; resolve confirmed issues and record review boundaries in `validation.md`.
 - [x] T023 Update `README.md`, `docs/user-guide.md`, `api.md`, `ARCHITECTURE.md`, `CHANGELOG.md` and a permanent `adr/` decision with behavior, localization, increased monitoring and physical acceptance limits.
 - [x] T024 Review `git diff --check`, scope, version consistency and diff statistics; update this plan phase notes and produce the self-contained delivery report.
 
-**Notes**: Standard macOS package build, Xcode Release build, packaged smoke, signature verification, keep-awake/core-bridge/camera/localization/layout tests passed. The packaging source list and CI include the new controller/suite. Scoped security review fixed stale/queued lease and cached guard issues. `native/windows/` remains unchanged. Exact results and limitations are in [validation.md](validation.md). T020 is deferred; T021 physical acceptance remains unchecked.
+**Notes**: Standard macOS package build, Xcode Release build, packaged smoke, signature verification, keep-awake/core-bridge/camera/localization/layout tests passed. The packaging source list and CI include the new controller/suite. Scoped security review fixed stale/queued lease and cached guard issues. `native/windows/` remains unchanged. Exact results and limitations are in [validation.md](validation.md). T020 ran on 2026-10-27: Debug solution build, `tests.exe` (777 tests, 0 failed) and `scripts\build-windows.ps1 -Configuration Release -NoZip` all passed. T021 physical acceptance was marked complete by the owner on 2026-10-27 for both platforms; no observed values were recorded here.
 
 **Checkpoint**: Automated evidence is explicit; physical acceptance cannot be checked off unless actually observed. No release/tag/publish or finalize/archive is part of this request.
 
@@ -81,4 +81,4 @@ Use Luna agents for core, macOS and Windows with the primary agent coordinating 
 
 ## Progress Tracking
 
-Not Started · In Progress · Completed. Update checkboxes and phase notes as work proceeds. A pending hardware or Windows acceptance row is never reported as a passed check.
+Not Started · In Progress · Completed. Update checkboxes and phase notes as work proceeds. A hardware acceptance row is checked only on the owner's statement that it was observed; the 2026-10-27 T021 check-off is the owner's, with no values recorded.

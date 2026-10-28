@@ -467,6 +467,73 @@ TEST(json_codec_protection_and_monitored_display_settings_defaults)
     CHECK(!absent.monitoredDisplay.automatic);
 }
 
+TEST(json_codec_parses_keep_awake_object_fields)
+{
+    const telaviva::Snapshot s = telaviva::parseSnapshot(
+        R"({"keep_awake":{"enabled":true,"requested":true,"observation_id":12,"generation":7,"valid_for_ms":25000,"reason":"presence"}})");
+    CHECK(s.keepAwake.enabled);
+    CHECK(s.keepAwake.requested);
+    CHECK_EQ(s.keepAwake.observationId, uint64_t{12});
+    CHECK_EQ(s.keepAwake.generation, uint64_t{7});
+    CHECK_EQ(s.keepAwake.validForMs, uint64_t{25000});
+    CHECK_EQ(s.keepAwake.reason, std::string("presence"));
+}
+
+TEST(json_codec_keep_awake_absent_or_non_object_is_inert_default)
+{
+    const telaviva::Snapshot absent = telaviva::parseSnapshot(R"({"revision":1})");
+    CHECK(!absent.keepAwake.enabled);
+    CHECK(!absent.keepAwake.requested);
+    CHECK_EQ(absent.keepAwake.observationId, uint64_t{0});
+    CHECK_EQ(absent.keepAwake.generation, uint64_t{0});
+    CHECK_EQ(absent.keepAwake.validForMs, uint64_t{0});
+    CHECK_EQ(absent.keepAwake.reason, std::string(""));
+    CHECK(absent.decodedAtSteadySeconds > 0.0);
+
+    const telaviva::Snapshot wrongType = telaviva::parseSnapshot(R"({"keep_awake":"oops"})");
+    CHECK(!wrongType.keepAwake.enabled);
+    CHECK(!wrongType.keepAwake.requested);
+    CHECK_EQ(wrongType.keepAwake.validForMs, uint64_t{0});
+    CHECK_EQ(wrongType.keepAwake.reason, std::string(""));
+}
+
+TEST(json_codec_keep_awake_tolerates_unknown_fields)
+{
+    const telaviva::Snapshot s = telaviva::parseSnapshot(
+        R"({"keep_awake":{"enabled":true,"future_field":{"a":[1,2]},"observation_id":3}})");
+    CHECK(s.keepAwake.enabled);
+    CHECK_EQ(s.keepAwake.observationId, uint64_t{3});
+    CHECK(!s.keepAwake.requested);
+}
+
+TEST(json_codec_keep_awake_with_presence_setting_defaults_to_false)
+{
+    CHECK(telaviva::parseSnapshot(R"({"settings":{"keep_awake_with_presence":true}})")
+              .settings.keep_awake_with_presence);
+    CHECK(!telaviva::parseSnapshot(R"({"settings":{"keep_awake_with_presence":false}})")
+               .settings.keep_awake_with_presence);
+    CHECK(!telaviva::parseSnapshot(R"({"settings":{"locale":"auto"}})").settings.keep_awake_with_presence);
+    CHECK(!telaviva::parseSnapshot(R"({"revision":1})").settings.keep_awake_with_presence);
+}
+
+TEST(json_codec_keep_awake_session_message)
+{
+    CHECK_EQ(telaviva::buildKeepAwakeSession(true), std::string(R"({"type":"keep_awake_session","active":true})"));
+    CHECK_EQ(telaviva::buildKeepAwakeSession(false), std::string(R"({"type":"keep_awake_session","active":false})"));
+}
+
+TEST(json_codec_keep_awake_remaining_milliseconds)
+{
+    // No window means nothing remains, whatever the clock says.
+    CHECK_EQ(telaviva::keepAwakeRemainingMilliseconds(0, 100.0, 101.0), uint64_t{0});
+    // 25 s window with 1.0 s elapsed leaves 24 s.
+    CHECK_EQ(telaviva::keepAwakeRemainingMilliseconds(25000, 100.0, 101.0), uint64_t{24000});
+    // Elapsed longer than the window leaves nothing.
+    CHECK_EQ(telaviva::keepAwakeRemainingMilliseconds(25000, 100.0, 130.0), uint64_t{0});
+    // A clock that moved backwards counts as no elapsed time, so the full window remains.
+    CHECK_EQ(telaviva::keepAwakeRemainingMilliseconds(25000, 100.0, 99.0), uint64_t{25000});
+}
+
 TEST(json_codec_camera_retry_in_ms_is_parsed)
 {
     const telaviva::Snapshot s = telaviva::parseSnapshot(R"({"camera":{"status":"busy","retry_in_ms":30000}})");

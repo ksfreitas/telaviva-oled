@@ -57,6 +57,10 @@ namespace winrt::TelaViva::implementation
         void syncMonitoredDisplay(const telaviva::Snapshot& snapshot);
         // Shows the presence threshold of the monitored display, or the global value when none resolves.
         void refreshThreshold(const telaviva::Snapshot& snapshot);
+        // Sets the keep-awake status line: off shows the disabled text, on shows the host's state.
+        void updateKeepAwakeStatus(bool on);
+        // Runs the keep-awake status refresh only while the switch is on and the page is loaded.
+        void setKeepAwakeTimerRunning(bool running);
 
         telaviva::host::ISettingsHost* host_ = nullptr;
         std::function<void()> onLanguageChanged_;
@@ -91,6 +95,9 @@ namespace winrt::TelaViva::implementation
         winrt::Microsoft::UI::Xaml::Controls::TextBlock cameraStatusText_{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::InfoBar cameraInfoBar_{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::HyperlinkButton cameraLink_{ nullptr };
+        // Keep-awake status under its switch, and the timer that refreshes it while the switch is on.
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock keepAwakeStatus_{ nullptr };
+        winrt::Microsoft::UI::Dispatching::DispatcherQueueTimer keepAwakeTimer_{ nullptr };
         winrt::Microsoft::UI::Dispatching::DispatcherQueueTimer poll_{ nullptr };
     };
 }

@@ -13,6 +13,7 @@
 #pragma warning(pop)
 
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -662,6 +663,13 @@ std::string buildScreensaver(const std::string& state)
     return message.finish();
 }
 
+std::string buildKeepAwakeSession(bool active)
+{
+    ObjectWriter message;
+    message.addString("type", "keep_awake_session").addBool("active", active);
+    return message.finish();
+}
+
 std::string buildPresenceObservation(const std::string& status, uint64_t capturedAtMs, uint64_t cameraGeneration,
                                      const std::optional<std::string>& cameraStatus)
 {
@@ -875,11 +883,28 @@ std::string buildControlsShutdown(double now)
     return eventWriter("shutdown", now).finish();
 }
 
+uint64_t keepAwakeRemainingMilliseconds(uint64_t validForMs, double decodedAtSteadySeconds, double nowSteadySeconds)
+{
+    if (validForMs == 0) {
+        return 0;
+    }
+    // Written as a negated comparison so NaN also counts as no elapsed time.
+    double elapsed = nowSteadySeconds - decodedAtSteadySeconds;
+    if (!(elapsed > 0.0)) {
+        elapsed = 0.0;
+    }
+    const uint64_t elapsedMs = toUnsigned(elapsed * 1000.0);
+    return validForMs > elapsedMs ? validForMs - elapsedMs : 0;
+}
+
 Snapshot parseSnapshot(const std::string& text)
 {
+    const double decodedAtSteadySeconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
     const Object root = parseRoot(text);
 
     Snapshot snapshot;
+    snapshot.decodedAtSteadySeconds = decodedAtSteadySeconds;
     snapshot.revision = unsignedOr(root, "revision");
     snapshot.status = stringOr(root, "status", "");
 
@@ -896,6 +921,7 @@ Snapshot parseSnapshot(const std::string& text)
         snapshot.settings.presence_min_brightness_percent = numberOr(*settings, "presence_min_brightness_percent", 20.0);
         snapshot.settings.always_on_camera = boolOr(*settings, "always_on_camera", true);
         snapshot.settings.screensaver_protection_enabled = boolOr(*settings, "screensaver_protection_enabled", false);
+        snapshot.settings.keep_awake_with_presence = boolOr(*settings, "keep_awake_with_presence", false);
         snapshot.settings.launch_at_login = boolOr(*settings, "launch_at_login", false);
         snapshot.settings.brightness_key_step = intOr(*settings, "brightness_key_step", 5);
         snapshot.settings.screensaver_targets = numberMapField(*settings, "screensaver_targets");
@@ -966,6 +992,15 @@ Snapshot parseSnapshot(const std::string& text)
 
     if (const auto screensaver = objectField(root, "screensaver")) {
         snapshot.screensaver.state = stringOr(*screensaver, "state", "unknown");
+    }
+
+    if (const auto keepAwake = objectField(root, "keep_awake")) {
+        snapshot.keepAwake.enabled = boolOr(*keepAwake, "enabled", false);
+        snapshot.keepAwake.requested = boolOr(*keepAwake, "requested", false);
+        snapshot.keepAwake.observationId = unsignedOr(*keepAwake, "observation_id");
+        snapshot.keepAwake.generation = unsignedOr(*keepAwake, "generation");
+        snapshot.keepAwake.validForMs = unsignedOr(*keepAwake, "valid_for_ms");
+        snapshot.keepAwake.reason = stringOr(*keepAwake, "reason", "");
     }
 
     return snapshot;
