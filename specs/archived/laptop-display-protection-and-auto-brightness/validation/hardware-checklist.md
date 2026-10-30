@@ -470,7 +470,7 @@ Notes:
 
 ## Windows
 
-Status: Pass (marked by the owner on 2026-10-27; no observed values recorded). The Windows implementation exists in code with passing unit tests (2026-10 work in specs/windows-laptop-parity/plan.md); the owner marked every Windows row below as passed. For the owner, on a Windows laptop, after the work in ../windows-handoff.md.
+Status: Pass (marked by the owner on 2026-10-27; no observed values recorded). The Windows implementation exists in code with passing unit tests (2026-10 work in specs/archived/windows-laptop-parity/plan.md); the owner marked every Windows row below as passed. For the owner, on a Windows laptop, after the work in ../windows-handoff.md.
 
 Names: the Windows UI says "Laptop" in en-US and "Notebook" in pt-BR. Use the name the app shows. The rows below cover the built-in laptop panel only, except W-L10, which covers an external DDC monitor. Their steps are written for the owner to run after the Windows work is done, and they are not verified.
 

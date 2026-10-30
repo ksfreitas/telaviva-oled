@@ -403,7 +403,7 @@ The macOS implementation is in the working tree, and the tests above exist. This
 
 ### Windows status
 
-Implemented on Windows in 2026-10 (see the [plan](specs/windows-laptop-parity/plan.md) and the [handoff](specs/archived/laptop-display-protection-and-auto-brightness/windows-handoff.md)). The Windows shell reads and sets the laptop panel through WMI, opts in to the core's built-in policy, suspends and restores the active power plan's adaptive brightness, and adds the monitored display selector, the per-display presence threshold and the lid-closed camera rule. The shared reconnect restore of a protection dim (`parked_dims`) and the whole-unit manual values also apply to Windows DDC monitors. The owner marked hardware rows W-L4 to W-L10 as passed on 2026-10-27, with no observed values recorded in the [hardware checklist](specs/archived/laptop-display-protection-and-auto-brightness/validation/hardware-checklist.md).
+Implemented on Windows in 2026-10 (see the [plan](specs/archived/windows-laptop-parity/plan.md) and the [handoff](specs/archived/laptop-display-protection-and-auto-brightness/windows-handoff.md)). The Windows shell reads and sets the laptop panel through WMI, opts in to the core's built-in policy, suspends and restores the active power plan's adaptive brightness, and adds the monitored display selector, the per-display presence threshold and the lid-closed camera rule. The shared reconnect restore of a protection dim (`parked_dims`) and the whole-unit manual values also apply to Windows DDC monitors. The owner marked hardware rows W-L4 to W-L10 as passed on 2026-10-27, with no observed values recorded in the [hardware checklist](specs/archived/laptop-display-protection-and-auto-brightness/validation/hardware-checklist.md).
 
 ## External monitor reconnect restore and whole-unit manual values — 2026-10-21
 
@@ -457,3 +457,17 @@ The shared core owns current-generation positive evidence and a monotonic lease 
 The owner approved manual-action precedence, release on unavailable detection, and release on the first valid absent observation. Native request success does not establish suppression of every screensaver/security policy. macOS posting permissions, session/saver guard limitations, manual-saver preservation, actual OS idle deadlines and Windows build/hardware results are tracked explicitly in the [validation report](specs/archived/keep-awake-with-presence/validation.md). The application version is 0.1.4. Release publication is separate from the version metadata update.
 
 See [ADR 0040](adr/0040-presence-driven-idle-inhibition.md), the [specification](specs/archived/keep-awake-with-presence/spec.md), [architecture](specs/archived/keep-awake-with-presence/architecture.md), [contracts](specs/archived/keep-awake-with-presence/contracts.md) and [implementation plan](specs/archived/keep-awake-with-presence/plan.md).
+
+## windows-laptop-parity — 2026-10-29
+
+The Windows shell now implements the laptop display protection that ADR 0035 had built for macOS only. The shared core is unchanged by this work; the Windows shell opts in to the core's built-in policy by sending `protectable` and `holding` in `builtin_display`, and the built-in screen stays out of the core `monitors` map. [ADR 0043](adr/0043-windows-laptop-display-parity.md) records the decision, and the [archived plan](specs/archived/windows-laptop-parity/plan.md) tracks the execution against the [Windows handoff](specs/archived/laptop-display-protection-and-auto-brightness/windows-handoff.md).
+
+What changed in the Windows `Platform` library and shell:
+
+- The laptop panel is read and written through WMI (`LaptopPanel`, with `LaptopPanelFollower` publishing the flags and the level), and a write is accepted at the nearest supported level because WMI snaps to supported levels.
+- `BuiltInProtection` applies the core's level-triggered decision and verifies the restore. `AutoBrightnessOwner` is the shared owner of the Windows setting that changes brightness automatically with lighting, used by protection and by calibration, with recovery after a forced quit. `AmbientCalibrationController` and `CalibrationSession` run on that owner, and calibration restores the monitor after a crash, waiting up to 90 seconds for it to reappear.
+- `JsonCodec` and `SettingsModel` carry the new snapshot and settings fields, including `presence_min_brightness_by_display`; `MonitoredDisplayRules` and the picker choose the monitored display that gates the camera; `primary` is sent only inside `monitor_discovered`.
+- `CameraSelection` and `CameraLifecycleDriver` do not use a built-in camera while the lid is closed. `AppController` ignores every submit until the first snapshot arrives.
+- The popup card and the General page rows show the "Laptop" (en-US) or "Notebook" (pt-BR) screen only while it is available and adjustable.
+
+Not implemented, and left undecided by the handoff: the wake re-read of a known monitor discovered with brightness unsupported, in-place rediscovery, and the adaptive give-up of calibration recovery. The owner marked the Windows hardware rows W-L4 to W-L10 as passed on 2026-10-27, with no observed values recorded.

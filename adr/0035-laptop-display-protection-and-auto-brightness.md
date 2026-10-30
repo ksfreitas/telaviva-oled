@@ -65,4 +65,4 @@ The owner set the scope on 2026-10-20 and 2026-10-21: controls without volume, a
 
 ## Amendment 2026-10-27: Windows implemented
 
-The "Windows deferred" decision above no longer holds. The Windows shell now implements the laptop panel, the automatic-brightness hold, the monitored display, the per-display threshold and the lid-closed camera rule (plan: `specs/windows-laptop-parity/plan.md`). The owner marked the Windows hardware rows W-L4 to W-L10 as passed on 2026-10-27, with no observed values recorded in the archived hardware checklist. The macOS rows A to N are still not run.
+The "Windows deferred" decision above no longer holds. The Windows shell now implements the laptop panel, the automatic-brightness hold, the monitored display, the per-display threshold and the lid-closed camera rule (plan: `specs/archived/windows-laptop-parity/plan.md`; decision record: [ADR 0043](0043-windows-laptop-display-parity.md)). The owner marked the Windows hardware rows W-L4 to W-L10 as passed on 2026-10-27, with no observed values recorded in the archived hardware checklist. The macOS rows A to N are still not run.
