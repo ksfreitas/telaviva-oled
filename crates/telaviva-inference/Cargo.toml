@@ -1,6 +1,6 @@
 [package]
 name = "telaviva-inference"
-version = "0.1.4"
+version = "0.1.5"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -13,6 +13,8 @@ crate-type = ["rlib", "staticlib", "cdylib"]
 # load-dynamic feature no extra binaries are downloaded).
 default = []
 directml = ["ort/directml"]
+# Off by default. Benchmark harness only (examples/occlusion_bench.rs); never part of the shipped libraries.
+bench = ["dep:image", "dep:toml"]
 
 [dependencies]
 ndarray = "=0.16.1"
@@ -20,3 +22,9 @@ ort = { version = "=2.0.0-rc.9", default-features = false, features = ["load-dyn
 # Keep ort-sys aligned with the exact ONNX Runtime binding release.
 ort-sys = "=2.0.0-rc.9"
 sha2 = "0.10"
+image = { version = "0.25", default-features = false, features = ["jpeg"], optional = true }
+toml = { version = "1", optional = true }
+
+[[example]]
+name = "occlusion_bench"
+required-features = ["bench"]

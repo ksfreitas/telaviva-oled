@@ -562,7 +562,7 @@ final class PresenceCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private func createDetector(provider: Int32, deviceIndex: UInt32, framework: String? = nil,
                                 model: String? = nil) -> OpaquePointer? {
         let runtimePath = framework ?? Bundle.main.bundleURL.appendingPathComponent("Contents/Frameworks/libonnxruntime.dylib").path
-        let modelPath = model ?? Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/models/face_detection_yunet_2023mar.onnx").path
+        let modelPath = model ?? Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/models/face_detection_retinaface_mb025.onnx").path
         var created: OpaquePointer?
         let result = runtimePath.withCString { runtime in
             modelPath.withCString { model in

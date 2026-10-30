@@ -1,6 +1,7 @@
 use crate::builtin;
 use crate::diagnostics::{self, Diagnostics};
 use crate::keep_awake::KeepAwakePresence;
+use crate::lock::{LockFacts, LockStage};
 use crate::settings::{self, AmbientCurve, Settings};
 use serde::{
     de::{MapAccess, SeqAccess, Visitor},
@@ -121,6 +122,10 @@ pub struct Core {
     // renew the lease.
     keep_awake_presence: KeepAwakePresence,
     session_active: bool,
+    // True only after the shell reported the session inactive. Runtime only, never persisted.
+    session_inactive_reported: bool,
+    // Lock-on-absence stage. Runtime only, never persisted.
+    lock: crate::lock::LockState,
     closed: bool,
     // Built-in display state reported by the shell. Runtime only, never persisted.
     builtin_available: bool,
@@ -171,6 +176,8 @@ impl Core {
             last_presence: None,
             keep_awake_presence: KeepAwakePresence::default(),
             session_active: false,
+            session_inactive_reported: false,
+            lock: crate::lock::LockState::new(),
             closed: false,
             builtin_available: false,
             builtin_percent: None,
@@ -230,6 +237,7 @@ impl Core {
                     "protectable",
                     "holding",
                 ],
+                "lock_result" => &["type", "token", "ok", "error"],
                 "shutdown" => &["type"],
                 _ => return Err(format!("unknown command type: {kind}")),
             },
@@ -333,11 +341,13 @@ impl Core {
             "set_brightness" | "set_volume" => self.manual_set(kind, &value)?,
             "update_settings" => self.update_settings(&value)?,
             "hardware_result" => self.hardware_result(&value)?,
+            "lock_result" => self.lock_result(&value)?,
             "builtin_display" => self.builtin_display(&value)?,
             "shutdown" => self.shutdown_policy()?,
             _ => return Err(format!("unknown command type: {kind}")),
         }
         self.sync_brightness_gate();
+        self.sync_lock();
         self.sync_builtin_diagnostics();
         self.revision = self.revision.saturating_add(1);
         Ok(())
@@ -689,6 +699,12 @@ impl Core {
                     next.keep_awake_with_presence =
                         val.as_bool().ok_or("setting must be boolean")?
                 }
+                "lock_on_absence" => {
+                    next.lock_on_absence = val.as_bool().ok_or("setting must be boolean")?
+                }
+                "lock_delay_s" => {
+                    next.lock_delay_s = val.as_f64().ok_or("lock delay must be number")?
+                }
                 "presence_min_brightness_percent" => {
                     next.presence_min_brightness_percent =
                         val.as_f64().ok_or("threshold must be number")?
@@ -851,11 +867,14 @@ impl Core {
             .get("active")
             .and_then(Value::as_bool)
             .ok_or("active must be boolean")?;
+        // Recorded even when keep-awake is off, so the lock stage still sees the session state.
+        self.session_inactive_reported = !active;
         if active == self.session_active {
             return Ok(());
         }
         self.session_active = active;
         if !self.settings.keep_awake_with_presence {
+            self.reconcile_camera();
             return Ok(());
         }
         self.bump_camera_generation();
@@ -975,6 +994,22 @@ impl Core {
                         self.builtin.presence_dimmed = true;
                     }
                 }
+                // The stage arms on the absent sample that produced the dim, then requests after
+                // the configured delay.
+                let before = self.lock.stage();
+                let delay_ms = (self.settings.lock_delay_s * 1000.0) as u64;
+                self.lock.observe_absent(ts, delay_ms, self.lock_facts());
+                let after = self.lock.stage();
+                if !matches!(before, LockStage::Armed { .. })
+                    && matches!(after, LockStage::Armed { .. })
+                {
+                    self.diagnostics.push("lock_armed", None, "");
+                }
+                if !matches!(before, LockStage::Requested { .. })
+                    && matches!(after, LockStage::Requested { .. })
+                {
+                    self.diagnostics.push("lock_requested", None, "");
+                }
                 self.reconcile_all()?;
             }
             "insufficient_light" => {
@@ -1023,6 +1058,56 @@ impl Core {
             _ => return Err("invalid presence status".into()),
         }
         Ok(())
+    }
+
+    // Applies the shell's lock outcome. A result that matches no request is accepted and ignored.
+    fn lock_result(&mut self, v: &Value) -> Result<(), String> {
+        let token = v
+            .get("token")
+            .and_then(Value::as_u64)
+            .ok_or("token must be integer")?;
+        let ok = v
+            .get("ok")
+            .and_then(Value::as_bool)
+            .ok_or("ok must be boolean")?;
+        if let Some(error) = v.get("error") {
+            let error = error.as_str().ok_or("error must be string")?;
+            if error.chars().count() > 64 {
+                return Err("error must be at most 64 characters".into());
+            }
+        }
+        if self.lock.result(token, ok) {
+            self.diagnostics
+                .push(if ok { "lock_ok" } else { "lock_failed" }, None, "");
+            self.reconcile_camera();
+        }
+        Ok(())
+    }
+
+    // Facts for the lock stage. The stage arms only while the presence dim is on and the camera
+    // sees a face in an active session. Once Locked, the session part is ignored until it returns.
+    fn lock_facts(&self) -> LockFacts {
+        LockFacts {
+            enabled: self.settings.lock_on_absence,
+            dimmed: self.any_presence_dimmed(),
+            session_active: !self.session_inactive_reported,
+            camera_face: self.camera_mode() == "face",
+        }
+    }
+
+    // Re-evaluates the lock stage after each accepted command. A lock that ends while the session
+    // is active again (the user unlocked) restarts the camera.
+    fn sync_lock(&mut self) {
+        let before = self.lock.stage();
+        self.lock.sync(self.lock_facts());
+        if matches!(before, LockStage::Locked { .. })
+            && self.lock.stage() == LockStage::Idle
+            && !self.session_inactive_reported
+        {
+            self.bump_camera_generation();
+            self.begin_camera_resume();
+            self.reconcile_camera();
+        }
     }
 
     fn reconcile_camera(&mut self) {
@@ -1126,7 +1211,9 @@ impl Core {
                     .contains(&self.camera_status.as_str()))
             || (!keep_awake_monitoring
                 && ((self.settings.suspend_presence_on_battery && self.on_battery != Some(false))
-                    || !self.camera_gate_active()));
+                    || !self.camera_gate_active()))
+            // A lock-held camera is suspended until the session is active again.
+            || self.lock.holds_camera(!self.session_inactive_reported);
         if self.closed
             || (!self.settings.presence_protection_enabled
                 && !self.settings.keep_awake_with_presence)
@@ -1368,6 +1455,7 @@ impl Core {
                 "busy" => "busy",
                 "permission" => "permission",
                 "error" => "error",
+                _ if self.lock.holds_camera(!self.session_inactive_reported) => "suspended",
                 _ if self.settings.keep_awake_with_presence && !self.session_active => "suspended",
                 _ if self.settings.suspend_presence_on_battery && self.on_battery == Some(true) => {
                     "suspended_battery"
@@ -2045,6 +2133,7 @@ impl Core {
             "monitored_display":{"id":monitored_id,"automatic":self.settings.monitored_display_history.is_empty()},
             "camera":{"mode":camera_mode,"capture_mode":capture_mode,"status":self.camera_status,"display_status":display_status,"next_sample_in_ms":if camera_mode=="disabled"||camera_mode=="suspended"{Value::Null}else{json!(cadence)},"generation":self.camera_generation,"presence":presence,"retry_in_ms":retry_in_ms},
             "keep_awake":{"enabled":self.settings.keep_awake_with_presence,"requested":keep_awake_requested,"observation_id":observation_id,"generation":self.camera_generation,"valid_for_ms":keep_awake_valid_for_ms,"reason":keep_awake_reason},
+            "lock":{"enabled":self.settings.lock_on_absence,"stage":self.lock.name(),"requested":self.lock.requested(),"token":self.lock.token()},
             "power":{"on_battery":self.on_battery},"screensaver":{"state":self.saver_state},"status":"ready"});
         let bytes = serde_json::to_vec(&value).map_err(|e| e.to_string())?;
         if bytes.len() > 8 * 1024 * 1024 {

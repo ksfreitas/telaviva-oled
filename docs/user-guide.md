@@ -5,6 +5,7 @@ This guide describes how each feature of TelaViva OLED behaves on macOS and Wind
 - [The popup or flyout](#the-popup-or-flyout)
 - [Settings](#settings)
 - [Presence protection](#presence-protection)
+- [Lock the screen after confirmed absence](#lock-the-screen-after-confirmed-absence)
 - [Keep awake while present](#keep-awake-while-present)
 - [Screensaver protection](#screensaver-protection)
 - [Laptop screen protection](#laptop-screen-protection)
@@ -38,10 +39,11 @@ Settings has General, Keyboard, Automatic brightness, Advanced and About pages o
 - **Language:** English (US) or Portuguese (Brazil).
 - **Camera:** the app remembers the cameras you select, up to eight, most recent first, and uses the first one that is connected, so reconnecting a camera or plugging in a preferred one is picked up without changing settings. When none is connected, it falls back to the system default camera. On Windows, infrared cameras are hidden from selection.
 - **Monitored display:** the display whose brightness decides whether the camera runs. See [Laptop screen protection](#laptop-screen-protection).
-- **Sampling intervals:** the presence sampling interval defaults to 10 seconds (5 to 300 seconds). While dimmed, return checks default to 1 second (0.25 to 5 seconds).
+- **Sampling intervals:** the presence sampling interval defaults to 10 seconds (5 to 300 seconds). While dimmed, return checks default to 0.5 seconds (0.25 to 5 seconds). Values you have already saved are not changed.
 - **Battery behavior:** presence checking pauses on battery by default.
 - **Keep awake while present** (General page, macOS and Windows): off by default. Keeps monitoring active, including on battery and below brightness thresholds, independently of brightness protection. See [Keep awake while present](#keep-awake-while-present).
-- **Check presence only above brightness:** the presence brightness threshold. It is a slider from 0 to 90%, 20% by default. Each display keeps its own value. See [Laptop screen protection](#laptop-screen-protection).
+- **Check presence only above brightness:** the presence brightness threshold. It is a slider from 1 to 90%, 20% by default. Each display keeps its own value. When you upgrade, a stored 0% is raised to 1%, and your other settings are kept. See [Laptop screen protection](#laptop-screen-protection).
+- **Lock the screen after confirmed absence** (macOS; Windows pending): off by default, and it needs presence protection on. After the display has been dimmed for absence, the app waits the **Wait before locking** time (1 to 60 seconds, 5 by default), checks again, and locks the session only if it still sees nobody and the camera image has enough light. It never unlocks the session or wakes the computer. See [Lock the screen after confirmed absence](#lock-the-screen-after-confirmed-absence).
 - **Launch at login:** off by default.
 - **Hardware-key steps:** see [Keyboard and hardware keys](#keyboard-and-hardware-keys).
 - **Inference device** (Advanced page): where face detection runs. See [Inference device](#inference-device).
@@ -53,7 +55,7 @@ On macOS or Windows, in **Settings > General**, enable **Keep awake while a face
 
 While a face is detected, TelaViva makes temporary requests to keep the display and computer awake and reports activity (macOS) or sends a zero-displacement mouse move each second (Windows) to postpone automatic screensaver and locking. The first valid no-face result releases those requests immediately; the two-check confirmation for brightness protection is unchanged. Darkness, permission denial, camera failure and expired presence evidence also release them. A silent capture stall is bounded by the configured sampling interval plus 15 seconds. Detection occurs at the configured sampling interval, so leaving is not detected instantly.
 
-Releasing the requests allows the operating system to follow its existing timeouts. TelaViva does not force an immediate lock or sleep, change saved OS settings, or promise that a full new idle interval starts when you leave. Disabling the option restores the ordinary monitoring rules and keeps your saved battery, brightness and camera preferences.
+Releasing the requests allows the operating system to follow its existing timeouts. Keep awake never locks the screen or puts the computer to sleep, does not change saved OS settings, and does not promise that a full new idle interval starts when you leave. The only feature that locks the screen is the optional [lock after confirmed absence](#lock-the-screen-after-confirmed-absence), and it does so only when you enable it. Disabling the option restores the ordinary monitoring rules and keeps your saved battery, brightness and camera preferences.
 
 Manual lock, sleep, screensaver activation, display-off and lid actions take precedence. TelaViva never unlocks a session or wakes a sleeping computer when a face returns. Monitoring resumes when the session is usable again and requires a fresh positive detection. Actual system sleep and unavailable camera access prevent detection even with this option enabled.
 
@@ -63,7 +65,7 @@ On Windows, the same toggle is in **Settings > General** and no permission promp
 
 ## Presence protection
 
-Presence protection is off until you enable it, and enabling it requests camera access. It detects any face locally. It does not identify people, enroll faces, save webcam images or send frames to a service.
+Presence protection is off until you enable it, and enabling it requests camera access. It detects any face locally. It does not identify people, enroll faces, save webcam images or send frames to a service. On macOS, a face behind a mask, or with a hand or tissue over the mouth and nose, is also recognised. A hand-sized round or hairy object can rarely be mistaken for a face, which only leaves the screen lit. Windows still uses the earlier detection model until its port. Hardware checks are pending.
 
 ### How it works
 
@@ -71,7 +73,7 @@ Presence protection is off until you enable it, and enabling it requests camera 
 
 - Two valid no-face checks dim the monitor, and a returning face clears the presence reason and restores the brightness.
 - Checks run at the sampling interval. While a monitor is dimmed, return checks run faster.
-- After the first no-face check, the confirming check runs after the short return interval (1 second by default, range 0.25 to 5 seconds) instead of a full sampling interval, so the monitor dims about one sampling interval plus about a second after you leave. A present, insufficient-light or unavailable result clears that first miss.
+- After the first no-face check, the confirming check runs after the short return interval (0.5 seconds by default, range 0.25 to 5 seconds) instead of a full sampling interval, so the monitor dims about one sampling interval plus about half a second after you leave. A present, insufficient-light or unavailable result clears that first miss.
 - The camera stays open during return checks, while inference still follows the configured interval.
 - If the camera stops delivering images, its status shows "no image" (on Windows, `Camera: no image` in the footer). The app retries the camera by itself after 30 seconds, then after 1 minute, then every 5 minutes for as long as it keeps failing, and presence protection resumes as soon as the camera answers, without restarting the app. A camera that is not connected ("unavailable") is retried the same way. "permission required" and "error" are not retried, because they need your action. "No image" does not mean that another app is using the camera: a stalled USB camera can cause it.
 
@@ -85,7 +87,7 @@ With **Keep awake while present** off, capture stops when:
 - battery suspension applies;
 - no protected display that the app can read and dim remains;
 - every eligible display is asleep and none is dimmed by presence;
-- the gate display is at or below its brightness threshold and no display is dimmed by presence (20% by default; the slider goes down to 0%);
+- the gate display is at or below its brightness threshold and no display is dimmed by presence (20% by default; the slider goes down to 1%);
 - the camera reports "no image" or "unavailable", until its next automatic retry (see [How it works](#how-it-works));
 - the app exits.
 
@@ -104,6 +106,17 @@ Insufficient light suspends face detection instead of counting as absence. Recov
 - When monitors have mixed sleep states, monitoring continues for the awake eligible monitors and hardware writes to sleeping targets are withheld.
 - After wake, protection writes use fresh brightness readback and ownership checks.
 - If a monitor that protection has dimmed is disconnected and found again after sleep, under the same monitor ID at the dimmed level, protection restores the brightness it had before the dim. If it comes back at another level, that level is kept. If it comes back under another monitor ID, the earlier brightness is not restored. If you are still away, the monitor dims again after the usual two no-face checks. This memory lasts only while the app runs, so quitting before the monitor returns loses it. Hardware checks are pending.
+
+## Lock the screen after confirmed absence
+
+This option is macOS only for now; the Windows version is pending. It is off by default and needs [presence protection](#presence-protection) on. Turn it on in Settings, and set **Wait before locking** (1 to 60 seconds, 5 seconds by default).
+
+- After the display has been dimmed for absence (two no-face checks, as today), the app waits the **Wait before locking** time, checks the camera again, and locks the session only if it still sees nobody and the camera image has enough light.
+- The app locks the session through a macOS system function. It never unlocks the session, never wakes the computer and does not change any macOS setting.
+- If the light is too low at any point, the app does not lock. The display stays dimmed or returns to normal, as it does today. In a dark room, dimming the monitor can itself make the camera image too dark, so the lock may never happen there. This is intended.
+- While the session is locked, the camera is paused. It resumes about a second after you unlock, and the first face restores the brightness.
+- The lock relies on a macOS system function that Apple may change in a future release. If it stops working, the app does not lock and keeps the display dimmed, and the [diagnostic log](#diagnostic-logs) records it.
+- A face the camera cannot see counts as absence, for example when you look away. If you sit partly out of frame, you may prefer to keep this option off.
 
 ## Screensaver protection
 
@@ -143,7 +156,7 @@ This section applies to macOS and Windows. On macOS, the built-in screen of a Ma
 - **Monitored display**, in **Settings > General**, chooses the display whose brightness decides whether the camera runs. The default is **Automatic**, which on macOS picks the main external display, then the other external displays, then this Mac. On Windows, it picks the main external display, otherwise the laptop screen. You can also choose a specific display.
 - The app remembers your choices by priority, most recent first, up to eight, like the camera choice. If the chosen display is not connected, the next remembered display that is connected is used, and then Automatic.
 - The camera follows the gate display, which is the monitored display or, when the monitored display sleeps, the next awake display. The camera runs while the gate display is above its threshold, or while any display is dimmed by presence. Absence still dims every protected screen, including the laptop screen.
-- **Check presence only above brightness** is saved for each display, from 0% to 90%. The slider edits the monitored display's value, or the global value when no display resolves. It is editable while presence protection is on. A display without its own value uses the global value, 20% by default. The camera stays off while the gate display is at or below its threshold and no display is dimmed by presence.
+- **Check presence only above brightness** is saved for each display, from 1% to 90%. The slider edits the monitored display's value, or the global value when no display resolves. It is editable while presence protection is on. A display without its own value uses the global value, 20% by default. The camera stays off while the gate display is at or below its threshold and no display is dimmed by presence. At the 1% minimum, a display reading 0% or 1% still keeps the camera off.
 - With the lid closed, the built-in camera is not used. It behaves as if it were disconnected, and your camera choice is kept. The built-in camera is used again when the lid opens.
 
 ## Following the laptop brightness

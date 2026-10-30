@@ -14,6 +14,7 @@ private struct CoreBridgeTests {
         stateChangeAfterSubmitIsVisibleWithoutExtraRefresh()
         coreSettingsKeyStepJSON()
         coreSettingsPresenceThresholdJSON()
+        presenceThresholdRangeConstants()
         presenceThresholdByDisplayDecodes()
         presenceThresholdByDisplayJSON()
         coreSettingsInferenceDeviceJSON()
@@ -36,6 +37,12 @@ private struct CoreBridgeTests {
         monitoredDisplaySnapshotDecodes()
         monitoredDisplayCommandCarriesSelection()
         cameraRetryDelaySnapshotDecodes()
+        lockOnAbsenceSettingsRoundTrip()
+        lockOnAbsenceSettingsDefaults()
+        lockSnapshotDecodes()
+        sessionReportFollowsEitherOption()
+        lockResultCommandShape()
+        lockResultIsAcceptedByCore()
         updateCheckerUsesRealCore()
         print("Core bridge asynchronous tests passed")
     }
@@ -202,6 +209,14 @@ private struct CoreBridgeTests {
                "absent presence brightness threshold decodes as nil")
         expect((withoutThreshold.json["presence_min_brightness_percent"] as? Double) == 20,
                "absent presence brightness threshold is emitted as the default of 20")
+    }
+
+    /// The presence threshold slider spans 1 to 90 percent, and the range constant covers exactly those bounds.
+    private static func presenceThresholdRangeConstants() {
+        expect(PresenceThreshold.minimumPercent == 1, "the presence threshold minimum is 1 percent")
+        expect(PresenceThreshold.maximumPercent == 90, "the presence threshold maximum is 90 percent")
+        expect(PresenceThreshold.range == (1.0...90.0),
+               "the presence threshold range is 1 through 90 percent as a closed range")
     }
 
     private static func keepAwakeSettingMigrationAndJSON() {
@@ -737,6 +752,81 @@ private struct CoreBridgeTests {
         let automaticSettings = automatic["settings"] as? [String: Any]
         expect(automaticSettings?.count == 1 && automaticSettings?["monitored_display_id"] is NSNull,
                "Automatic sends monitored_display_id as null and nothing else")
+    }
+
+    /// The lock settings decode from a snapshot that carries them and survive a decode of the emitted payload.
+    private static func lockOnAbsenceSettingsRoundTrip() {
+        let stored = decodeSettings(["lock_on_absence": true, "lock_delay_s": 12])
+        expect(stored.lock_on_absence == true && stored.lock_delay_s == 12,
+               "lock_on_absence and lock_delay_s decode from a snapshot that carries them")
+        expect((stored.json["lock_on_absence"] as? Bool) == true && (stored.json["lock_delay_s"] as? Double) == 12,
+               "lock_on_absence and lock_delay_s are emitted as stored")
+        let emitted = try! JSONSerialization.data(withJSONObject: stored.json)
+        let again = try! JSONDecoder().decode(CoreSettings.self, from: emitted)
+        expect(again.lock_on_absence == true && again.lock_delay_s == 12,
+               "the emitted lock settings decode back to the same values")
+    }
+
+    /// Settings from before the lock feature decode with both absent, and every save emits the defaults of false and 5 seconds.
+    private static func lockOnAbsenceSettingsDefaults() {
+        let absent = decodeSettings([:])
+        expect(absent.lock_on_absence == nil && absent.lock_delay_s == nil,
+               "a snapshot without the lock settings decodes with them absent")
+        expect((absent.json["lock_on_absence"] as? Bool) == false && (absent.json["lock_delay_s"] as? Double) == 5,
+               "absent lock settings are emitted as the defaults of false and 5 seconds")
+    }
+
+    /// The lock block decodes its fields when present, reads a null token as nil, and is nil when absent.
+    private static func lockSnapshotDecodes() {
+        let requested = decodeSnapshot(["lock": ["enabled": true, "stage": "requested", "requested": true, "token": 3]])
+        expect(requested.lock == CoreLock(enabled: true, stage: "requested", requested: true, token: 3),
+               "the lock block decodes its stage, request and token from a snapshot that carries it")
+        let armed = decodeSnapshot(["lock": ["enabled": true, "stage": "armed", "requested": false, "token": NSNull()]])
+        expect(armed.lock == CoreLock(enabled: true, stage: "armed", requested: false, token: nil),
+               "a null lock token decodes as nil")
+        expect(decodeSnapshot([:]).lock == nil, "a snapshot without the lock block decodes with it nil")
+    }
+
+    /// The session is reported whenever either option is on, and not when both are off.
+    private static func sessionReportFollowsEitherOption() {
+        expect(!CoreBridge.shouldReportSession(keepAwake: false, lockOnAbsence: false),
+               "the session is not reported when both options are off")
+        expect(CoreBridge.shouldReportSession(keepAwake: true, lockOnAbsence: false),
+               "keep-awake alone reports the session")
+        expect(CoreBridge.shouldReportSession(keepAwake: false, lockOnAbsence: true),
+               "the lock option alone reports the session")
+        expect(CoreBridge.shouldReportSession(keepAwake: true, lockOnAbsence: true),
+               "both options report the session")
+    }
+
+    /// The lock result carries its type, token and ok flag, and an error key only when an error is set.
+    private static func lockResultCommandShape() {
+        let succeeded = CoreBridge.lockResultCommand(token: 3, ok: true, error: nil)
+        expect(JSONSerialization.isValidJSONObject(succeeded), "the lock result command is valid JSON")
+        expect((succeeded["type"] as? String) == "lock_result" && (succeeded["token"] as? UInt64) == 3 &&
+               (succeeded["ok"] as? Bool) == true, "a successful lock result carries its type, token and ok flag")
+        expect(succeeded["error"] == nil, "a successful lock result omits the error key")
+        let failed = CoreBridge.lockResultCommand(token: 4, ok: false, error: "not_confirmed")
+        expect((failed["ok"] as? Bool) == false && (failed["error"] as? String) == "not_confirmed",
+               "a failed lock result carries its error code")
+    }
+
+    /// The core accepts a lock result whose token has no pending request, so the shell can send one at any time.
+    private static func lockResultIsAcceptedByCore() {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("telaviva-lock-result-tests-\(UUID().uuidString)", isDirectory: true)
+        try! FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let bridge = CoreBridge(configPath: directory.appendingPathComponent("settings.json"))
+        expect(waitUntil { bridge.snapshot.revision != nil }, "initial snapshot is published before the lock result")
+        let command = CoreBridge.lockResultCommand(token: 3, ok: false, error: "not_confirmed")
+        let text = String(data: try! JSONSerialization.data(withJSONObject: command), encoding: .utf8)!
+        expect(bridge.submitJSON(text), "a lock result is accepted by the core")
+
+        var shutdownFinished = false
+        bridge.beginShutdown { shutdownFinished = true }
+        expect(waitUntil { shutdownFinished }, "shutdown completes before the temporary directory is removed")
     }
 
     private static func updateCheckerUsesRealCore() {

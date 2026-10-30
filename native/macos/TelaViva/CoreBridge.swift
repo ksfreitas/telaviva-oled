@@ -234,6 +234,26 @@ final class CoreBridge: ObservableObject {
                 "protectable": protectable, "holding": holding]
     }
 
+    /// Whether the shell reports the session lock state to the core. The core records it for either option.
+    static func shouldReportSession(keepAwake: Bool, lockOnAbsence: Bool) -> Bool {
+        keepAwake || lockOnAbsence
+    }
+
+    /// Reports the outcome of a lock request. `error` is sent only when it is set.
+    func submitLockResult(token: UInt64, ok: Bool, error: String?) {
+        let command = CoreBridge.lockResultCommand(token: token, ok: ok, error: error)
+        guard let data = try? JSONSerialization.data(withJSONObject: command),
+              let text = String(data: data, encoding: .utf8) else { return }
+        submitJSON(text)
+    }
+
+    /// The `lock_result` command body. Pure, so the shape can be checked without a running core.
+    static func lockResultCommand(token: UInt64, ok: Bool, error: String?) -> [String: Any] {
+        var command: [String: Any] = ["type": "lock_result", "token": token, "ok": ok]
+        if let error { command["error"] = error }
+        return command
+    }
+
     func beginShutdown(completion: @escaping () -> Void = {}) {
         #if TELAVIVA_CORE
         guard let core, !isShuttingDown else { DispatchQueue.main.async(execute: completion); return }
@@ -304,9 +324,11 @@ struct CoreSnapshot: Decodable {
     var monitoredDisplay: CoreMonitoredDisplay = .automatic
     /// Keep-awake request and finite presence lease. Missing on snapshots produced by older cores.
     var keepAwake: CoreKeepAwake = .disabled
+    /// Lock-on-absence stage and request. Nil on snapshots produced by cores without the feature.
+    var lock: CoreLock?
     enum CodingKeys: String, CodingKey {
         case revision, settings, monitors, pending_actions, camera, ambient, builtinProtection = "builtin_protection",
-             monitoredDisplay = "monitored_display", keepAwake = "keep_awake"
+             monitoredDisplay = "monitored_display", keepAwake = "keep_awake", lock
     }
     static let unavailable = CoreSnapshot(revision: nil, settings: nil, monitors: [], pending_actions: [], camera: nil)
     private init(revision: UInt64?, settings: CoreSettings?, monitors: [CoreMonitor]?, pending_actions: [PendingAction]?, camera: CameraSnapshot?) {
@@ -328,6 +350,7 @@ struct CoreSnapshot: Decodable {
         builtinProtection = try container.decodeIfPresent(CoreBuiltInProtection.self, forKey: .builtinProtection) ?? .none
         monitoredDisplay = try container.decodeIfPresent(CoreMonitoredDisplay.self, forKey: .monitoredDisplay) ?? .automatic
         keepAwake = try container.decodeIfPresent(CoreKeepAwake.self, forKey: .keepAwake) ?? .disabled
+        lock = try container.decodeIfPresent(CoreLock.self, forKey: .lock)
     }
 
     func keepAwakeRemainingMilliseconds(at uptime: TimeInterval = ProcessInfo.processInfo.systemUptime) -> UInt64 {
@@ -358,6 +381,14 @@ struct CoreKeepAwake: Decodable, Equatable {
         case enabled, requested, observationID = "observation_id", generation
         case validForMilliseconds = "valid_for_ms", reason
     }
+}
+
+/// The core's lock-on-absence block. `requested` is true only in stage "requested", and `token` identifies that request.
+struct CoreLock: Decodable, Equatable {
+    var enabled: Bool
+    var stage: String
+    var requested: Bool
+    var token: UInt64?
 }
 
 struct CoreMonitor: Decodable, Identifiable {
@@ -467,10 +498,17 @@ struct CoreMonitoredDisplay: Decodable, Equatable {
     static let automatic = CoreMonitoredDisplay(id: nil, automatic: true)
 }
 
+/// Valid range of the presence brightness threshold; the core rejects values outside it.
+enum PresenceThreshold {
+    static let minimumPercent: Double = 1
+    static let maximumPercent: Double = 90
+    static var range: ClosedRange<Double> { minimumPercent...maximumPercent }
+}
+
 struct CoreSettings: Decodable {
     var locale = "auto"
     var presence_sampling_interval_s = 10.0
-    var return_sampling_interval_s = 1.0
+    var return_sampling_interval_s = 0.5
     var suspend_presence_on_battery = true
     var presence_protection_enabled = false
     var always_on_camera: Bool?
@@ -499,6 +537,10 @@ struct CoreSettings: Decodable {
     var builtinAutoBrightnessOffOnProtection = false
     /// Optional to decode snapshots written before the setting existed; saves always emit it.
     var keep_awake_with_presence: Bool?
+    /// Locks the session after confirmed absence. Optional to decode older snapshots; saves always emit it.
+    var lock_on_absence: Bool?
+    /// Seconds between arming and the confirming sample, 1 to 60. Optional to decode older snapshots; saves always emit it.
+    var lock_delay_s: Double?
 
     /// Keys are listed explicitly because the three ambient fields use snake_case raw names.
     enum CodingKeys: String, CodingKey {
@@ -510,7 +552,7 @@ struct CoreSettings: Decodable {
         case protectionDisabled = "protection_disabled"
         case presenceMinBrightnessByDisplay = "presence_min_brightness_by_display"
         case builtinAutoBrightnessOffOnProtection = "builtin_auto_brightness_off_on_protection"
-        case keep_awake_with_presence
+        case keep_awake_with_presence, lock_on_absence, lock_delay_s
     }
 
     /// Omits `selected_camera_id` and `camera_history` on purpose: only `selectCamera(_:)` sends the camera, so an
@@ -529,7 +571,8 @@ struct CoreSettings: Decodable {
             "presence_min_brightness_percent": presence_min_brightness_percent ?? 20,
             "inference_device": inference_device ?? "auto",
             "builtin_auto_brightness_off_on_protection": builtinAutoBrightnessOffOnProtection,
-            "keep_awake_with_presence": keep_awake_with_presence ?? false
+            "keep_awake_with_presence": keep_awake_with_presence ?? false,
+            "lock_on_absence": lock_on_absence ?? false, "lock_delay_s": lock_delay_s ?? 5
         ]
         // Ambient keys are added only when set, so an unrelated save leaves the core's stored values untouched.
         if let ambientFollowEnabled { object["ambient_follow_enabled"] = ambientFollowEnabled }

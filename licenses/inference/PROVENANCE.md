@@ -3,6 +3,7 @@
 | Artifact | Source/version | License | SHA-256 |
 |---|---|---|---|
 | `assets/model/face_detection_yunet_2023mar.onnx` | OpenCV Zoo YuNet 2023mar, fetched 2026-10-16 | MIT; see `YUNET-LICENSE` | `8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4` |
+| `assets/model/face_detection_retinaface_mb025.onnx` | RetinaFace MobileNet0.25 ONNX (1729290 bytes), fetched 2026-10-29 from https://media.axelera.ai/artifacts/model_cards/weights/others/object_detection/Retinaface_mb0.25_pytorch.onnx (Axelera Voyager SDK model zoo, third-party re-host); MD5 `9232a08b7056937f63ba26b6a3606546` | MIT per the Axelera model card; code MIT (biubug6/Pytorch_Retinaface), see `RETINAFACE-LICENSE`. Trained on WIDER FACE, whose dataset license is CC BY-NC-ND per its site; the same caveat as YuNet, a legal check left to the owner | `f4c83825f41dba8e17b522377f77cb7e2b69ec4df75168d4cb1b18dcaf03b54c` |
 | `tools/inference/runtime/macos-arm64/libonnxruntime.dylib` | Microsoft ONNX Runtime 1.23.0 macOS arm64 official release | MIT; see `ONNXRUNTIME-LICENSE` and `ONNXRUNTIME-THIRD-PARTY-NOTICES.txt` | `d3859aecdb70ea099f5b5f4185fe16f0527c6680b18731e6e96fc971ec767cca` |
 | `ort` Rust crate | `2.0.0-rc.9` | MIT or Apache-2.0 | Pinned in `Cargo.lock` |
 | `ort-sys` Rust crate | `2.0.0-rc.9` | MIT or Apache-2.0 | Pinned in `Cargo.lock` |
@@ -12,6 +13,8 @@ The ONNX graph has fixed input dimensions `[1, 3, 640, 640]`; the detector lette
 Upstream sources:
 
 - https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet
+- https://media.axelera.ai/artifacts/model_cards/weights/others/object_detection/Retinaface_mb0.25_pytorch.onnx (RetinaFace MobileNet0.25; re-host of the export, kept with its SHA-256 and MD5)
+- https://github.com/biubug6/Pytorch_Retinaface (weights origin and MIT code)
 - https://github.com/microsoft/onnxruntime/releases/tag/v1.23.0
 - https://crates.io/crates/ort/2.0.0-rc.9
 - https://crates.io/crates/ort-sys/2.0.0-rc.9

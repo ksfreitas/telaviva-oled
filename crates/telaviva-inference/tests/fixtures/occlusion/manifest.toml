@@ -1,0 +1,531 @@
+# Occlusion benchmark manifest.
+#
+# Each image is one [[image]] table with these keys:
+#
+#   file                    string. File name inside this folder, for example "mask-surgical-01.jpg".
+#   category                string. One of: none | mask | hand_mouth | hand_eyes | glasses | tilt | no_face_hand | no_face_mask | no_face_object
+#   has_face                bool. true when the image shows a face.
+#   occlusion               string. One of: none | partial | heavy
+#   source_url              string. Page where the image was downloaded.
+#   license                 string. CC0-1.0 or PDM-1.0 only.
+#   author                  string. Author as credited on the source page.
+#   subject_rights_checked  bool. true when the file page carries no restriction flag and declares CC0 or public domain (see README.md; it does not certify consent).
+#   notes                   string. Free text.
+#
+# Rules for entries are in README.md in this folder.
+#
+# Example entry (commented out):
+#
+# [[image]]
+# file = "mask-surgical-01.jpg"
+# category = "mask"
+# has_face = true
+# occlusion = "partial"
+# source_url = "https://commons.wikimedia.org/wiki/File:..."
+# license = "CC0-1.0"
+# author = ""
+# subject_rights_checked = true
+# notes = ""
+
+# --- masks
+
+[[image]]
+file = "mask-01.jpg"
+category = "mask"
+has_face = true
+occlusion = "partial"
+source_url = "https://commons.wikimedia.org/wiki/File:Detail,_Medical_Department_-_Influenza_Epidemic_1918_-_MASKS_FOR_PROTECTION_AGAINST_INFLUENZA._Elevator_operator_in_New_York_City,_N.Y.,_wearing_mask_-_NARA_-_45499395_(cropped).jpg"
+license = "PDM-1.0"
+author = "Unknown author or not provided"
+subject_rights_checked = true
+notes = "Public domain; 1918 NARA photo of an elevator operator in New York City wearing a gauze mask (cropped detail). Not the uploader's own work; NARA archival print.; reviewed 2026-10-29"
+
+[[image]]
+file = "mask-02.jpg"
+category = "mask"
+has_face = true
+occlusion = "partial"
+source_url = "https://commons.wikimedia.org/wiki/File:Detail,_Medical_Department_-_Influenza_Epidemic_1918_-_Masks_for_protection_against_influenza._Traffic_%22cop%22_in_New_York_City_wearing_gauze_mask_-_NARA_-_45499301_(cropped).jpg"
+license = "PDM-1.0"
+author = "Unknown author or not provided"
+subject_rights_checked = true
+notes = "Public domain; 1918 NARA photo of a traffic officer in New York City wearing a gauze mask (cropped detail). Not the uploader's own work; NARA archival print.; reviewed 2026-10-29"
+
+[[image]]
+file = "mask-03.jpg"
+category = "mask"
+has_face = true
+occlusion = "partial"
+source_url = "https://commons.wikimedia.org/wiki/File:Detail,_Medical_Department_-_Influenza_Epidemic_1918_-_Masks_for_protection_against_influenza._Letter_carrier_in_New_York_City,_New_York,_wearing_mask_-_NARA_-_45499319_(cropped).jpg"
+license = "PDM-1.0"
+author = "Unknown author or not provided"
+subject_rights_checked = true
+notes = "Public domain; 1918 NARA photo of a letter carrier in New York City wearing a mask (cropped detail). Not the uploader's own work; NARA archival print.; reviewed 2026-10-29"
+
+[[image]]
+file = "mask-08.jpg"
+category = "mask"
+has_face = true
+occlusion = "partial"
+source_url = "https://commons.wikimedia.org/wiki/File:Oregon_Army_National_Guard_Soldier_continues_KFOR_mission_during_COVID-19_(6324623).jpg"
+license = "PDM-1.0"
+author = "U.S. Army 100MPAD by Capt. Nadine Wiley De Moura"
+subject_rights_checked = true
+notes = "Public domain; U.S. Army photo of Sgt. Katherine Yeager putting on a protective face mask on a KFOR mission, August 2020; mask type not stated. Not the uploader's own work; U.S. Army photograph.; reviewed 2026-10-29"
+
+[[image]]
+file = "mask-09.jpg"
+category = "mask"
+has_face = true
+occlusion = "partial"
+source_url = "https://commons.wikimedia.org/wiki/File:Communicating_effectively_while_wearing_masks_(6330119).jpg"
+license = "PDM-1.0"
+author = "U.S. Army RHCE by Russell Toof"
+subject_rights_checked = true
+notes = "Public domain; U.S. Army photo of Dr. Angeli Mohanani-Posey posing while wearing a face mask. Not the uploader's own work; U.S. Army photograph.; reviewed 2026-10-29"
+
+[[image]]
+file = "mask-10.jpg"
+category = "mask"
+has_face = true
+occlusion = "partial"
+source_url = "https://commons.wikimedia.org/wiki/File:Nurse_with_mask_detail,_1918_at_Spanish_Flu_Ward_Walter_Reed_(cropped)_(cropped).jpg"
+license = "PDM-1.0"
+author = "Harris & Ewing photographers"
+subject_rights_checked = true
+notes = "Public domain; 1918 Walter Reed Spanish flu ward photo of a nurse wearing a cloth mask over her nose and mouth. Not the uploader's own work; historical photograph.; reviewed 2026-10-29"
+
+[[image]]
+file = "mask-12.jpg"
+category = "mask"
+has_face = true
+occlusion = "partial"
+source_url = "https://commons.wikimedia.org/wiki/File:Peterson%E2%80%99s_medical_dream_team_keeps_base_safe_(6173071).jpg"
+license = "PDM-1.0"
+author = "U.S. Space Force 21SW by Craig Denton"
+subject_rights_checked = true
+notes = "Public domain; U.S. Space Force photo of Jennifer Shoemake wearing a face mask at a drive-thru pharmacy, April 2020; mask type not stated. Not the uploader's own work; U.S. Space Force photograph.; reviewed 2026-10-29"
+
+[[image]]
+file = "mask-13.jpg"
+category = "mask"
+has_face = true
+occlusion = "partial"
+source_url = "https://commons.wikimedia.org/wiki/File:Do_you_copy_(6616867).jpg"
+license = "PDM-1.0"
+author = "U.S. Army photo by Sgt. John Todd"
+subject_rights_checked = true
+notes = "Public domain; U.S. Army photo of a soldier wearing a black face mask and sunglasses at the Defender-Europe 21 exercise in Durres, Albania. Not the uploader's own work; U.S. Army photograph.; reviewed 2026-10-29"
+
+# --- hand over mouth or nose
+
+[[image]]
+file = "hand-mouth-01.jpg"
+category = "hand_mouth"
+has_face = true
+occlusion = "partial"
+source_url = "https://commons.wikimedia.org/wiki/File:Thinking_man.jpg"
+license = "CC0-1.0"
+author = "Hussein Afzal"
+subject_rights_checked = true
+notes = "CC0; hand at the mouth and chin; restored 2026-10-29; reviewed 2026-10-29"
+
+[[image]]
+file = "hand-mouth-02.jpg"
+category = "hand_mouth"
+has_face = true
+occlusion = "partial"
+source_url = "https://commons.wikimedia.org/wiki/File:Felix_Alvarez_10_NOV_07_-_THINKING_CAP.JPG"
+license = "PDM-1.0"
+author = "Lidiatwoskins at English Wikipedia"
+subject_rights_checked = true
+notes = "Public domain; hand at the mouth and chin; restored 2026-10-29; reviewed 2026-10-29"
+
+[[image]]
+file = "hand-mouth-03.jpg"
+category = "hand_mouth"
+has_face = true
+occlusion = "partial"
+source_url = "https://commons.wikimedia.org/wiki/File:President_Obama_reflects_during_an_economic_meeting_with_advisors_in_the_Roosevelt_Room..jpg"
+license = "PDM-1.0"
+author = "Pete Souza"
+subject_rights_checked = true
+notes = "Public domain; hand at the mouth and chin; restored 2026-10-29; reviewed 2026-10-29"
+
+[[image]]
+file = "hand-mouth-04.jpg"
+category = "hand_mouth"
+has_face = true
+occlusion = "partial"
+source_url = "https://commons.wikimedia.org/wiki/File:Walt_Whitman,_half-length_portrait,_seated,_facing_left,_left_hand_under_chin_LCCN97504666.jpg"
+license = "PDM-1.0"
+author = "Pearsall, Frank, photographer"
+subject_rights_checked = true
+notes = "Public domain; hand at the mouth and chin; restored 2026-10-29; reviewed 2026-10-29"
+
+[[image]]
+file = "hand-mouth-15.jpg"
+category = "hand_mouth"
+has_face = true
+occlusion = "partial"
+source_url = "https://commons.wikimedia.org/wiki/File:Thaddeus_Stevens,_1792-1868,_half_length_portrait,_seated,_facing_left;_hand_under_chin_LCCN2005686648.jpg"
+license = "PDM-1.0"
+author = "Miscellaneous Items in High Demand, PPOC, Library of Congress"
+subject_rights_checked = true
+notes = "Public domain; hand at the mouth and chin; restored 2026-10-29; reviewed 2026-10-29"
+
+[[image]]
+file = "hand-mouth-16.jpg"
+category = "hand_mouth"
+has_face = true
+occlusion = "partial"
+source_url = "https://commons.wikimedia.org/wiki/File:Young_woman,_half_lgth.,_with_flowers_in_her_hair,_holding_left_hand_to_chin_LCCN2003677206.jpg"
+license = "PDM-1.0"
+author = "Miscellaneous Items in High Demand, PPOC, Library of Congress"
+subject_rights_checked = true
+notes = "Public domain; hand at the mouth and chin; restored 2026-10-29; reviewed 2026-10-29"
+
+[[image]]
+file = "hm-b-01.jpg"
+category = "hand_mouth"
+has_face = true
+occlusion = "partial"
+source_url = "https://commons.wikimedia.org/wiki/File:BrunetteSneeze.jpg"
+license = "PDM-1.0"
+author = "Vera Kratochvil"
+subject_rights_checked = true
+notes = "Public domain; covers: mouth and nose; studio photo of a young woman holding a tissue in both hands over her nose and mouth, eyes open. Source credit is publicdomainpictures.net image 15991 with model Jana Svojsova named; model release not verified, so not confirmed as the uploader's own work.; reviewed 2026-10-29"
+
+[[image]]
+file = "hm-b-02.jpg"
+category = "hand_mouth"
+has_face = true
+occlusion = "partial"
+source_url = "https://commons.wikimedia.org/wiki/File:A_woman_blowing_her_nose.jpg"
+license = "CC0-1.0"
+author = "Mojpe"
+subject_rights_checked = true
+notes = "CC0; covers: mouth and nose; woman blowing her nose into a tissue held by cupped hands over nose and mouth, eyes open. Pixabay photo credited to Mojpe on the file page; not confirmed as the uploader's own work.; reviewed 2026-10-29"
+
+[[image]]
+file = "hm-c-01.jpg"
+category = "hand_mouth"
+has_face = true
+occlusion = "partial"
+source_url = "https://commons.wikimedia.org/wiki/File:Mannetje_dat_zit_te_niezen,_Bestanddeelnr_909-0013.jpg"
+license = "CC0-1.0"
+author = "Harry Pot for Anefo"
+subject_rights_checked = true
+notes = "CC0; covers: mouth and nose; eyes closed; 1957 black-and-white Anefo archive photo of a man in a checked jacket and scarf, hand raised over nose and upper lip while sneezing.; reviewed 2026-10-29"
+
+[[image]]
+file = "hm-c-02.jpg"
+category = "hand_mouth"
+has_face = true
+occlusion = "partial"
+source_url = "https://commons.wikimedia.org/wiki/File:Allergy-1738191_1280.jpg"
+license = "CC0-1.0"
+author = "cenzi7"
+subject_rights_checked = true
+notes = "CC0; covers: mouth and nose; eyes closed; woman in a red coat in a rapeseed field holding a white tissue over her nose and mouth with both hands.; reviewed 2026-10-29"
+
+[[image]]
+file = "hm-c-03.jpg"
+category = "hand_mouth"
+has_face = true
+occlusion = "partial"
+source_url = "https://commons.wikimedia.org/wiki/File:Woman-698988_640.jpg"
+license = "CC0-1.0"
+author = "Mojpe"
+subject_rights_checked = true
+notes = "CC0; covers: mouth and nose; eyes closed; woman in a blue fleece against a plain wall, tissue held by cupped hands over nose and mouth.; reviewed 2026-10-29"
+
+# --- plain, glasses, tilt
+
+[[image]]
+file = "plain-01.jpg"
+category = "none"
+has_face = true
+occlusion = "none"
+source_url = "https://commons.wikimedia.org/wiki/File:Closeup_of_smiling_young_woman_in_Taihoku.jpg"
+license = "PDM-1.0"
+author = "Peng Ruilin"
+subject_rights_checked = true
+notes = "Public domain as reported; close frontal portrait of a smiling young woman, from an archive (Taiwan image database), not the uploader's own work.; reviewed 2026-10-29"
+
+[[image]]
+file = "plain-02.jpg"
+category = "none"
+has_face = true
+occlusion = "none"
+source_url = "https://commons.wikimedia.org/wiki/File:Head_shot_Aman_TRIPATHI.jpg"
+license = "CC0-1.0"
+author = "RahulTej09"
+subject_rights_checked = true
+notes = "CC0 as reported; headshot of Aman Tripathi, frontal and unobstructed; uploader's own work (source: own).; reviewed 2026-10-29"
+
+[[image]]
+file = "plain-03.jpg"
+category = "none"
+has_face = true
+occlusion = "none"
+source_url = "https://commons.wikimedia.org/wiki/File:Kim_Hunter_autographed_portrait_(front).jpg"
+license = "PDM-1.0"
+author = "RKO Pictures"
+subject_rights_checked = true
+notes = "Public domain as reported; signed 1943 publicity portrait of actress Kim Hunter, face unobstructed (signature is in the lower corner); scan of an eBay listing, not the uploader's own work.; reviewed 2026-10-29"
+
+[[image]]
+file = "glasses-01.jpg"
+category = "glasses"
+has_face = true
+occlusion = "none"
+source_url = "https://commons.wikimedia.org/wiki/File:Close_portrait_of_a_young_woman_wearing_black_sunglasses_in_Maracaibo,_Venezuela.jpg"
+license = "CC0-1.0"
+author = "Wilfredor"
+subject_rights_checked = true
+notes = "CC0 as reported; close three-quarter portrait of a young woman in black sunglasses in Maracaibo, Venezuela; uploader's own work (source: own).; reviewed 2026-10-29"
+
+[[image]]
+file = "glasses-02.jpg"
+category = "glasses"
+has_face = true
+occlusion = "none"
+source_url = "https://commons.wikimedia.org/wiki/File:Dr_Prash_Ladva.jpg"
+license = "CC0-1.0"
+author = "https://www.prashladva.com/assests/"
+subject_rights_checked = true
+notes = "CC0 as reported; headshot of Dr Prash Ladva wearing round eyeglasses; source is prashladva.com, not stated as the uploader's own work.; reviewed 2026-10-29"
+
+[[image]]
+file = "glasses-03.jpg"
+category = "glasses"
+has_face = true
+occlusion = "none"
+source_url = "https://commons.wikimedia.org/wiki/File:Marvin_Giovanni_wearing_black_glasses.jpg"
+license = "CC0-1.0"
+author = "BigTalentPublicist"
+subject_rights_checked = true
+notes = "CC0 as reported; actor Marvin Giovanni in black-frame glasses at a photo shoot; uploader's own work (source: own).; reviewed 2026-10-29"
+
+[[image]]
+file = "glasses-04.jpg"
+category = "glasses"
+has_face = true
+occlusion = "none"
+source_url = "https://commons.wikimedia.org/wiki/File:Prince_Harry_10_May_2016.jpg"
+license = "PDM-1.0"
+author = "U.S. Marine Corps Photo by Capt. Andrew Bolla/Released"
+subject_rights_checked = true
+notes = "Public domain as reported; Prince Harry in sunglasses at the 2016 Invictus Games track and field event (DVIDS); US Marine Corps work, not the uploader's own work; public figure.; reviewed 2026-10-29"
+
+[[image]]
+file = "tilt-01.jpg"
+category = "tilt"
+has_face = true
+occlusion = "none"
+source_url = "https://commons.wikimedia.org/wiki/File:DN-0076797_%E2%80%93_Beulah_Annan_sitting_with_her_head_tilted,_looking_away_from_camera.jpg"
+license = "PDM-1.0"
+author = "Chicago Daily News, Inc."
+subject_rights_checked = true
+notes = "Public domain as reported; half-length archive photo of Beulah Annan with head tilted and turned away from the camera (about 30 degrees, borderline); not the uploader's own work.; reviewed 2026-10-29"
+
+[[image]]
+file = "tilt-02.jpg"
+category = "tilt"
+has_face = true
+occlusion = "none"
+source_url = "https://commons.wikimedia.org/wiki/File:Alexander_Travis_Hawthorn.jpg"
+license = "PDM-1.0"
+author = "Unidentified photographer"
+subject_rights_checked = true
+notes = "Public domain as reported; historical portrait of Alexander Travis Hawthorn with head turned about 35 to 45 degrees (estimated), eye and nose visible; not the uploader's own work.; reviewed 2026-10-29"
+
+[[image]]
+file = "tilt-03.jpg"
+category = "tilt"
+has_face = true
+occlusion = "none"
+source_url = "https://commons.wikimedia.org/wiki/File:Emma_Smith_DeVoe_by_James_%26_Bushnell_-_No_photographer_stamp.jpg"
+license = "PDM-1.0"
+author = "James & Bushnell, Seattle; restored by Adam Cuerden"
+subject_rights_checked = true
+notes = "Public domain as reported; historical studio photo of Emma Smith DeVoe in near side profile (about 90 degrees), one eye and the nose visible; Library of Congress scan, not the uploader's own work.; reviewed 2026-10-29"
+
+# --- negatives
+
+[[image]]
+file = "neg-hand-01.jpg"
+category = "no_face_hand"
+has_face = false
+occlusion = "none"
+source_url = "https://commons.wikimedia.org/wiki/File:Baby%27s_closed_fist.jpg"
+license = "CC0-1.0"
+author = "Wilfredor"
+subject_rights_checked = true
+notes = "CC0; Closed fist of a baby against a plain light background.; reviewed 2026-10-29"
+
+[[image]]
+file = "neg-hand-02.jpg"
+category = "no_face_hand"
+has_face = false
+occlusion = "none"
+source_url = "https://commons.wikimedia.org/wiki/File:Humans_Hand.jpg"
+license = "CC0-1.0"
+author = "Jkkklll m"
+subject_rights_checked = true
+notes = "CC0; Open hand lying on a red and dark blanket.; reviewed 2026-10-29"
+
+[[image]]
+file = "neg-hand-03.jpg"
+category = "no_face_hand"
+has_face = false
+occlusion = "none"
+source_url = "https://commons.wikimedia.org/wiki/File:Hand_holding_a_bouquet_of_red_roses.jpg"
+license = "CC0-1.0"
+author = "Karthika Manikandan"
+subject_rights_checked = true
+notes = "CC0; A hand holding a bouquet of red roses outdoors.; reviewed 2026-10-29"
+
+[[image]]
+file = "neg-hand-04.jpg"
+category = "no_face_hand"
+has_face = false
+occlusion = "none"
+source_url = "https://commons.wikimedia.org/wiki/File:A_hand_holding_a_tasbah.jpg"
+license = "CC0-1.0"
+author = "Yahuzaishat"
+subject_rights_checked = true
+notes = "CC0; Two hands holding a tasbah (prayer beads), no face in frame.; reviewed 2026-10-29"
+
+[[image]]
+file = "neg-hand-05.jpg"
+category = "no_face_hand"
+has_face = false
+occlusion = "none"
+source_url = "https://commons.wikimedia.org/wiki/File:Wound_on_palm_of_hand_-_day_15.jpg"
+license = "PDM-1.0"
+author = "Arria Belli"
+subject_rights_checked = true
+notes = "Public domain; Palm of a hand with a healing wound, no face in frame.; reviewed 2026-10-29"
+
+[[image]]
+file = "neg-hand-06.jpg"
+category = "no_face_hand"
+has_face = false
+occlusion = "none"
+source_url = "https://commons.wikimedia.org/wiki/File:Caribena_versicolor_L9_on_a_hand_(image2).jpg"
+license = "PDM-1.0"
+author = "PavelSI"
+subject_rights_checked = true
+notes = "Public domain; Hand with a tarantula resting on it, no face in frame.; reviewed 2026-10-29"
+
+[[image]]
+file = "neg-mask-01.jpg"
+category = "no_face_mask"
+has_face = false
+occlusion = "none"
+source_url = "https://commons.wikimedia.org/wiki/File:A_surgical_mask_(2017).jpg"
+license = "CC0-1.0"
+author = "AlexChirkin"
+subject_rights_checked = true
+notes = "CC0; A blue surgical mask lying flat on a grey surface.; reviewed 2026-10-29"
+
+[[image]]
+file = "neg-mask-02.jpg"
+category = "no_face_mask"
+has_face = false
+occlusion = "none"
+source_url = "https://commons.wikimedia.org/wiki/File:N95mask.jpg"
+license = "CC0-1.0"
+author = "Hanabishi"
+subject_rights_checked = true
+notes = "CC0; An N95 respirator on a black background.; reviewed 2026-10-29"
+
+[[image]]
+file = "neg-mask-03.jpg"
+category = "no_face_mask"
+has_face = false
+occlusion = "none"
+source_url = "https://commons.wikimedia.org/wiki/File:3M_Surgical_N95_Respirator.png"
+license = "PDM-1.0"
+author = "Debora Cartagena"
+subject_rights_checked = true
+notes = "Public domain; A 3M 1860 respirator on a table, with another respirator behind it.; reviewed 2026-10-29"
+
+[[image]]
+file = "neg-mask-04.jpg"
+category = "no_face_mask"
+has_face = false
+occlusion = "none"
+source_url = "https://commons.wikimedia.org/wiki/File:Kimberly-clark_small_duckbill_n95_respirator.png"
+license = "PDM-1.0"
+author = "NPPTL"
+subject_rights_checked = true
+notes = "Public domain; Two Kimberly-Clark N95 duckbill respirators lying flat on a blue mat.; reviewed 2026-10-29"
+
+[[image]]
+file = "neg-object-01.jpg"
+category = "no_face_object"
+has_face = false
+occlusion = "none"
+source_url = "https://commons.wikimedia.org/wiki/File:Empty_Lecture_Room_Interior.jpg"
+license = "CC0-1.0"
+author = "Paul The Writer"
+subject_rights_checked = true
+notes = "CC0; Empty lecture room with rows of wooden desks and no people.; reviewed 2026-10-29"
+
+[[image]]
+file = "neg-object-02.jpg"
+category = "no_face_object"
+has_face = false
+occlusion = "none"
+source_url = "https://commons.wikimedia.org/wiki/File:Abbotsford_House_Study_Room.jpg"
+license = "CC0-1.0"
+author = "Michael D Beckwith"
+subject_rights_checked = true
+notes = "CC0; Study room with bookshelves and a wooden desk and no people.; reviewed 2026-10-29"
+
+[[image]]
+file = "neg-object-03.jpg"
+category = "no_face_object"
+has_face = false
+occlusion = "none"
+source_url = "https://commons.wikimedia.org/wiki/File:Empty_Roosevelt_Room_in_The_White_House_-_DPLA_-_bf9e9e996491149f25a87377f69ef6aa.jpg"
+license = "PDM-1.0"
+author = "President (1981-1989 : Reagan). White House Photographic Office. 1981-1989"
+subject_rights_checked = true
+notes = "Public domain; Empty conference room with a long table, chairs and paintings.; reviewed 2026-10-29"
+
+[[image]]
+file = "neg-object-04.jpg"
+category = "no_face_object"
+has_face = false
+occlusion = "none"
+source_url = "https://commons.wikimedia.org/wiki/File:Peperomia_boivinii_in_cultivation.jpg"
+license = "CC0-1.0"
+author = "Gemena"
+subject_rights_checked = true
+notes = "CC0; Peperomia houseplant in a hanging terracotta pot against a white wall.; reviewed 2026-10-29"
+
+[[image]]
+file = "neg-object-05.jpg"
+category = "no_face_object"
+has_face = false
+occlusion = "none"
+source_url = "https://commons.wikimedia.org/wiki/File:Workplace-2303851_1920.jpg"
+license = "CC0-1.0"
+author = "LUM3N"
+subject_rights_checked = true
+notes = "CC0; Desk with a keyboard, mouse, headphones and a notebook on a pink surface.; reviewed 2026-10-29"
+
+[[image]]
+file = "neg-object-06.jpg"
+category = "no_face_object"
+has_face = false
+occlusion = "none"
+source_url = "https://commons.wikimedia.org/wiki/File:Kate_Edger_Information_Commons_PC_and_desk.JPG"
+license = "PDM-1.0"
+author = "Richard001"
+subject_rights_checked = true
+notes = "Public domain; Computer station with a monitor, keyboard and chair, no people visible.; reviewed 2026-10-29"

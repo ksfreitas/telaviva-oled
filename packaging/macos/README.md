@@ -11,7 +11,7 @@ downloaded copy until the user chooses Open Anyway.
 - Xcode command line tools and the macOS 14 SDK
 - Rust toolchain
 - Python 3
-- The repository-pinned YuNet model. The `scripts/build-macos.sh` helper fetches the
+- The repository-pinned RetinaFace MobileNet0.25 model (the macOS detector since 2026-10-29, see ADR 0042; Windows keeps YuNet until its port). The `scripts/build-macos.sh` helper fetches the
   pinned ONNX Runtime when missing or outdated, checks its hashes, and reuses
   verified copies on later builds. Packaging verifies both inference assets again.
 

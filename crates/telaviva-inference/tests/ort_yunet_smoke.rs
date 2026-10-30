@@ -16,7 +16,7 @@ fn coreml_compute_units_match_cpu_fixture_and_report_latency_when_opted_in() {
 
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let runtime_path = root.join("tools/inference/runtime/macos-arm64/libonnxruntime.dylib");
-    let model_path = root.join("assets/model/face_detection_yunet_2023mar.onnx");
+    let model_path = root.join("assets/model/face_detection_retinaface_mb025.onnx");
     let frame_path = std::env::var_os("TELAVIVA_COREML_PROBE_FRAME")
         .expect("set TELAVIVA_COREML_PROBE_FRAME to the generated TVSF BGRA fixture");
     let frame = std::fs::read(frame_path).expect("read the generated self-test frame");
@@ -154,7 +154,7 @@ fn coreml_compute_units_match_cpu_fixture_and_report_latency_when_opted_in() {
 }
 
 #[test]
-fn bundled_runtime_executes_pinned_yunet_model_on_cpu() {
+fn bundled_runtime_executes_pinned_model_on_cpu() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let runtime = CString::new(
         root.join("tools/inference/runtime/macos-arm64/libonnxruntime.dylib")
@@ -163,7 +163,7 @@ fn bundled_runtime_executes_pinned_yunet_model_on_cpu() {
     )
     .unwrap();
     let model = CString::new(
-        root.join("assets/model/face_detection_yunet_2023mar.onnx")
+        root.join("assets/model/face_detection_retinaface_mb025.onnx")
             .to_string_lossy()
             .as_bytes(),
     )
@@ -271,7 +271,7 @@ fn bundled_runtime_executes_pinned_yunet_model_on_cpu() {
         1
     );
     assert_eq!(result.status, 1);
-    assert!(result.confidence >= 0.8);
+    assert!(result.confidence >= 0.5);
     unsafe { tv_inference_destroy(handle) };
 
     let mut candidate: *mut TvInferenceHandle = std::ptr::null_mut();

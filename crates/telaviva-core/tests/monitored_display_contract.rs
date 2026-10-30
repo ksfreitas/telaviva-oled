@@ -569,18 +569,21 @@ fn disconnecting_the_selected_monitor_hands_the_camera_to_the_next_remembered_on
 }
 
 #[test]
-fn threshold_zero_suspends_a_monitored_display_at_level_zero_and_runs_it_at_level_one() {
+fn threshold_one_suspends_a_monitored_display_at_level_one_and_runs_it_at_level_two() {
     let mut core = Core::new(CoreOptions::default()).unwrap();
-    set_threshold(&mut core, 0);
+    set_threshold(&mut core, 1);
     enable_camera(&mut core);
     let s = discover(&mut core, monitor_at("m1", 0));
-    // The comparison is inclusive, so zero is still below a zero threshold.
+    // The comparison is inclusive, so zero is still below a threshold of one.
     assert_eq!(s["camera"]["mode"], "suspended");
     let generation = s["monitors"][0]["generation"].clone();
     let s = send(
         &mut core,
         json!({"type": "monitor_observed", "monitor_id": "m1", "generation": generation, "brightness": {"raw": 1}}),
     );
+    // The comparison is inclusive, so a level equal to the threshold is still below it.
+    assert_eq!(s["camera"]["mode"], "suspended");
+    let s = observe_brightness(&mut core, "m1", 2);
     assert_eq!(s["camera"]["mode"], "face");
 }
 

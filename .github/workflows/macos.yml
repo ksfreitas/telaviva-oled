@@ -14,7 +14,9 @@ jobs:
       - name: Check formatting
         run: cargo +stable fmt --all -- --check
       - name: Test workspace
-        run: cargo +stable test --workspace --all-targets --locked -- --skip bundled_runtime_executes_pinned_yunet_model_on_cpu
+        run: cargo +stable test --workspace --all-targets --locked -- --skip bundled_runtime_executes_pinned_model_on_cpu
+      - name: Test benchmark helpers
+        run: cargo +stable test -p telaviva-inference --features bench --lib --locked
       - name: Lint workspace
         run: cargo +stable clippy --workspace --all-targets --locked -- -D warnings
       - name: Install coverage tools
@@ -45,6 +47,8 @@ jobs:
         run: tools/tests/test-settings-window-layout.sh
       - name: Test presence keep-awake lease and guards
         run: tools/tests/test-keep-awake.sh
+      - name: Test session lock
+        run: tools/tests/test-session-lock.sh
       - name: Test protection brightness drafts
         run: tools/tests/test-protection-brightness-draft.sh
       - name: Test update checker

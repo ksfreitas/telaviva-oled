@@ -1,6 +1,6 @@
 # Third-party license records
 
-`DEPENDENCIES.md` inventories Cargo registry dependencies and their declared open-source licenses. Copies of available crate license/notice files are retained under `rust/`. `inference/` contains YuNet and ONNX Runtime licensing, third-party notices and source provenance. The DDC adapter's m1ddc attribution is retained at `native/macos/DDC-LICENSE`.
+`DEPENDENCIES.md` inventories Cargo registry dependencies and their declared open-source licenses. Copies of available crate license/notice files are retained under `rust/`. `inference/` contains YuNet, RetinaFace MobileNet0.25 (the macOS model since 2026-10-29, see ADR 0042) and ONNX Runtime licensing, third-party notices and source provenance. The DDC adapter's m1ddc attribution is retained at `native/macos/DDC-LICENSE`.
 
 The macOS packaging script copies these records and the DDC attribution into `Contents/Resources/ThirdPartyLicenses/`. It verifies the pinned model/runtime SHA-256 hashes before signing the local bundle. The app does not download a model or runtime at execution time. Runtime paths are absolute bundle paths; relative working-directory loading is rejected by the inference ABI.
 

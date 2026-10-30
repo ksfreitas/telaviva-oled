@@ -34,9 +34,15 @@ pub struct Settings {
     pub presence_protection_enabled: bool,
     #[serde(default)]
     pub keep_awake_with_presence: bool,
+    // Lock the session after a confirmed absence while the presence dim is on. The delay is in
+    // seconds between arming and the confirming sample, 1..=60.
+    #[serde(default)]
+    pub lock_on_absence: bool,
+    #[serde(default = "default_lock_delay_s")]
+    pub lock_delay_s: f64,
     #[serde(default = "default_presence_min_brightness")]
     pub presence_min_brightness_percent: f64,
-    // Per-display presence threshold, percent 0..=90, keyed by monitor id or "builtin". A display
+    // Per-display presence threshold, percent 1..=90, keyed by monitor id or "builtin". A display
     // without an entry uses presence_min_brightness_percent. Entries for disconnected displays are
     // kept, so a display that returns gets its threshold back.
     #[serde(default)]
@@ -204,7 +210,7 @@ fn default_presence_interval() -> f64 {
     10.0
 }
 fn default_return_interval() -> f64 {
-    1.0
+    0.5
 }
 fn yes() -> bool {
     true
@@ -214,6 +220,9 @@ fn default_key_step() -> u8 {
 }
 fn default_presence_min_brightness() -> f64 {
     20.0
+}
+fn default_lock_delay_s() -> f64 {
+    5.0
 }
 fn default_inference_device() -> String {
     "auto".into()
@@ -255,10 +264,12 @@ impl Default for Settings {
             schema_version: 1,
             locale: "auto".into(),
             presence_sampling_interval_s: 10.0,
-            return_sampling_interval_s: 1.0,
+            return_sampling_interval_s: 0.5,
             suspend_presence_on_battery: true,
             presence_protection_enabled: false,
             keep_awake_with_presence: false,
+            lock_on_absence: false,
+            lock_delay_s: 5.0,
             presence_min_brightness_percent: 20.0,
             presence_min_brightness_by_display: Default::default(),
             always_on_camera: true,
@@ -385,9 +396,12 @@ impl Settings {
             return Err("volume key step out of range".into());
         }
         if !self.presence_min_brightness_percent.is_finite()
-            || !(0.0..=90.0).contains(&self.presence_min_brightness_percent)
+            || !(1.0..=90.0).contains(&self.presence_min_brightness_percent)
         {
             return Err("presence brightness threshold out of range".into());
+        }
+        if !self.lock_delay_s.is_finite() || !(1.0..=60.0).contains(&self.lock_delay_s) {
+            return Err("lock delay out of range".into());
         }
         // Stored values outside 1..=50 are clamped when applied (see protection_percent), not
         // rejected here, so settings files written before the fixed range keep loading.
@@ -410,7 +424,7 @@ impl Settings {
                 k.is_empty()
                     || k.len() > MAX_MONITOR_ID_BYTES
                     || !v.is_finite()
-                    || !(0.0..=90.0).contains(v)
+                    || !(1.0..=90.0).contains(v)
             })
         {
             return Err("invalid presence threshold by display".into());
@@ -462,6 +476,26 @@ pub(crate) fn load(path: &Path) -> Result<Settings, String> {
                             s.presence_sampling_interval_s.clamp(5.0, 300.0);
                         s.return_sampling_interval_s =
                             s.return_sampling_interval_s.clamp(0.25, 5.0);
+                    }
+                    // A finite lock delay is clamped into range; a non-finite one becomes the
+                    // default, so a hand-edited value never resets the whole file.
+                    if s.lock_delay_s.is_finite() {
+                        s.lock_delay_s = s.lock_delay_s.clamp(1.0, 60.0);
+                    } else {
+                        s.lock_delay_s = default_lock_delay_s();
+                    }
+                    // Presence thresholds below 1, including 0 from older files, are raised to the
+                    // new floor. Negative, above-range, NaN and infinite values are left alone so
+                    // validate() still rejects them and the file is preserved as corrupt.
+                    if s.presence_min_brightness_percent.is_finite()
+                        && (0.0..1.0).contains(&s.presence_min_brightness_percent)
+                    {
+                        s.presence_min_brightness_percent = 1.0;
+                    }
+                    for v in s.presence_min_brightness_by_display.values_mut() {
+                        if v.is_finite() && (0.0..1.0).contains(&*v) {
+                            *v = 1.0;
+                        }
                     }
                     // Files written before camera_history existed only have selected_camera_id.
                     // Seed the history from it so the legacy selection is not treated as corrupt.

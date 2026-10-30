@@ -5,6 +5,7 @@ mod core;
 mod diagnostics;
 pub mod ffi;
 mod keep_awake;
+pub mod lock;
 mod settings;
 mod strict_json;
 pub mod update;

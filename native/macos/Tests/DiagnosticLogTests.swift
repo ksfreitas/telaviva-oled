@@ -10,6 +10,7 @@ private struct DiagnosticLogTests {
         shortIdMatchesTheSharedFNVVectors()
         shortIdIsEightLowercaseHexDigitsForEveryOneByteID()
         sinksReceiveTheLinesTheyAreGiven()
+        sessionSinkReceivesTheLineItIsGiven()
         drainedArrayIsForwardedLineByLine()
         malformedDrainsDecodeToNoLines()
         print("Diagnostic log tests passed")
@@ -44,6 +45,15 @@ private struct DiagnosticLogTests {
         expect(coreLines == ["restore_enqueued monitor=id-1a47e90b target=70 baseline=70"],
                "core lines reach the injected brightness sink unchanged")
         expect(ddcLines == ["display_sleep"], "ddc lines reach the injected ddc sink unchanged")
+    }
+
+    private static func sessionSinkReceivesTheLineItIsGiven() {
+        var sessionLines: [String] = []
+        let defaultSession = DiagnosticLog.sessionSink
+        DiagnosticLog.sessionSink = { sessionLines.append($0) }
+        DiagnosticLog.session("lock ok")
+        DiagnosticLog.sessionSink = defaultSession
+        expect(sessionLines == ["lock ok"], "session lines reach the injected session sink unchanged")
     }
 
     private static func drainedArrayIsForwardedLineByLine() {

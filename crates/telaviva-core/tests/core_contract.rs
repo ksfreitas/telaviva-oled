@@ -20,7 +20,7 @@ fn capture_time(offset_ms: u64) -> u64 {
 fn settings_defaults_validate_and_reject_future_schema_and_bad_ranges() {
     let defaults = Settings::default();
     assert_eq!(defaults.presence_sampling_interval_s, 10.0);
-    assert_eq!(defaults.return_sampling_interval_s, 1.0);
+    assert_eq!(defaults.return_sampling_interval_s, 0.5);
     assert!(defaults.suspend_presence_on_battery);
     assert!(defaults.always_on_camera);
     assert!(!defaults.hardware_keys_enabled);
@@ -514,7 +514,16 @@ fn presence_min_brightness_defaults_to_20_is_range_checked_and_persisted() {
     );
     let before = core.settings().unwrap();
     let before_file = std::fs::read(&path).unwrap();
-    for invalid in [json!(-0.1), json!(90.1), json!(100), json!(-1), json!("20")] {
+    // The valid range is 1.0 to 90.0 inclusive, so 0 and 0.5 sit below the 1% minimum.
+    for invalid in [
+        json!(-0.1),
+        json!(0.0),
+        json!(0.5),
+        json!(90.1),
+        json!(100),
+        json!(-1),
+        json!("20"),
+    ] {
         let event = json!({"type":"update_settings","settings":{"presence_min_brightness_percent":invalid}});
         assert!(core
             .submit_json(&serde_json::to_vec(&event).unwrap())
@@ -522,7 +531,7 @@ fn presence_min_brightness_defaults_to_20_is_range_checked_and_persisted() {
         assert_eq!(core.settings().unwrap(), before);
     }
     assert_eq!(std::fs::read(&path).unwrap(), before_file);
-    for accepted in [0.0, 10.0, 90.0] {
+    for accepted in [1.0, 10.0, 90.0] {
         let event = json!({"type":"update_settings","settings":{"presence_min_brightness_percent":accepted}});
         assert!(core
             .submit_json(&serde_json::to_vec(&event).unwrap())
@@ -1167,7 +1176,7 @@ fn threshold_suspends_camera_until_observed_brightness_rises_above_it() {
 }
 
 #[test]
-fn lowering_threshold_to_minimum_resumes_monitor_at_20() {
+fn lowering_threshold_to_ten_resumes_monitor_at_20() {
     let mut core = Core::new(CoreOptions::default()).unwrap();
     discover_monitor(&mut core, "screen", json!(20));
     let s = enable_presence(&mut core);
@@ -2065,6 +2074,54 @@ fn corrupt_settings_are_backed_up_before_defaults_load() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+// A stored 0 is below the new 1% minimum, but it is raised on load instead of resetting the file.
+#[test]
+fn stored_zero_threshold_is_raised_to_one_on_load() {
+    let root = std::env::temp_dir().join(format!("telaviva-zero-threshold-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&root);
+    let path = root.join("settings.json");
+    std::fs::write(
+        &path,
+        br#"{"schema_version":1,"presence_min_brightness_percent":0,"presence_min_brightness_by_display":{"builtin":0,"m1":0.5},"presence_sampling_interval_s":30}"#,
+    )
+    .unwrap();
+    let core = Core::new(CoreOptions {
+        config_path: Some(path.clone()),
+        ..CoreOptions::default()
+    })
+    .unwrap();
+    let settings = core.settings().unwrap();
+    assert_eq!(settings.presence_min_brightness_percent, 1.0);
+    assert_eq!(settings.presence_min_brightness_by_display["builtin"], 1.0);
+    assert_eq!(settings.presence_min_brightness_by_display["m1"], 1.0);
+    // The unrelated setting is kept, so the file was loaded rather than replaced by defaults.
+    assert_eq!(settings.presence_sampling_interval_s, 30.0);
+    assert!(!root.join("settings.json.corrupt").exists());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+// A negative threshold is still outside every accepted range, so the file is backed up and
+// defaults load as before.
+#[test]
+fn invalid_negative_threshold_still_resets_with_backup() {
+    let root = std::env::temp_dir().join(format!("telaviva-neg-threshold-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&root);
+    let path = root.join("settings.json");
+    std::fs::write(
+        &path,
+        br#"{"schema_version":1,"presence_min_brightness_percent":-1}"#,
+    )
+    .unwrap();
+    let core = Core::new(CoreOptions {
+        config_path: Some(path.clone()),
+        ..CoreOptions::default()
+    })
+    .unwrap();
+    assert_eq!(core.settings().unwrap(), Settings::default());
+    assert!(root.join("settings.json.corrupt").exists());
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[test]
 fn future_schema_is_rejected_without_moving_or_replacing_it() {
     let root = std::env::temp_dir().join(format!("telaviva-future-{}", std::process::id()));
@@ -2082,7 +2139,7 @@ fn future_schema_is_rejected_without_moving_or_replacing_it() {
 }
 
 #[test]
-fn returning_sample_restores_owned_brightness_and_cadence_is_one_second() {
+fn returning_sample_restores_owned_brightness_and_cadence_is_half_a_second() {
     let mut core = Core::new(CoreOptions::default()).unwrap();
     send(
         &mut core,
@@ -2107,7 +2164,7 @@ fn returning_sample_restores_owned_brightness_and_cadence_is_one_second() {
         if offset == 20_000 {
             assert_eq!(s2["camera"]["capture_mode"], "continuous_return");
             assert_eq!(s2["monitors"][0]["presence_dimmed"], true);
-            assert_eq!(s2["camera"]["next_sample_in_ms"].as_f64(), Some(1000.0));
+            assert_eq!(s2["camera"]["next_sample_in_ms"].as_f64(), Some(500.0));
         }
     }
     let action = core.snapshot_value().unwrap()["pending_actions"][0].clone();
@@ -3110,7 +3167,7 @@ fn camera_presence_ignores_stale_generation_and_out_of_order_samples() {
 // Ambient follow and per-monitor protection contracts from
 // specs/archived/macbook-brightness-follow/contracts.md: settings, update_settings and snapshot fields.
 
-// Per-display presence thresholds: values 0..=90 and finite, keys 1..=512 bytes, at most 128
+// Per-display presence thresholds: values 1..=90 and finite, keys 1..=512 bytes, at most 128
 // entries. A settings file without the key loads with an empty map.
 #[test]
 fn presence_thresholds_by_display_validate_and_default_to_an_empty_map() {
@@ -3123,10 +3180,12 @@ fn presence_thresholds_by_display_validate_and_default_to_an_empty_map() {
     // The key takes a JSON object literal; the bounds are checked at both edges.
     let file =
         |map: &str| format!(r#"{{"schema_version":1,"presence_min_brightness_by_display":{map}}}"#);
-    assert!(Settings::from_json(file(r#"{"m1":0,"builtin":90}"#).as_bytes()).is_ok());
+    assert!(Settings::from_json(file(r#"{"m1":1,"builtin":90}"#).as_bytes()).is_ok());
     assert!(Settings::from_json(file(r#"{"m1":95}"#).as_bytes()).is_err());
     assert!(Settings::from_json(file(r#"{"m1":-1}"#).as_bytes()).is_err());
     assert!(Settings::from_json(file(r#"{"":20}"#).as_bytes()).is_err());
+    // Zero is below the 1% minimum for a per-display entry as well as for the global threshold.
+    assert!(Settings::from_json(file(r#"{"m1":0}"#).as_bytes()).is_err());
     let with_key = |key: &str| Settings {
         presence_min_brightness_by_display: [(key.to_string(), 20.0)].into(),
         ..Default::default()
@@ -3146,7 +3205,12 @@ fn presence_thresholds_by_display_validate_and_default_to_an_empty_map() {
 
     // update_settings applies the same rules, and a rejected save leaves the stored map unchanged.
     let mut core = Core::new(CoreOptions::default()).unwrap();
-    for value in [json!({"m1": 95}), json!({"m1": -1}), json!({"": 20})] {
+    for value in [
+        json!({"m1": 95}),
+        json!({"m1": -1}),
+        json!({"": 20}),
+        json!({"m1": 0}),
+    ] {
         let event = json!({"type": "update_settings", "settings": {"presence_min_brightness_by_display": value}});
         assert!(core
             .submit_json(&serde_json::to_vec(&event).unwrap())
@@ -3157,13 +3221,13 @@ fn presence_thresholds_by_display_validate_and_default_to_an_empty_map() {
         snapshot["settings"]["presence_min_brightness_by_display"],
         json!({})
     );
-    let event = json!({"type": "update_settings", "settings": {"presence_min_brightness_by_display": {"m1": 0, "builtin": 90}}});
+    let event = json!({"type": "update_settings", "settings": {"presence_min_brightness_by_display": {"m1": 1, "builtin": 90}}});
     core.submit_json(&serde_json::to_vec(&event).unwrap())
         .unwrap();
     let snapshot = core.snapshot_value().unwrap();
     assert_eq!(
         snapshot["settings"]["presence_min_brightness_by_display"],
-        json!({"m1": 0.0, "builtin": 90.0})
+        json!({"m1": 1.0, "builtin": 90.0})
     );
 }
 
@@ -4962,7 +5026,7 @@ fn first_miss_shortens_the_wait_for_the_confirming_check() {
     assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(10000.0));
     // First miss: the next check is the short return interval, and nothing dims yet.
     let s = presence_sample(&mut core, "absent", 20_000);
-    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(1000.0));
+    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(500.0));
     assert!(s["pending_actions"]
         .as_array()
         .unwrap()
@@ -4971,7 +5035,7 @@ fn first_miss_shortens_the_wait_for_the_confirming_check() {
     assert_eq!(s["monitors"][0]["presence_dimmed"], false);
     // Confirming miss: the monitor dims and the short interval continues.
     let s = presence_sample(&mut core, "absent", 30_000);
-    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(1000.0));
+    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(500.0));
     assert_eq!(s["monitors"][0]["presence_dimmed"], true);
     let dim = pending_action(&s, "set_brightness");
     assert_eq!(dim["value"].as_f64(), Some(1.0));
@@ -4983,13 +5047,13 @@ fn present_after_the_first_miss_restores_the_presence_interval() {
     discover_monitor(&mut core, "screen", json!(70));
     enable_presence(&mut core);
     let s = presence_sample(&mut core, "absent", 10_000);
-    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(1000.0));
+    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(500.0));
     // Presence clears the miss count and returns to the presence interval.
     let s = presence_sample(&mut core, "present", 20_000);
     assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(10000.0));
     // A single new miss is not a confirmed absence, so nothing dims.
     let s = presence_sample(&mut core, "absent", 30_000);
-    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(1000.0));
+    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(500.0));
     assert_eq!(s["monitors"][0]["presence_dimmed"], false);
     assert!(s["pending_actions"]
         .as_array()
@@ -5027,7 +5091,7 @@ fn unprotected_monitor_misses_do_not_speed_up_sampling() {
     );
     // The short cadence comes from the protected monitor "a" only.
     let s = presence_sample(&mut core, "absent", 10_000);
-    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(1000.0));
+    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(500.0));
     // Only the unprotected monitor "b" is left: the camera is suspended, so there is no
     // sampling cadence and misses cannot speed it up.
     let mut core = Core::new(CoreOptions::default()).unwrap();
@@ -5048,7 +5112,7 @@ fn insufficient_light_on_the_confirming_sample_clears_the_first_miss() {
     discover_monitor(&mut core, "screen", json!(70));
     enable_presence(&mut core);
     let s = presence_sample(&mut core, "absent", 10_000);
-    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(1000.0));
+    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(500.0));
     // Low light clears the miss count and switches to light-only sampling.
     let s = presence_sample(&mut core, "insufficient_light", 20_000);
     assert_eq!(s["camera"]["mode"], "light_only");
@@ -5061,7 +5125,7 @@ fn insufficient_light_on_the_confirming_sample_clears_the_first_miss() {
     assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(10000.0));
     // The earlier miss was cleared, so one new absent does not dim the monitor.
     let s = presence_sample(&mut core, "absent", 50_000);
-    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(1000.0));
+    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(500.0));
     assert_eq!(s["monitors"][0]["presence_dimmed"], false);
     assert!(s["pending_actions"]
         .as_array()

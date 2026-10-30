@@ -369,11 +369,11 @@ fn builtin_absence_confirmation_speeds_up_the_sampling() {
     // interval, so it is not asserted here.
     // One miss: the confirming check uses the return interval.
     let s = presence_sample(&mut core, "absent", 1_000);
-    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(1000.0));
+    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(500.0));
     // Two misses dim the built-in, and the return interval continues while it is dimmed.
     let s = presence_sample(&mut core, "absent", 2_000);
     assert_eq!(s["builtin_protection"]["reasons"], json!(["presence"]));
-    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(1000.0));
+    assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(500.0));
     // Presence returns to the presence sampling interval.
     let s = presence_sample(&mut core, "present", 3_000);
     assert_eq!(s["camera"]["next_sample_in_ms"].as_f64(), Some(10000.0));

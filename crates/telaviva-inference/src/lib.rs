@@ -22,11 +22,66 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
-const MODEL_SHA256: &str = "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4";
-// The pinned upstream 2023mar graph has static [1, 3, 640, 640] input dims.
+#[cfg(feature = "bench")]
+pub mod bench;
+mod retinaface;
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum ModelFamily {
+    YuNet,
+    RetinaFace,
+}
+
+/// Per-model parameters: decoder family, square input size, BGR mean subtracted from each
+/// channel (all zero means no subtraction), and the detection thresholds.
+struct ModelSpec {
+    family: ModelFamily,
+    input: usize,
+    mean_bgr: [f32; 3],
+    confidence: f32,
+    nms_iou: f32,
+}
+
+/// Known models keyed by lower-case SHA-256 digest of the model file.
+static KNOWN_MODELS: &[(&str, ModelSpec)] = &[
+    (
+        "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+        ModelSpec {
+            family: ModelFamily::YuNet,
+            input: INPUT,
+            mean_bgr: [0.0, 0.0, 0.0],
+            confidence: CONFIDENCE_THRESHOLD,
+            nms_iou: NMS_IOU_THRESHOLD,
+        },
+    ),
+    (
+        "f4c83825f41dba8e17b522377f77cb7e2b69ec4df75168d4cb1b18dcaf03b54c",
+        ModelSpec {
+            family: ModelFamily::RetinaFace,
+            input: INPUT,
+            mean_bgr: [104.0, 117.0, 123.0],
+            confidence: RETINAFACE_CONFIDENCE_THRESHOLD,
+            nms_iou: RETINAFACE_NMS_IOU_THRESHOLD,
+        },
+    ),
+];
+
+/// Looks up a model by its SHA-256 digest, ignoring ASCII case.
+fn known_model(sha256_hex: &str) -> Option<&'static ModelSpec> {
+    KNOWN_MODELS
+        .iter()
+        .find(|(digest, _)| digest.eq_ignore_ascii_case(sha256_hex))
+        .map(|(_, spec)| spec)
+}
+
+// The pinned YuNet 2023mar and RetinaFace MobileNet0.25 graphs both have static
+// [1, 3, 640, 640] input dims.
 const INPUT: usize = 640;
 const CONFIDENCE_THRESHOLD: f32 = 0.8;
 const NMS_IOU_THRESHOLD: f32 = 0.3;
+// RetinaFace MobileNet0.25 operating point, chosen from the occlusion benchmark.
+const RETINAFACE_CONFIDENCE_THRESHOLD: f32 = 0.5;
+const RETINAFACE_NMS_IOU_THRESHOLD: f32 = 0.4;
 const MIN_MEAN_LUMA: f32 = 18.0;
 const MAX_DIMENSION: u32 = 8192;
 const MAX_FRAME_BYTES: usize = 256 * 1024 * 1024;
@@ -35,6 +90,7 @@ const MAX_FRAME_BYTES: usize = 256 * 1024 * 1024;
 pub struct TvInferenceHandle {
     session: Mutex<Session>,
     selected_provider: i32,
+    spec: &'static ModelSpec,
 }
 
 #[repr(C)]
@@ -182,60 +238,81 @@ pub unsafe extern "C" fn tv_inference_create_with_provider_device(
             Ok(value) => value,
             Err(()) => return MODEL_ERROR,
         };
-        if digest != MODEL_SHA256 {
-            return MODEL_ERROR;
-        }
-        let runtime_text = runtime.to_string_lossy().into_owned();
-        if let Some(existing) = RUNTIME_PATH.get() {
-            if existing != &runtime_text {
-                return RUNTIME_ERROR;
+        let spec = match known_model(&digest) {
+            Some(spec) => spec,
+            None => return MODEL_ERROR,
+        };
+        match create_with_spec(&runtime, &model, requested, device_index, spec) {
+            Ok(handle) => {
+                *out_handle = handle;
+                SUCCESS
             }
-        } else {
-            let _ = RUNTIME_PATH.set(runtime_text.clone());
+            Err(code) => code,
         }
-        if RUNTIME_PATH.get().map(String::as_str) != Some(runtime_text.as_str()) {
-            return RUNTIME_ERROR;
-        }
-
-        let init = ort::init_from(runtime_text)
-            .with_name("TelaViva YuNet CPU")
-            .commit();
-        if init.is_err() {
-            return RUNTIME_ERROR;
-        }
-        let _ = RUNTIME_READY.set(());
-        // DirectML registration is compiled only with the `directml` feature. Without it,
-        // directml_is_available() is false and a DirectML request runs on CPU, reported as 0.
-        let accelerator = match requested {
-            ProviderKind::CoreMl if coreml_is_available() => Some(ProviderKind::CoreMl),
-            ProviderKind::DirectMl if directml_is_available() => Some(ProviderKind::DirectMl),
-            _ => None,
-        };
-        let mut selected_provider = PROVIDER_CPU;
-        let session = match accelerator {
-            Some(kind) => match create_session(&model, Some(kind), device_index) {
-                Ok(session) => {
-                    selected_provider = kind.code();
-                    Ok(session)
-                }
-                Err(_) => create_session(&model, None, device_index),
-            },
-            None => create_session(&model, None, device_index),
-        };
-        let session = match session {
-            Ok(session) => session,
-            Err(_) => return MODEL_ERROR,
-        };
-        if !valid_model_io(&session) {
-            return MODEL_ERROR;
-        }
-        *out_handle = Box::into_raw(Box::new(TvInferenceHandle {
-            session: Mutex::new(session),
-            selected_provider,
-        }));
-        SUCCESS
     }))
     .unwrap_or(PANIC_ERROR)
+}
+
+/// Builds the session for `spec` from already-validated paths and boxes the handle. Returns the
+/// status code on failure. The digest check is the caller's job, so benchmark-only callers can
+/// reach this with a spec that was not looked up by digest.
+fn create_with_spec(
+    runtime: &Path,
+    model: &Path,
+    requested: ProviderKind,
+    device_index: u32,
+    spec: &'static ModelSpec,
+) -> Result<*mut TvInferenceHandle, i32> {
+    debug_assert_eq!(spec.input, INPUT);
+    let runtime_text = runtime.to_string_lossy().into_owned();
+    if let Some(existing) = RUNTIME_PATH.get() {
+        if existing != &runtime_text {
+            return Err(RUNTIME_ERROR);
+        }
+    } else {
+        let _ = RUNTIME_PATH.set(runtime_text.clone());
+    }
+    if RUNTIME_PATH.get().map(String::as_str) != Some(runtime_text.as_str()) {
+        return Err(RUNTIME_ERROR);
+    }
+
+    let init = ort::init_from(runtime_text)
+        .with_name("TelaViva Face CPU")
+        .commit();
+    if init.is_err() {
+        return Err(RUNTIME_ERROR);
+    }
+    let _ = RUNTIME_READY.set(());
+    // DirectML registration is compiled only with the `directml` feature. Without it,
+    // directml_is_available() is false and a DirectML request runs on CPU, reported as 0.
+    let accelerator = match requested {
+        ProviderKind::CoreMl if coreml_is_available() => Some(ProviderKind::CoreMl),
+        ProviderKind::DirectMl if directml_is_available() => Some(ProviderKind::DirectMl),
+        _ => None,
+    };
+    let mut selected_provider = PROVIDER_CPU;
+    let session = match accelerator {
+        Some(kind) => match create_session(model, Some(kind), device_index) {
+            Ok(session) => {
+                selected_provider = kind.code();
+                Ok(session)
+            }
+            Err(_) => create_session(model, None, device_index),
+        },
+        None => create_session(model, None, device_index),
+    };
+    let session = match session {
+        Ok(session) => session,
+        Err(_) => return Err(MODEL_ERROR),
+    };
+    if !valid_model_io(&session, spec.family) {
+        return Err(MODEL_ERROR);
+    }
+    Ok(Box::into_raw(Box::new(TvInferenceHandle {
+        session: Mutex::new(session),
+        selected_provider,
+        spec,
+    })))
 }
 
 /// Builds a session. Callers pass only an accelerator that was reported available, so any
@@ -372,7 +449,7 @@ fn coreml_is_available() -> bool {
     false
 }
 
-/// Assesses an owned BGRA frame and runs YuNet unless the frame is too dark.
+/// Assesses an owned BGRA frame and runs the pinned detector unless the frame is too dark.
 ///
 /// # Safety
 /// `handle` must be a live handle from `tv_inference_create`; `bytes` must address `len`
@@ -412,15 +489,31 @@ pub unsafe extern "C" fn tv_inference_detect_bgra(
             return INSUFFICIENT_LIGHT;
         }
         let session = &*handle;
+        let spec = session.spec;
         let session = match session.session.lock() {
             Ok(session) => session,
             Err(_) => return RUNTIME_ERROR,
         };
-        let tensor = match preprocess_bgra(pixels, width as usize, height as usize, stride) {
+        // The padding takes the model mean, so mean subtraction leaves it exactly zero.
+        let mut tensor = match preprocess_bgra_with_pad(
+            pixels,
+            width as usize,
+            height as usize,
+            stride,
+            spec.mean_bgr,
+        ) {
             Some(tensor) => tensor,
             None => return INVALID_ARGUMENT,
         };
-        let inputs = match ort::inputs!["input" => tensor] {
+        // Models without a mean skip this pass, so their tensors are unchanged.
+        if spec.mean_bgr != [0.0; 3] {
+            subtract_mean(&mut tensor, spec.mean_bgr);
+        }
+        let input_name = match session.inputs.first() {
+            Some(input) => input.name.as_str(),
+            None => return MODEL_ERROR,
+        };
+        let inputs = match ort::inputs![input_name => tensor] {
             Ok(inputs) => inputs,
             Err(_) => return RUNTIME_ERROR,
         };
@@ -428,7 +521,7 @@ pub unsafe extern "C" fn tv_inference_detect_bgra(
             Ok(outputs) => outputs,
             Err(_) => return RUNTIME_ERROR,
         };
-        let detections = match decode_outputs(&outputs) {
+        let detections = match decode_outputs(&outputs, spec) {
             Some(detections) => detections,
             None => return MODEL_ERROR,
         };
@@ -436,7 +529,7 @@ pub unsafe extern "C" fn tv_inference_detect_bgra(
             .iter()
             .map(|detection| detection.score)
             .fold(0.0_f32, f32::max);
-        let status = if confidence >= CONFIDENCE_THRESHOLD {
+        let status = if confidence >= spec.confidence {
             PRESENT
         } else {
             ABSENT
@@ -472,7 +565,7 @@ pub unsafe extern "C" fn tv_inference_destroy(handle: *mut TvInferenceHandle) {
     }));
 }
 
-/// Evaluates image illumination without loading or running the YuNet session.
+/// Evaluates image illumination without loading or running the detector session.
 ///
 /// # Safety
 /// `bytes` must address `len` readable bytes.
@@ -572,7 +665,14 @@ unsafe fn c_path(pointer: *const c_char) -> Option<std::path::PathBuf> {
         .map(Path::to_path_buf)
 }
 
-fn valid_model_io(session: &Session) -> bool {
+fn valid_model_io(session: &Session, family: ModelFamily) -> bool {
+    match family {
+        ModelFamily::YuNet => valid_yunet_io(session),
+        ModelFamily::RetinaFace => valid_retinaface_io(session),
+    }
+}
+
+fn valid_yunet_io(session: &Session) -> bool {
     if session.inputs.len() != 1 || session.inputs[0].name != "input" {
         return false;
     }
@@ -583,6 +683,40 @@ fn valid_model_io(session: &Session) -> bool {
     expected
         .iter()
         .all(|name| session.outputs.iter().any(|output| output.name == *name))
+}
+
+/// Requires one `[1, 3, 640, 640]` input and three outputs shaped `[1, 16800, k]`, where `k` is
+/// 4 (`loc`), 2 (`conf`) and 10 (landmarks), each present exactly once.
+fn valid_retinaface_io(session: &Session) -> bool {
+    let input_ok = session.inputs.len() == 1
+        && session.inputs[0]
+            .input_type
+            .tensor_dimensions()
+            .is_some_and(|dims| dims[..] == [1, 3, INPUT as i64, INPUT as i64]);
+    if !input_ok || session.outputs.len() != 3 {
+        return false;
+    }
+    // Slots for last dimensions 4, 2 and 10.
+    let mut seen = [false; 3];
+    for output in &session.outputs {
+        let Some(dims) = output.output_type.tensor_dimensions() else {
+            return false;
+        };
+        if dims.len() != 3 || dims[0] != 1 || dims[1] != retinaface::ANCHOR_COUNT as i64 {
+            return false;
+        }
+        let slot = match dims[2] {
+            4 => 0,
+            2 => 1,
+            10 => 2,
+            _ => return false,
+        };
+        if seen[slot] {
+            return false;
+        }
+        seen[slot] = true;
+    }
+    seen.iter().all(|&found| found)
 }
 
 fn validate_frame(len: usize, width: u32, height: u32, stride: usize) -> Option<usize> {
@@ -631,13 +765,33 @@ fn axis_samples(resized: usize, source: usize) -> Vec<(usize, usize, f32)> {
         .collect()
 }
 
+/// Letterboxes with zero padding. The unit tests use this form.
+#[cfg(test)]
 fn preprocess_bgra(bgra: &[u8], width: usize, height: usize, stride: usize) -> Option<Array4<f32>> {
+    preprocess_bgra_with_pad(bgra, width, height, stride, [0.0; 3])
+}
+
+/// Letterboxes a BGRA frame into a 640x640 BGR NCHW tensor. The padding is filled with `pad_bgr`
+/// per channel, so passing the model mean leaves padding at zero after mean subtraction.
+fn preprocess_bgra_with_pad(
+    bgra: &[u8],
+    width: usize,
+    height: usize,
+    stride: usize,
+    pad_bgr: [f32; 3],
+) -> Option<Array4<f32>> {
     let scale = (INPUT as f32 / width as f32).min(INPUT as f32 / height as f32);
     let resized_w = ((width as f32 * scale).round() as usize).clamp(1, INPUT);
     let resized_h = ((height as f32 * scale).round() as usize).clamp(1, INPUT);
     let pad_x = (INPUT - resized_w) / 2;
     let pad_y = (INPUT - resized_h) / 2;
     let mut data = vec![0.0_f32; 3 * INPUT * INPUT];
+    // Zero padding is already in place; a non-zero pad is written plane by plane first.
+    if pad_bgr != [0.0; 3] {
+        for (channel, value) in pad_bgr.into_iter().enumerate() {
+            data[channel * INPUT * INPUT..(channel + 1) * INPUT * INPUT].fill(value);
+        }
+    }
     if resized_w == width && resized_h == height {
         // Identity letterbox: each output pixel is exactly one source pixel.
         for y in 0..height {
@@ -670,12 +824,68 @@ fn preprocess_bgra(bgra: &[u8], width: usize, height: usize, stride: usize) -> O
     Array4::from_shape_vec((1, 3, INPUT, INPUT), data).ok()
 }
 
+/// Subtracts a per-channel BGR mean from an NCHW tensor. Called only for models with a non-zero mean.
+fn subtract_mean(tensor: &mut Array4<f32>, mean_bgr: [f32; 3]) {
+    for (channel, mean) in mean_bgr.into_iter().enumerate() {
+        tensor
+            .index_axis_mut(ndarray::Axis(1), channel)
+            .mapv_inplace(|value| value - mean);
+    }
+}
+
 // Output names indexed by position in [8, 16, 32].
 const CLS_OUTPUTS: [&str; 3] = ["cls_8", "cls_16", "cls_32"];
 const OBJ_OUTPUTS: [&str; 3] = ["obj_8", "obj_16", "obj_32"];
 const BBOX_OUTPUTS: [&str; 3] = ["bbox_8", "bbox_16", "bbox_32"];
 
-fn decode_outputs(outputs: &ort::session::SessionOutputs<'_, '_>) -> Option<Vec<Box2d>> {
+/// Decodes the model outputs with the decoder for the spec's family.
+fn decode_outputs(
+    outputs: &ort::session::SessionOutputs<'_, '_>,
+    spec: &ModelSpec,
+) -> Option<Vec<Box2d>> {
+    match spec.family {
+        ModelFamily::YuNet => decode_yunet_outputs(outputs, spec),
+        ModelFamily::RetinaFace => decode_retinaface_outputs(outputs, spec),
+    }
+}
+
+/// Decodes RetinaFace outputs. Output names are not reliable, so each tensor is classified by its
+/// last dimension: 4 is `loc`, 2 is `conf`, and 10 (landmarks) is ignored. Returns None when an
+/// output is missing or a needed tensor is not contiguous with the expected length.
+fn decode_retinaface_outputs(
+    outputs: &ort::session::SessionOutputs<'_, '_>,
+    spec: &ModelSpec,
+) -> Option<Vec<Box2d>> {
+    let mut loc_name = None;
+    let mut conf_name = None;
+    for name in outputs.keys() {
+        let dimensions = outputs.get(name)?.dtype().tensor_dimensions()?;
+        match *dimensions.last()? {
+            4 if loc_name.is_none() => loc_name = Some(name),
+            2 if conf_name.is_none() => conf_name = Some(name),
+            10 => {}
+            _ => return None,
+        }
+    }
+    let loc_view = outputs.get(loc_name?)?.try_extract_tensor::<f32>().ok()?;
+    let conf_view = outputs.get(conf_name?)?.try_extract_tensor::<f32>().ok()?;
+    let loc = loc_view.as_slice()?;
+    let conf = conf_view.as_slice()?;
+    if loc.len() != retinaface::ANCHOR_COUNT * 4 || conf.len() != retinaface::ANCHOR_COUNT * 2 {
+        return None;
+    }
+    Some(retinaface::decode_retinaface(
+        loc,
+        conf,
+        spec.confidence,
+        spec.nms_iou,
+    ))
+}
+
+fn decode_yunet_outputs(
+    outputs: &ort::session::SessionOutputs<'_, '_>,
+    spec: &ModelSpec,
+) -> Option<Vec<Box2d>> {
     let mut detections = Vec::new();
     for (level, stride) in [8_usize, 16, 32].into_iter().enumerate() {
         let side = INPUT / stride;
@@ -700,7 +910,7 @@ fn decode_outputs(outputs: &ort::session::SessionOutputs<'_, '_>) -> Option<Vec<
         }
         for index in 0..count {
             let score = (cls[index].clamp(0.0, 1.0) * obj[index].clamp(0.0, 1.0)).sqrt();
-            if !score.is_finite() || score < CONFIDENCE_THRESHOLD {
+            if !score.is_finite() || score < spec.confidence {
                 continue;
             }
             let row = index / side;
@@ -721,7 +931,10 @@ fn decode_outputs(outputs: &ort::session::SessionOutputs<'_, '_>) -> Option<Vec<
             }
         }
     }
-    Some(non_maximum_suppression(detections))
+    Some(non_maximum_suppression_with_threshold(
+        detections,
+        spec.nms_iou,
+    ))
 }
 
 fn decode_candidate(
@@ -748,13 +961,18 @@ fn decode_candidate(
     })
 }
 
-fn non_maximum_suppression(mut boxes: Vec<Box2d>) -> Vec<Box2d> {
+#[cfg(test)]
+fn non_maximum_suppression(boxes: Vec<Box2d>) -> Vec<Box2d> {
+    non_maximum_suppression_with_threshold(boxes, NMS_IOU_THRESHOLD)
+}
+
+fn non_maximum_suppression_with_threshold(mut boxes: Vec<Box2d>, nms_iou: f32) -> Vec<Box2d> {
     boxes.sort_by(|left, right| right.score.total_cmp(&left.score));
     boxes.truncate(5000);
     let mut kept: Vec<Box2d> = Vec::new();
     'candidate: for candidate in boxes {
         for accepted in &kept {
-            if iou(candidate, *accepted) > NMS_IOU_THRESHOLD {
+            if iou(candidate, *accepted) > nms_iou {
                 continue 'candidate;
             }
         }
@@ -1012,5 +1230,41 @@ mod tests {
             sha256(b"abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+    }
+
+    #[test]
+    fn known_model_resolves_the_pinned_yunet_digest() {
+        let digest = "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4";
+        let spec = known_model(digest).expect("pinned YuNet digest must be known");
+        assert_eq!(spec.family, ModelFamily::YuNet);
+        assert_eq!(spec.input, 640);
+        assert_eq!(spec.mean_bgr, [0.0, 0.0, 0.0]);
+        assert_eq!(spec.confidence, 0.8);
+        assert_eq!(spec.nms_iou, 0.3);
+    }
+
+    #[test]
+    fn known_model_resolves_the_retinaface_digest() {
+        let digest = "f4c83825f41dba8e17b522377f77cb7e2b69ec4df75168d4cb1b18dcaf03b54c";
+        let spec = known_model(digest).expect("pinned RetinaFace digest must be known");
+        assert_eq!(spec.family, ModelFamily::RetinaFace);
+        assert_eq!(spec.input, 640);
+        assert_eq!(spec.mean_bgr, [104.0, 117.0, 123.0]);
+        assert_eq!(spec.confidence, 0.5);
+        assert_eq!(spec.nms_iou, 0.4);
+    }
+
+    #[test]
+    fn known_model_rejects_unknown_digest() {
+        let other = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        assert!(known_model(other).is_none());
+        assert!(known_model("").is_none());
+    }
+
+    #[test]
+    fn known_model_digest_match_is_case_insensitive() {
+        // Upper-case form of the pinned YuNet digest.
+        let digest = "8F2383E4DD3CFBB4553EA8718107FC0423210DC964F9F4280604804ED2552FA4";
+        assert!(known_model(digest).is_some());
     }
 }

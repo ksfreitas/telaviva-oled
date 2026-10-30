@@ -26,6 +26,9 @@ struct SettingsView: View {
     @State private var alwaysOnCamera = true
     @State private var screensaver = false
     @State private var keepAwakeWithPresence = false
+    @State private var lockOnAbsence = false
+    /// Seconds the app waits after the display dims before it checks again and may lock the session.
+    @State private var lockDelay = 5.0
     @State private var battery = true
     @State private var login = false
     @State private var hardwareKeys = false
@@ -34,7 +37,7 @@ struct SettingsView: View {
     /// The threshold the slider shows: the monitored display's own value, synced from the snapshot, never the global draft.
     @State private var presenceMinBrightness = 20.0
     @State private var presentInterval = 10.0
-    @State private var returnInterval = 1.0
+    @State private var returnInterval = 0.5
     @State private var inferenceDevice = "auto"
     @State private var cameras: [AVCaptureDevice] = []
     @State private var didLoad = false
@@ -105,6 +108,8 @@ struct SettingsView: View {
         .onChange(of: alwaysOnCamera) { _, _ in save() }
         .onChange(of: screensaver) { _, _ in save() }
         .onChange(of: keepAwakeWithPresence) { _, _ in save() }
+        .onChange(of: lockOnAbsence) { _, _ in save() }
+        .onChange(of: lockDelay) { _, _ in save() }
         .onChange(of: battery) { _, _ in save() }
         .onChange(of: presentInterval) { _, _ in save() }
         .onChange(of: returnInterval) { _, _ in save() }
@@ -165,10 +170,19 @@ struct SettingsView: View {
                     }
                     .controlSize(.small)
                 }
+                // Locking the session after confirmed absence; only meaningful while presence protection is on.
+                Toggle(AppText.string("lockOnAbsence.toggle", locale: locale), isOn: $lockOnAbsence)
+                    .disabled(!presence)
+                LabeledContent(AppText.string("lockOnAbsence.delay", locale: locale)) {
+                    HStack { Slider(value: $lockDelay, in: 1...60, step: 1); Text("\(Int(lockDelay)) s").monospacedDigit() }
+                }
+                .disabled(!lockOnAbsence || !presence)
+                Text(AppText.string("lockOnAbsence.help", locale: locale))
+                    .font(.caption).foregroundStyle(.secondary)
                 // Threshold below which the camera stays off; editable only while presence protection is on.
                 VStack(alignment: .leading, spacing: 4) {
                     LabeledContent(AppText.string("presenceMinBrightness", locale: locale)) {
-                        HStack { Slider(value: presenceMinBrightnessSelection, in: 0...90, step: 1); Text("\(Int(presenceMinBrightness)) %").monospacedDigit() }
+                        HStack { Slider(value: presenceMinBrightnessSelection, in: PresenceThreshold.range, step: 1); Text("\(Int(presenceMinBrightness)) %").monospacedDigit() }
                     }
                     if let name = monitoredDisplayName {
                         Text(AppText.string("presenceMinBrightness.forDisplay", locale: locale)
@@ -336,6 +350,9 @@ struct SettingsView: View {
         alwaysOnCamera = value.always_on_camera ?? true
         screensaver = value.screensaver_protection_enabled; battery = value.suspend_presence_on_battery
         keepAwakeWithPresence = value.keep_awake_with_presence ?? false
+        lockOnAbsence = value.lock_on_absence ?? false
+        // A snapshot from an older core may hold a delay outside the slider range; clamp it before showing it.
+        lockDelay = min(max(value.lock_delay_s ?? 5.0, 1), 60)
         login = value.launch_at_login; presentInterval = Double(value.presence_sampling_interval_s)
         hardwareKeys = value.hardware_keys_enabled ?? false
         brightnessKeyStep = Double(value.brightness_key_step ?? 5)
@@ -352,6 +369,7 @@ struct SettingsView: View {
         settings.always_on_camera = alwaysOnCamera
         settings.screensaver_protection_enabled = screensaver; settings.suspend_presence_on_battery = battery
         settings.keep_awake_with_presence = keepAwakeWithPresence
+        settings.lock_on_absence = lockOnAbsence; settings.lock_delay_s = lockDelay
         settings.launch_at_login = login; settings.presence_sampling_interval_s = presentInterval
         settings.return_sampling_interval_s = returnInterval
         settings.hardware_keys_enabled = hardwareKeys
@@ -375,10 +393,12 @@ struct SettingsView: View {
     /// The threshold the slider shows: the monitored display's own value, or the global one when no display resolves
     /// or the display has no entry yet.
     private func storedPresenceMinBrightness(_ settings: CoreSettings) -> Double {
-        if let id = core.snapshot.monitoredDisplay.id, let value = settings.presenceMinBrightnessByDisplay?[id] {
-            return value
+        var value = settings.presence_min_brightness_percent ?? 20
+        if let id = core.snapshot.monitoredDisplay.id, let byDisplay = settings.presenceMinBrightnessByDisplay?[id] {
+            value = byDisplay
         }
-        return settings.presence_min_brightness_percent ?? 20
+        // A snapshot from an older core may hold a value outside the range; clamp it before showing it.
+        return min(max(value, PresenceThreshold.minimumPercent), PresenceThreshold.maximumPercent)
     }
 
     /// Re-reads the shown threshold from the latest snapshot, so a change of monitored display shows that display's value.
@@ -401,7 +421,8 @@ struct SettingsView: View {
 
     /// Writes the threshold of the monitored display, or the global value when none resolves. Direct, like the protection
     /// toggles, so save() never sends the threshold and a per-display value cannot land in the global field.
-    private func writePresenceMinBrightness(_ value: Double) {
+    private func writePresenceMinBrightness(_ requested: Double) {
+        let value = min(max(requested, PresenceThreshold.minimumPercent), PresenceThreshold.maximumPercent)
         presenceMinBrightness = value
         guard var next = core.snapshot.settings else { return }
         if let id = core.snapshot.monitoredDisplay.id {

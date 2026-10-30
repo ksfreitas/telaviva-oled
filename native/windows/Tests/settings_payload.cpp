@@ -265,9 +265,9 @@ TEST(settings_payload_clamps_min_brightness_both_ends)
     telaviva::SettingsDraft draft;
 
     draft.presenceMinBrightnessPercent = -5.0;
-    CHECK_EQ(scalarFor(draft, "presence_min_brightness_percent"), std::string("0"));
+    CHECK_EQ(scalarFor(draft, "presence_min_brightness_percent"), std::string("1"));
     draft.presenceMinBrightnessPercent = 0.0;
-    CHECK_EQ(scalarFor(draft, "presence_min_brightness_percent"), std::string("0"));
+    CHECK_EQ(scalarFor(draft, "presence_min_brightness_percent"), std::string("1"));
     draft.presenceMinBrightnessPercent = 100.0;
     CHECK_EQ(scalarFor(draft, "presence_min_brightness_percent"), std::string("90"));
     draft.presenceMinBrightnessPercent = std::numeric_limits<double>::quiet_NaN();
@@ -540,16 +540,17 @@ TEST(settings_payload_presence_by_display_clamps_to_zero_ninety_and_keeps_discon
     const std::string json = telaviva::buildSettingsPayload(draft);
     // std::map keeps the keys sorted. NaN takes the global default (20), and the empty id is dropped.
     CHECK(contains(json, R"("presence_min_brightness_by_display":)"
-                         R"({"builtin":90,"win-a":35,"win-gone":60,"win-low":0,"win-nan":20})"));
+                         R"({"builtin":90,"win-a":35,"win-gone":60,"win-low":1,"win-nan":20})"));
     CHECK(!contains(json, R"("":40)"));
 }
 
 TEST(settings_payload_presence_by_display_boundaries_are_kept)
 {
     telaviva::SettingsDraft draft;
+    // A per-display value of 0 clamps to the new lower bound of 1; 90 is kept as is.
     draft.presenceMinBrightnessByDisplay = {{"win-zero", 0.0}, {"win-max", 90.0}};
     const std::string json = telaviva::buildSettingsPayload(draft);
-    CHECK(contains(json, R"("presence_min_brightness_by_display":{"win-max":90,"win-zero":0})"));
+    CHECK(contains(json, R"("presence_min_brightness_by_display":{"win-max":90,"win-zero":1})"));
 }
 
 TEST(settings_payload_keep_awake_missing_key_defaults_to_false)

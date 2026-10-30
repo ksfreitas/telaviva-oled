@@ -10,8 +10,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 ASSETS = {
-    ROOT / "assets/model/face_detection_yunet_2023mar.onnx": (
-        "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+    ROOT / "assets/model/face_detection_retinaface_mb025.onnx": (
+        "f4c83825f41dba8e17b522377f77cb7e2b69ec4df75168d4cb1b18dcaf03b54c",
         "model",
     ),
     ROOT / "tools/inference/runtime/macos-arm64/libonnxruntime.dylib": (
@@ -36,7 +36,7 @@ def main() -> None:
     args = parser.parse_args()
 
     destinations = {
-        "model": args.resources_dir / "models/face_detection_yunet_2023mar.onnx",
+        "model": args.resources_dir / "models/face_detection_retinaface_mb025.onnx",
         "runtime": args.frameworks_dir / "libonnxruntime.dylib",
     }
     for source, (expected, role) in ASSETS.items():

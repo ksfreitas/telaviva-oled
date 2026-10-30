@@ -18,7 +18,10 @@ enum AppText {
             "keepAwake.status.active": "Keep awake is in use. System policies may still take precedence.",
             "keepAwake.status.permission": "Permission is required to use Keep awake.",
             "keepAwake.status.unavailable": "Could not keep the computer awake.",
-            "keepAwake.status.suspended": "Paused while the session or screen is unavailable."
+            "keepAwake.status.suspended": "Paused while the session or screen is unavailable.",
+            "lockOnAbsence.toggle": "Lock the screen after confirmed absence",
+            "lockOnAbsence.delay": "Wait before locking",
+            "lockOnAbsence.help": "After the display dims because nobody is in front of it, the app waits this long and checks again. If it still sees nobody and the light is good enough, it locks the session. It never unlocks. It relies on a macOS function that Apple may change."
         ],
         "pt-BR": [
             "keepAwake.toggle": "Manter ativo enquanto um rosto for detectado",
@@ -31,7 +34,10 @@ enum AppText {
             "keepAwake.status.active": "Manter ativo está em uso. Políticas do sistema ainda podem prevalecer.",
             "keepAwake.status.permission": "É necessário permitir Acessibilidade para usar Manter ativo.",
             "keepAwake.status.unavailable": "Não foi possível manter o computador ativo.",
-            "keepAwake.status.suspended": "Pausado enquanto a sessão ou a tela estiver indisponível."
+            "keepAwake.status.suspended": "Pausado enquanto a sessão ou a tela estiver indisponível.",
+            "lockOnAbsence.toggle": "Bloquear a tela após ausência confirmada",
+            "lockOnAbsence.delay": "Espera antes de bloquear",
+            "lockOnAbsence.help": "Depois que o brilho diminui porque ninguém está diante da tela, o app espera esse tempo e confere de novo. Se ainda não ver ninguém e a luz for suficiente, bloqueia a sessão. Nunca desbloqueia. Depende de uma função do macOS que a Apple pode alterar."
         ]
     ]
 

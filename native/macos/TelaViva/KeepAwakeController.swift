@@ -73,6 +73,13 @@ protocol KeepAwakeBackend: AnyObject {
     func acquireAssertions() -> Bool
     func releaseAssertions()
     func postActivity() -> Bool
+    /// The session lock state for lock-on-absence: the local notification when set, else the live read. Nil when unknown.
+    func sessionLockedState() -> Bool?
+}
+
+extension KeepAwakeBackend {
+    /// Backends without a lock source report the state as unknown, so existing conformances need no change.
+    func sessionLockedState() -> Bool? { nil }
 }
 
 /// Serializes the temporary OS effects and owns a monotonic watchdog independent of SwiftUI snapshots.
@@ -206,6 +213,11 @@ final class KeepAwakeController {
         lock.lock(); defer { lock.unlock() }
         guard !stopped else { return }
         reconcile(postImmediately: false)
+    }
+
+    /// Session lock state for the lock-on-absence feature, read through the same backend as the keep-awake guard.
+    func sessionLockedForLock() -> Bool? {
+        backend.sessionLockedState()
     }
 
     func requestPostingPermissionFromUserAction() {
@@ -504,6 +516,12 @@ final class MacKeepAwakeBackend: KeepAwakeBackend {
         }
         event.post(tap: .cghidEventTap)
         return true
+    }
+
+    /// Session lock state for lock-on-absence, resolved with the same override and live read as the keep-awake guard.
+    func sessionLockedState() -> Bool? {
+        lock.lock(); defer { lock.unlock() }
+        return Self.resolveGuardState(override: lockStateOverride, live: Self.sessionLockState)
     }
 
     private static func sessionLockState() -> Bool? {

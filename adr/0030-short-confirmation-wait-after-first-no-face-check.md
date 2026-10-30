@@ -41,3 +41,7 @@ The shells only obey `next_sample_in_ms`: they arm one sample timer from it, and
 - The two checks are only about one second apart, so they are weakly independent: a head turned for a moment can fail both. If hardware shows false dims, lengthen the wait to `max(return_sampling_interval_s, 2 s)` with no other change.
 - `misses` also counts for monitors with protection disabled, which never dim. The confirmation condition therefore requires `monitor_is_camera_active`, or their count would keep the cadence at the short interval. In face mode this exclusion cannot be told apart from a protected monitor holding the same miss, so it is defensive and pinned only by the observable behavior in the tests.
 - An insufficient-light, unavailable or present result clears the first miss, so a miss is never carried across a dark or failed sample.
+
+## Amendment 2026-10-29: return interval default 0.5 s
+
+The default of `return_sampling_interval_s` is now 0.5 s. It was 1 s when this ADR was accepted, and the Decision above keeps that original value. The range (0.25 to 5 s) is unchanged, and stored values are not changed. The confirming check after the first miss therefore comes about 0.5 s after it instead of 1 s, and dimming takes about one sampling interval plus about half a second. The Consequences above are kept as recorded.

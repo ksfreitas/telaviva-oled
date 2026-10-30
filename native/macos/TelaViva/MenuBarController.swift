@@ -22,6 +22,12 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     let camera = PresenceCamera()
     private let keepAwakeBackend = MacKeepAwakeBackend()
     private lazy var keepAwakeController = KeepAwakeController(backend: keepAwakeBackend)
+    /// Runs the core's lock requests once per token and reports each outcome back to the core.
+    private lazy var lockCoordinator = LockCoordinator(
+        locker: SessionLocker(isLocked: { [weak self] in self?.keepAwakeController.sessionLockedForLock() }),
+        submit: { [weak core = self.core] token, ok, error in core?.submitLockResult(token: token, ok: ok, error: error) },
+        log: { DiagnosticLog.session($0) }
+    )
     /// Keeps the camera off the built-in camera while the lid is closed.
     private lazy var lidMonitor = LidStateMonitor { [weak self] closed in
         guard let self else { return }
@@ -113,6 +119,8 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
     private var sessionResignObserver: NSObjectProtocol?
     private var sessionBecomeObserver: NSObjectProtocol?
     private var lastKeepAwakeDiagnostic: String?
+    /// Whether keep-awake or the lock option was on at the last snapshot; a rising edge reports the session state.
+    private var sessionReportWanted = false
     private var lockedObserver: NSObjectProtocol?
     private var unlockedObserver: NSObjectProtocol?
     private var saverStartObserver: NSObjectProtocol?
@@ -190,10 +198,16 @@ final class MenuBarController: NSObject, NSApplicationDelegate {
             self.keepAwakeController.update(enabled: keepAwake.enabled, requested: keepAwake.requested,
                                             generation: keepAwake.generation, observationID: keepAwake.observationID,
                                             validForMilliseconds: snapshot.keepAwakeRemainingMilliseconds())
+            // When either option turns on, report the current session state at once. The core records it in both cases.
+            let sessionWanted = CoreBridge.shouldReportSession(keepAwake: snapshot.settings?.keep_awake_with_presence ?? false,
+                                                               lockOnAbsence: snapshot.settings?.lock_on_absence ?? false)
+            if sessionWanted && !self.sessionReportWanted { self.reportKeepAwakeSession() }
+            self.sessionReportWanted = sessionWanted
             // Before the terminating guard, so snapshots keep reaching the core during shutdown restoration.
             self.controls.observe(snapshot)
             self.ddc.process(snapshot)
             guard !self.terminating else { return }
+            self.lockCoordinator.observe(requested: snapshot.lock?.requested ?? false, token: snapshot.lock?.token)
             self.calibration.monitorsChanged()
             self.protection.reconcile(snapshot.builtinProtection)
             self.hardwareKeyRouter.apply(enabled: snapshot.settings?.hardware_keys_enabled ?? false,

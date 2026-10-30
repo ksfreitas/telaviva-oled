@@ -48,6 +48,17 @@ License/notice files shipped in the downloaded crate archives were copied into `
 
 Packages without a top-level notice file in the registry archive: none.
 
+## Optional, not shipped (feature `bench` of telaviva-inference)
+
+These crates are compiled only with the `bench` feature, which builds the occlusion benchmark example. They are not part of telaviva_core.dll, telaviva_inference.dll or the app packages, and the table above is unaffected.
+
+| Package | Version | Declared license |
+|---|---|---|
+| image | 0.25 (JPEG decoder only, default features off) | MIT OR Apache-2.0 |
+| toml | 1 | MIT OR Apache-2.0 |
+
+Their transitive crates are listed after the first `cargo build --features bench` and are not shipped either.
+
 ## Windows native dependencies
 
 Records for the Windows build under `native/windows/`, `tools/inference/` and the `dist\TelaVivaOLED` output. Versions come from `native/windows/**/*.vcxproj`, `assets/model/manifest.toml`, and the NuGet package metadata in the local package cache. License texts shipped with the app are in `licenses/windows/` (index in its `README.md`).
@@ -62,6 +73,7 @@ Records for the Windows build under `native/windows/`, `tools/inference/` and th
 | DirectML.dll | Not pinned by this repo | Microsoft Software License Terms of the package that carries the file (see the next row) | Carried by Microsoft.Windows.AI.MachineLearning 2.1.74 (NuGet cache, `runtimes\win-x64\native`) | Not redistributed. `packaging/windows/build-app.ps1` removes it from the package root before zipping (`$unusedComponents`), so the in-box System32 copy is used. |
 | Microsoft.Windows.AI.MachineLearning | 2.1.74 | Microsoft Software License Terms (package `license.txt`) | NuGet `Microsoft.Windows.AI.MachineLearning` 2.1.74 (via Microsoft.WindowsAppSDK.ML 2.1.94) | Binplaced files that match `$unusedComponents` in `build-app.ps1` are removed before zipping (including `DirectML.dll`); the remaining files are redistributed. |
 | YuNet face detection model | 2023mar | MIT (see `licenses/inference/YUNET-LICENSE` and `assets/model/manifest.toml`) | https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet | Redistributed: copied to `dist\TelaVivaOLED\models`. |
+| RetinaFace MobileNet0.25 face detection model | MobileNet0.25 ONNX | MIT (see `licenses/inference/RETINAFACE-LICENSE` and `assets/model/manifest.toml`); training data WIDER FACE is CC BY-NC-ND per its site, legal check left to the owner | https://media.axelera.ai/artifacts/model_cards/weights/others/object_detection/Retinaface_mb0.25_pytorch.onnx (weights from https://github.com/biubug6/Pytorch_Retinaface) | macOS app package; Windows still ships YuNet until the Windows port. Redistributed: copied to `Contents/Resources/models` in the macOS app bundle. |
 | Windows SDK Build Tools (Microsoft.Windows.SDK.BuildTools) | 10.0.26100.4654 | Microsoft (license at https://aka.ms/WinSDKLicenseURL, per the nuspec) | https://aka.ms/WinSDKProjectURL (project URL in the nuspec) | Build-time tooling. Not expected in the app output; not checked file by file. |
 | Microsoft Visual C++ runtime and STL | MSVC toolset v143 (Visual Studio 2022) | Microsoft Visual Studio terms (not a redistributable pin) | `native/windows/HybridCRT.props` | Hybrid CRT: the C++ runtime and STL are linked statically (`/MT` Release, `/MTd` Debug). The UCRT is linked dynamically through its import library. Nothing from the Visual C++ redistributable is copied by `packaging/windows/build-app.ps1`. |
 
