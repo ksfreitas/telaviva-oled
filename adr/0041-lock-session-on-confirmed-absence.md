@@ -1,8 +1,8 @@
 # ADR 0041: Lock session on confirmed absence
 
-- Status: Accepted for macOS; Windows implementation and hardware acceptance on both platforms pending
+- Status: Accepted; implemented on macOS and Windows; hardware acceptance on both platforms pending
 - Date: 2026-10-29
-- Feature: [Occlusion-robust face detection, 1% presence-check floor and lock screen on absence](../specs/masked-face-detection-and-lock-on-absence/spec.md)
+- Feature: [Occlusion-robust face detection, 1% presence-check floor and lock screen on absence](../specs/archived/masked-face-detection-and-lock-on-absence/spec.md)
 
 ## Context
 
@@ -20,9 +20,11 @@ While the session is locked and inactive, the camera is suspended, and it resume
 
 On macOS, the lock uses the private `SACLockScreenImmediate` symbol from login.framework, loaded with dlopen and dlsym in one isolated file that follows the pattern of ADR 0007. It fails closed. Confirmation uses the session lock state and the `com.apple.screenIsLocked` notification within 3 seconds. There is no osascript, pmset or keystroke fallback.
 
-On Windows, the lock calls `LockWorkStation` behind an interface in the Platform library. It is confirmed by the `WTS_SESSION_LOCK` session event within 3 seconds.
+On Windows, the lock calls `LockWorkStation` behind the `ISessionLocker` interface in the Platform library. A `LockCoordinator` handles each token once. It confirms the lock on the `WTS_SESSION_LOCK` session event within 3 seconds. If `LockWorkStation` returns failure, the result is `ok: false` with `error: unavailable`. If no `WTS_SESSION_LOCK` event arrives within the window, the result is `ok: false` with `error: not_confirmed`. The shell writes `session_lock lock confirmed`, `session_lock lock failed: unavailable` or `session_lock lock failed: not confirmed` notices to the app log.
 
-Both shells report the session lock state whenever keep-awake or the lock option is on.
+On Windows the shell calls the coordinator on a lock event before it reports the inactive session to the core. The core drops a requested lock back to Idle if the inactive report arrives first.
+
+Both shells report the session lock state whenever keep-awake or the lock option is on. The Windows shell reports it on every session lock, unlock, screensaver and display change regardless of the settings, and runs its screensaver monitor for the lock option too.
 
 The feature changes no global OS preference, requires no elevation and adds no network use. The application never unlocks the session and never wakes the system.
 
@@ -38,6 +40,6 @@ The feature changes no global OS preference, requires no elevation and adds no n
 
 The macOS lock depends on a private symbol that may disappear in any macOS release. If it does, no lock is performed, a diagnostic line is written, the display stays dimmed, and the limitation is documented. A false absence can lock a user who is still present. The risk is limited by the opt-in default, by two misses plus the delay, by the light gate, and by the detection work of the same feature.
 
-Older binaries reject the new settings fields and reset the settings file, as described in the amendments to ADR 0003. macOS lock-state signals were reported unreliable on macOS 26, so the application reports only confirmed locks. Hardware acceptance on both platforms is still required and is not claimed by this ADR.
+Older binaries reject the new settings fields and reset the settings file, as described in the amendments to ADR 0003. macOS lock-state signals were reported unreliable on macOS 26, so the application reports only confirmed locks. Hardware acceptance on both platforms, including a real Windows lock screen, is still required and is not claimed by this ADR. The Windows lock is verified by automated tests only.
 
-Implementation details and validation evidence remain in [architecture.md](../specs/masked-face-detection-and-lock-on-absence/architecture.md), [contracts.md](../specs/masked-face-detection-and-lock-on-absence/contracts.md) and the validation records of that feature.
+Implementation details and validation evidence remain in [architecture.md](../specs/archived/masked-face-detection-and-lock-on-absence/architecture.md), [contracts.md](../specs/archived/masked-face-detection-and-lock-on-absence/contracts.md) and the validation records of that feature.

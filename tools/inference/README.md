@@ -1,6 +1,6 @@
 # Local face detection inference
 
-The inference crate runs a pinned face detection ONNX model through the bundled ONNX Runtime library. The macOS app packages the RetinaFace MobileNet0.25 model (`assets/model/face_detection_retinaface_mb025.onnx`); Windows still packages the pinned OpenCV Zoo YuNet model until the Windows port (on Windows the DirectML build of the runtime, which also runs the CPU provider). Both models have a fixed 640×640 input. Frames remain in memory for one call; the detector returns only presence, confidence, or an insufficient-light status.
+The inference crate runs a pinned face detection ONNX model through the bundled ONNX Runtime library. The macOS and Windows apps package the RetinaFace MobileNet0.25 model (`assets/model/face_detection_retinaface_mb025.onnx`). The pinned OpenCV Zoo YuNet model is not packaged on either platform; it remains only as the benchmark baseline (on Windows the DirectML build of the runtime, which also runs the CPU provider). Both models have a fixed 640×640 input. Frames remain in memory for one call; the detector returns only presence, confidence, or an insufficient-light status.
 
 `runtime/macos-arm64/libonnxruntime.dylib` is the arm64 macOS runtime used by tests and packaged builds. Recreate it from Microsoft's pinned official release with `./tools/inference/fetch-macos-runtime.sh`. The script downloads only when explicitly run and verifies both archive and library checksums. No runtime download occurs in the application.
 

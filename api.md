@@ -464,7 +464,7 @@ Native drivers mirror the remaining lease with independent monotonic expiry and 
 
 ## lock-on-absence — 2026-10-29
 
-The opt-in lock after confirmed absence adds two settings, a snapshot `lock` block and one command. The core decides when a lock is due; the shell performs the lock, confirms it and reports the result. The rule and its reasons are in [ADR 0041](adr/0041-lock-session-on-confirmed-absence.md) and the [feature contracts](specs/masked-face-detection-and-lock-on-absence/contracts.md). The macOS implementation is in the working tree. The Windows implementation is pending, and no hardware acceptance is claimed on either platform.
+The opt-in lock after confirmed absence adds two settings, a snapshot `lock` block and one command. The core decides when a lock is due; the shell performs the lock, confirms it and reports the result. The rule and its reasons are in [ADR 0041](adr/0041-lock-session-on-confirmed-absence.md) and the [feature contracts](specs/archived/masked-face-detection-and-lock-on-absence/contracts.md). The macOS and Windows implementations are in the working tree, and each is covered by automated tests. No hardware acceptance is claimed on either platform, including a real Windows lock screen.
 
 ### Settings `lock_on_absence` and `lock_delay_s`
 
@@ -523,7 +523,7 @@ Unknown fields are rejected, as in the other commands.
 
 ### Session state reporting
 
-When `lock_on_absence` or `keep_awake_with_presence` is on, each shell reports `{"type":"keep_awake_session","active":<bool>}` on every session lock, unlock, fast user switch and screensaver change. `active` is `false` while the session is locked. The core relies on this report to suspend the camera while locked and to resume after unlock.
+When `lock_on_absence` or `keep_awake_with_presence` is on, each shell reports `{"type":"keep_awake_session","active":<bool>}` on every session lock, unlock, fast user switch and screensaver change. `active` is `false` while the session is locked. The core relies on this report to suspend the camera while locked and to resume after unlock. The Windows shell reports it on every session lock and unlock, screensaver change and display change, regardless of these settings, and its screensaver monitor also runs when only `lock_on_absence` is on.
 
 ### Compatibility
 

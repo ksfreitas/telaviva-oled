@@ -6,14 +6,14 @@
 
 ### Added
 
-- Lock the session after confirmed absence, an opt-in option in Settings that is off by default. When the screen has been dimmed for an absent user, the session is locked after a delay of 1 to 60 seconds (5 by default), if a confirming check still finds no face and the light is sufficient. The lock is requested once and is reported only when the system confirms it; a failed lock keeps the screen dimmed and is logged. The camera pauses while the session is locked and resumes after unlock. It is implemented on macOS only so far, Windows is pending, and it uses a private macOS interface that a future macOS release may remove. Hardware checks are pending.
+- Lock the session after confirmed absence, an opt-in option in Settings that is off by default. When the screen has been dimmed for an absent user, the session is locked after a delay of 1 to 60 seconds (5 by default), if a confirming check still finds no face and the light is sufficient. The lock is requested once and is reported only when the system confirms it; a failed lock keeps the screen dimmed and is logged. The camera pauses while the session is locked and resumes after unlock. It is implemented on macOS, where it uses a private macOS interface that a future macOS release may remove, and on Windows, where it uses the public LockWorkStation function, confirmed by the session lock event. Windows policies can restrict it. Hardware checks on a real lock screen are still pending.
 - A developer-only benchmark harness for face detection models, off by default and built only with the `bench` cargo feature of `telaviva-inference` (`examples/occlusion_bench.rs`). It is not part of the shipped libraries or the app.
 
 ### Changed
 
-- macOS uses the RetinaFace MobileNet0.25 face detection model (see ADR 0042), which finds faces behind masks and with a hand over the mouth or nose; Windows still uses YuNet until its port. Hardware checks are pending.
-- The presence brightness threshold, global and per display, can be set from 1 percent (it was 0 percent). A stored 0 is raised to 1 when the settings load, and the other settings are kept. Hardware checks are pending.
-- The return check interval defaults to 0.5 second (it was 1 second). The confirming check before a dim uses the same interval, so the wait before a display is dimmed is shorter too. A saved value is kept. Hardware checks are pending.
+- macOS and Windows use the RetinaFace MobileNet0.25 face detection model (see ADR 0042), which finds faces behind masks and with a hand over the mouth or nose. YuNet remains only as the benchmark baseline in the Rust crate. Hardware checks are pending.
+- The presence brightness threshold, global and per display, can be set from 1 percent on macOS and Windows (it was 0 percent). A stored 0 is raised to 1 when the settings load, and the other settings are kept. Hardware checks are pending.
+- The return check interval defaults to 0.5 second on macOS and Windows (it was 1 second). The confirming check before a dim uses the same interval, so the wait before a display is dimmed is shorter too. A saved value is kept. Hardware checks are pending.
 - Upgrade note: a build older than this one resets its settings when it reads a `settings.json` that contains `lock_on_absence` or `lock_delay_s`, as it already does for earlier additive settings. It renames the file to `settings.json.corrupt` and starts from defaults.
 
 ## 0.1.4 - 2026-10-27

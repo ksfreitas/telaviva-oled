@@ -14,7 +14,7 @@ Implementation is in progress. The repository contains a Cargo workspace, shared
 - `adr/`: permanent architecture decision records.
 - `specs/archived/`: the archived record of each completed feature (specification, design, plan and validation reports). Use `ARCHITECTURE.md`, `api.md` and `adr/` for the current design; the initial application's records are in `specs/archived/external-monitor-control-and-oled-presence-protection/`.
 - `crates/telaviva-core/`: shared policy, settings and native-shell C ABI; the camera lifecycle and controls handles (`src/controls/`: manual-control queue, key policy and DDC dispatch driven by the shells through `tv_controls_*`).
-- `crates/telaviva-inference/`: image quality assessment and local YuNet/ONNX detection.
+- `crates/telaviva-inference/`: image quality assessment and local RetinaFace/ONNX detection, with YuNet kept as the benchmark baseline.
 - `native/macos/`: native SwiftUI/AppKit shell and macOS device adapters.
 - `native/windows/`: native WinUI 3 / C++/WinRT shell (`TelaViva/`), the UI-free `Platform/` static library, and `Tests/`.
 - `packaging/macos/`: local application build and packaging instructions.
@@ -29,7 +29,7 @@ Implementation is in progress. The repository contains a Cargo workspace, shared
 - Presence means detecting any face, without identifying a specific person or requiring face enrollment.
 - Keep intended behavior distinct from implemented and hardware-verified capabilities.
 - Determine monitor capabilities, platform limitations, and failure behavior during design; do not assume uniform DDC support.
-- Follow the selected design in `ARCHITECTURE.md`, `api.md` and the ADRs in `adr/` (especially `adr/0001-native-shell-and-rust-core.md`): native SwiftUI/AppKit and WinUI 3 shells, one shared Rust core with a versioned C ABI, local face detection through ONNX Runtime (since 2026-10-29 macOS uses RetinaFace MobileNet0.25, see ADR 0042; Windows still uses YuNet until its port), and a selectable inference device with validated acceleration and CPU fallback.
+- Follow the selected design in `ARCHITECTURE.md`, `api.md` and the ADRs in `adr/` (especially `adr/0001-native-shell-and-rust-core.md`): native SwiftUI/AppKit and WinUI 3 shells, one shared Rust core with a versioned C ABI, local face detection through ONNX Runtime (RetinaFace MobileNet0.25 on macOS and Windows, see ADR 0042; YuNet is kept only as the benchmark baseline in the Rust crate), and a selectable inference device with validated acceleration and CPU fallback.
 - Use only open-source redistributed dependencies and assets. Initial macOS support targets Apple Silicon; Intel is deferred and DDC compatibility remains connection-specific, including on M1.
 - Follow the process conventions in ARCHITECTURE.md. Documentation and commit language default to en-US.
 - Everything implemented from now on applies to both platforms (macOS and Windows) in the same change, with equivalent behavior, localized strings (en-US and pt-BR) and tests on each, unless the owner explicitly scopes a task to one platform. The MacBook features are called Laptop (en-US) and Notebook (pt-BR) on Windows UI only.

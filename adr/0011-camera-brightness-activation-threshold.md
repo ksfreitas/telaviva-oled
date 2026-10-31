@@ -13,7 +13,7 @@ The request was to keep presence checking off unless a compatible monitor is act
 
 ## Decision
 
-> Note (2026-10-29): the 10 to 90 range below was already superseded by the 0 to 90 range of [ADR 0035](0035-laptop-display-protection-and-auto-brightness.md), and is now 1 to 90. A stored 0 is raised to 1 on load. The text below is kept as recorded on 2026-10-17.
+> Note (2026-10-29): the 10 to 90 range below was already superseded by the 0 to 90 range of [ADR 0035](0035-laptop-display-protection-and-auto-brightness.md), and is now 1 to 90. A stored 0 is raised to 1 on load. Recorded in [ADR 0044](0044-presence-brightness-threshold-floor-of-one-percent.md). The text below is kept as recorded on 2026-10-17.
 
 A new core setting, `presence_min_brightness_percent`, gates the camera. It is additive to settings schema 1, defaults to 20, and is limited to 10 to 90 in both the core validation and the Settings slider (the range was chosen by the user before implementation). A missing key loads as 20. There is no ABI change.
 

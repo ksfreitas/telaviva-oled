@@ -43,7 +43,7 @@ Settings has General, Keyboard, Automatic brightness, Advanced and About pages o
 - **Battery behavior:** presence checking pauses on battery by default.
 - **Keep awake while present** (General page, macOS and Windows): off by default. Keeps monitoring active, including on battery and below brightness thresholds, independently of brightness protection. See [Keep awake while present](#keep-awake-while-present).
 - **Check presence only above brightness:** the presence brightness threshold. It is a slider from 1 to 90%, 20% by default. Each display keeps its own value. When you upgrade, a stored 0% is raised to 1%, and your other settings are kept. See [Laptop screen protection](#laptop-screen-protection).
-- **Lock the screen after confirmed absence** (macOS; Windows pending): off by default, and it needs presence protection on. After the display has been dimmed for absence, the app waits the **Wait before locking** time (1 to 60 seconds, 5 by default), checks again, and locks the session only if it still sees nobody and the camera image has enough light. It never unlocks the session or wakes the computer. See [Lock the screen after confirmed absence](#lock-the-screen-after-confirmed-absence).
+- **Lock the screen after confirmed absence** (macOS and Windows): off by default, and it needs presence protection on. After the display has been dimmed for absence, the app waits the **Wait before locking** time (1 to 60 seconds, 5 by default), checks again, and locks the session only if it still sees nobody and the camera image has enough light. It never unlocks the session or wakes the computer. See [Lock the screen after confirmed absence](#lock-the-screen-after-confirmed-absence).
 - **Launch at login:** off by default.
 - **Hardware-key steps:** see [Keyboard and hardware keys](#keyboard-and-hardware-keys).
 - **Inference device** (Advanced page): where face detection runs. See [Inference device](#inference-device).
@@ -65,7 +65,7 @@ On Windows, the same toggle is in **Settings > General** and no permission promp
 
 ## Presence protection
 
-Presence protection is off until you enable it, and enabling it requests camera access. It detects any face locally. It does not identify people, enroll faces, save webcam images or send frames to a service. On macOS, a face behind a mask, or with a hand or tissue over the mouth and nose, is also recognised. A hand-sized round or hairy object can rarely be mistaken for a face, which only leaves the screen lit. Windows still uses the earlier detection model until its port. Hardware checks are pending.
+Presence protection is off until you enable it, and enabling it requests camera access. It detects any face locally. It does not identify people, enroll faces, save webcam images or send frames to a service. On macOS and Windows, a face behind a mask, or with a hand or tissue over the mouth and nose, is also recognised. macOS and Windows use the same RetinaFace MobileNet0.25 model (see ADR 0042), and YuNet remains only as the benchmark baseline in the Rust crate. A hand-sized round or hairy object can rarely be mistaken for a face, which only leaves the screen lit. Hardware checks are pending.
 
 ### How it works
 
@@ -109,13 +109,15 @@ Insufficient light suspends face detection instead of counting as absence. Recov
 
 ## Lock the screen after confirmed absence
 
-This option is macOS only for now; the Windows version is pending. It is off by default and needs [presence protection](#presence-protection) on. Turn it on in Settings, and set **Wait before locking** (1 to 60 seconds, 5 seconds by default).
+This option is available on macOS and Windows. Its hardware checks on a real lock screen are still pending. It is off by default and needs [presence protection](#presence-protection) on. Turn it on in Settings, and set **Wait before locking** (1 to 60 seconds, 5 seconds by default).
+
+On Windows, the setting is in **Settings > General**, after the presence brightness threshold. It is disabled while presence protection is off, and its **Wait before locking** box is also disabled while the toggle is off. The lock relies on the public Windows lock function, LockWorkStation, which is not a private interface, and Windows policies or Dynamic Lock settings can restrict or change how it behaves. The app asks once per request and reports the lock as done only when Windows signals that the session locked within 3 seconds. Otherwise the display stays dimmed and a line is written to the [diagnostic log](#diagnostic-logs).
 
 - After the display has been dimmed for absence (two no-face checks, as today), the app waits the **Wait before locking** time, checks the camera again, and locks the session only if it still sees nobody and the camera image has enough light.
-- The app locks the session through a macOS system function. It never unlocks the session, never wakes the computer and does not change any macOS setting.
+- On macOS, the app locks the session through a macOS system function. On Windows, it uses the LockWorkStation function, confirmed by the session lock event. The app never unlocks the session and never wakes the computer.
 - If the light is too low at any point, the app does not lock. The display stays dimmed or returns to normal, as it does today. In a dark room, dimming the monitor can itself make the camera image too dark, so the lock may never happen there. This is intended.
 - While the session is locked, the camera is paused. It resumes about a second after you unlock, and the first face restores the brightness.
-- The lock relies on a macOS system function that Apple may change in a future release. If it stops working, the app does not lock and keeps the display dimmed, and the [diagnostic log](#diagnostic-logs) records it.
+- The macOS lock relies on a macOS system function that Apple may change in a future release. If it stops working, the app does not lock and keeps the display dimmed, and the [diagnostic log](#diagnostic-logs) records it.
 - A face the camera cannot see counts as absence, for example when you look away. If you sit partly out of frame, you may prefer to keep this option off.
 
 ## Screensaver protection

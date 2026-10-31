@@ -3,7 +3,7 @@
 //!
 //! The test runs only when the bundled macOS ONNX Runtime is present and otherwise
 //! prints a message and returns. The recorded results it guards are in
-//! `specs/masked-face-detection-and-lock-on-absence/validation/benchmark-retinaface.md`.
+//! `specs/archived/masked-face-detection-and-lock-on-absence/validation/benchmark-retinaface.md`.
 
 use std::{ffi::CString, path::PathBuf};
 use telaviva_inference::{

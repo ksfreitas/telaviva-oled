@@ -62,22 +62,28 @@ Every row starts empty. Fill the result column with Pass, Fail or Partial, the d
 
 ## E. Windows port (pending, owner's Windows PC)
 
-These items wait for the Windows port. None of them is run yet.
+The lock items in this section are not run yet. Row E13 is an automated model check, run on 2026-10-30 (see `validation/windows-model-check.md`); it is not a lock-screen check.
 
 | # | What to do | Expected result | Result / date / who |
 |---|------------|-----------------|---------------------|
 | E1 | Threshold floor: slider minimum, settings with 0, monitor at 1 % and 2 % (as B1 to B4). | Same as B1 to B4. | |
 | E2 | Return interval default and kept value (as C1 and C2). | Same as C1 and C2. | |
-| E3 | Lock option off by default; requires presence protection on (as D1 and D2). | Same as D1 and D2. | |
-| E4 | Good light, walk away; lock wait 5 s and 15 s using LockWorkStation. | Session locks after each wait. | |
-| E5 | Return before the wait ends; dark room (as D5 and D6). | Session never locks in either case. | |
-| E6 | Lock confirmation: observe the WTS session lock event. | The app reports the lock only after the WTS lock event arrives. | |
-| E7 | Dynamic Lock on and off, and a screen saver lock policy set. | Record the behaviour. No error from the app's lock and the OS lock. | |
-| E8 | Sleep and resume (Modern Standby) with lock on absence on. | No lock is issued from an absence observation made before sleep. | |
+| E3 | Lock option off by default; requires presence protection on (as D1 and D2). | Same as D1 and D2. | Not run |
+| E4 | Good light, walk away; lock wait 5 s and 15 s using LockWorkStation. | Session locks after each wait. | Not run |
+| E5 | Return before the wait ends; dark room (as D5 and D6). | Session never locks in either case. | Not run |
+| E6 | Lock confirmation: observe the WTS session lock event. | The app reports the lock only after the WTS lock event arrives. | Not run |
+| E7 | Dynamic Lock on and off, and a screen saver lock policy set. | Record the behaviour. No error from the app's lock and the OS lock. | Not run |
+| E8 | Sleep and resume (Modern Standby) with lock on absence on. | No lock is issued from an absence observation made before sleep. | Not run |
 | E9 | Packaging: check the installed package contains the model file the app loads. YuNet is still packaged until the port. | Package contents match the model the app loads. | |
 | E10 | DirectML device self-test on the Radeon iGPU and the RTX 4080 SUPER, and CPU. | Self-test passes on each device. | |
 | E11 | Latency and memory of the new model on CPU and DirectML, compared with YuNet. | Values recorded for both models under the same conditions. | |
 | E12 | Repeat A1 to A10 on the Windows RGB camera. | Recorded per row; same expectations as section A. | |
+| E13 | Windows model check (CPU latency, DirectML). | Automated, not a lock-screen check. | done 2026-10-30, see windows-model-check.md |
+| E14 | Keep-awake with presence together with lock on absence (as D13), on Windows. Keep a face in view, then walk away. | The two options do not conflict: no lock while a face is detected; after absence, the lock happens after the wait. | Not run |
+| E15 | Unlock normally, then sit in front of the camera (as D8). | Camera resumes within about 1 s of unlock. | Not run |
+| E16 | Lock with insufficient light: cover the camera lens, then walk away (as D16 and A14). | Session does not lock. Status shows insufficient light or unknown. | Not run |
+| E17 | Return before the wait ends with the default lock wait, then with a changed lock wait. | Session never locks in either case. | Not run |
+| E18 | Failed lock path: make the lock request fail, then observe the status. | The app reports the lock as failed and does not report the session as locked. | Not run |
 
 ### Windows files still to change
 

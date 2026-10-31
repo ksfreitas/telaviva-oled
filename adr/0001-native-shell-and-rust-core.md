@@ -13,7 +13,7 @@ Use one Cargo workspace with a shared Rust policy/settings core and a separate l
 
 Native adapters own operating-system devices, notifications, and serial DDC execution. Rust owns protection reasons, sampling policy, action generations, saved brightness, and restoration ownership. Brightness restoration requires a fresh read matching the app's last owned value. Manual or external changes must be preserved.
 
-Use the open-source YuNet model and ONNX Runtime with CPU as the default. Since 2026-10-29 macOS uses RetinaFace MobileNet0.25, see ADR 0042; Windows still uses YuNet until its port. CoreML is an explicit candidate with CPU fallback; enable acceleration in production only after the specified energy and correctness measurements. Redistributed dependencies and model assets require retained open-source licenses and provenance. Apple system frameworks remain platform facilities.
+Use the open-source YuNet model and ONNX Runtime with CPU as the default. Since 2026-10-29 macOS and since 2026-10-30 Windows use RetinaFace MobileNet0.25, see ADR 0042; YuNet remains only as the benchmark baseline. CoreML is an explicit candidate with CPU fallback; enable acceleration in production only after the specified energy and correctness measurements. Redistributed dependencies and model assets require retained open-source licenses and provenance. Apple system frameworks remain platform facilities.
 
 Initial implementation targets Apple Silicon macOS. Windows implementation and verification are deferred by the user. Compatibility, including M1, is evaluated per display and connection.
 

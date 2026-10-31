@@ -22,7 +22,7 @@
 - **Presence protection (optional).** Local face detection dims a monitor when you step away and restores it when you come back. It detects any face: it never identifies anyone and needs no enrollment. Poor lighting pauses detection instead of being mistaken for absence.
 - **Screensaver protection (optional).** Dim each monitor to a brightness you choose while the screensaver runs.
 - **Keep awake while present (optional).** Keep presence monitoring active independently of brightness protection and request that automatic screensaver, locking and sleep wait while a face is detected. On macOS this uses system activity requests; on Windows it holds a system and display request and sends one zero-displacement mouse move per second. The first no-face result or unavailable detection releases those requests. Manual lock and sleep take precedence; [OS acceptance is tracked separately](specs/archived/keep-awake-with-presence/validation.md).
-- **Lock after confirmed absence (optional; macOS, Windows pending).** After the display has been dimmed for absence, the session locks if nobody is detected again after a short wait and the camera image has enough light. It never unlocks the session or wakes the computer. See the [user guide](docs/user-guide.md#lock-the-screen-after-confirmed-absence).
+- **Lock after confirmed absence (optional; macOS and Windows; lock-screen hardware checks pending).** After the display has been dimmed for absence, the session locks if nobody is detected again after a short wait and the camera image has enough light. It never unlocks the session or wakes the computer. See the [user guide](docs/user-guide.md#lock-the-screen-after-confirmed-absence).
 - **Battery aware.** Brightness protection pauses on battery by default. With Keep awake while present enabled, on macOS or Windows, the camera's battery and brightness gates are overridden while it is enabled.
 - **Follow your laptop (optional).** On a MacBook or a Windows laptop, external monitors can follow the built-in panel's brightness, including its automatic brightness, through calibration points you manage.
 - **Protect the laptop screen.** The built-in screen of a MacBook or a Windows laptop dims like an external monitor when you step away or the screensaver starts, and is restored afterwards. An optional setting turns off the system's automatic brightness while the screen is protected. A **Monitored display** choice (Automatic by default, remembered by priority like the camera) decides when the camera runs, and the built-in camera is ignored while the lid is closed.
@@ -144,7 +144,7 @@ After fetching the runtime, run `cargo test --workspace --all-targets --locked` 
 ## Repository layout
 
 - `crates/telaviva-core/`: shared settings, protection policy and the C ABI.
-- `crates/telaviva-inference/`: image-quality assessment and local YuNet inference.
+- `crates/telaviva-inference/`: image-quality assessment and local RetinaFace inference, with YuNet kept as the benchmark baseline.
 - `native/macos/`: SwiftUI/AppKit shell and macOS device adapters.
 - `native/windows/`: WinUI 3 shell, the Windows platform layer and tests.
 - `include/`: C headers used by the native shells.
