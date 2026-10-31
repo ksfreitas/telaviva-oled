@@ -27,7 +27,7 @@ use telaviva_inference::{
 const DIRECTML_RUNTIME_ENV: &str = "TV_TEST_DIRECTML_RUNTIME";
 const CPU_BASELINE_ENV: &str = "TV_TEST_CPU_BASELINE";
 const CPU_RUNTIME: &str = "tools/inference/runtime/windows-x64/onnxruntime.dll";
-const MODEL: &str = "assets/model/face_detection_yunet_2023mar.onnx";
+const MODEL: &str = "assets/model/face_detection_retinaface_mb025.onnx";
 const FIXTURE: &str = "crates/telaviva-inference/tests/fixtures/cc0-face.ppm";
 const PPM_HEADER: &[u8] = b"P6\n320 320\n255\n";
 const WARMUP_RUNS: usize = 3;

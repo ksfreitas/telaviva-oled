@@ -2,7 +2,7 @@
 #
 # What this job covers:
 # - cargo fmt --check, clippy (workspace, and telaviva-inference with the directml feature), workspace tests
-# - fetch and SHA-256 verification of the pinned DirectML ONNX Runtime, which the package ships, then the Rust YuNet smoke test
+# - fetch and SHA-256 verification of the pinned DirectML ONNX Runtime, which the package ships, then the Rust model smoke test
 # - Rust DLL build, export check against the C headers, MSBuild of the native solution
 # - tests.exe, the packaged TelaViva.exe --smoke-test, the release zip and its SHA-256
 # - extraction of the zip, install into a temporary directory without a Start menu entry,
@@ -157,6 +157,12 @@ jobs:
           cargo test --workspace --all-targets --locked
           if ($LASTEXITCODE -ne 0) { throw "cargo test failed with exit code $LASTEXITCODE" }
 
+      - name: Test benchmark helpers
+        shell: pwsh
+        run: |
+          cargo test -p telaviva-inference --features bench --lib --locked
+          if ($LASTEXITCODE -ne 0) { throw "cargo test (telaviva-inference, bench helpers) failed with exit code $LASTEXITCODE" }
+
       # Downloads the pinned DirectML runtime, the one the package ships, and checks the NuGet package and DLL SHA-256
       # against assets/model/manifest.toml. The script installs nothing on a mismatch and exits non-zero.
       - name: Fetch and verify the DirectML ONNX Runtime
@@ -169,11 +175,11 @@ jobs:
           if (-not (Test-Path -LiteralPath $dll -PathType Leaf)) { throw "ONNX Runtime was not installed at $dll" }
 
       # The smoke test skips silently when the runtime is absent, so the fetch step above must have passed first.
-      - name: Run Rust YuNet smoke test
+      - name: Run Rust model smoke test
         shell: pwsh
         run: |
           cargo test -p telaviva-inference --test ort_yunet_smoke_windows --locked -- --nocapture
-          if ($LASTEXITCODE -ne 0) { throw "ort_yunet_smoke_windows failed with exit code $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) { throw "Rust model smoke test (ort_yunet_smoke_windows) failed with exit code $LASTEXITCODE" }
 
       # Rust DLLs first: the native projects link their import libraries.
       - name: Build Rust DLLs
@@ -274,7 +280,7 @@ jobs:
               'telaviva_core.dll',
               'telaviva_inference.dll',
               'onnxruntime.dll',
-              (Join-Path 'models' 'face_detection_yunet_2023mar.onnx')
+              (Join-Path 'models' 'face_detection_retinaface_mb025.onnx')
           )
           foreach ($file in $expected) {
               $path = Join-Path $installDir $file

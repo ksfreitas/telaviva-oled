@@ -30,7 +30,7 @@ using telaviva::InferenceHost;
 namespace {
 
 const wchar_t* const kRuntimePath = L"C:\\TelaViva\\onnxruntime.dll";
-const wchar_t* const kModelPath = L"C:\\TelaViva\\face_detection_yunet_2023mar.onnx";
+const wchar_t* const kModelPath = L"C:\\TelaViva\\face_detection_retinaface_mb025.onnx";
 
 constexpr int kCpuProvider = 0;
 constexpr int kDirectMlProvider = 2;

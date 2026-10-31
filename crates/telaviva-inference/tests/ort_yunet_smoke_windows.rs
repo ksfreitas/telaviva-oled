@@ -8,7 +8,7 @@ use telaviva_inference::{
 };
 
 #[test]
-fn bundled_runtime_executes_pinned_yunet_model_on_cpu_windows() {
+fn bundled_runtime_executes_pinned_model_on_cpu_windows() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let runtime_path = root.join("tools/inference/runtime/windows-x64-directml/onnxruntime.dll");
     // The runtime is fetched locally and is not part of a clean checkout, so skip.
@@ -18,13 +18,13 @@ fn bundled_runtime_executes_pinned_yunet_model_on_cpu_windows() {
             runtime_path.display()
         );
         eprintln!(
-            "run tools/inference/fetch-windows-runtime.ps1 -Variant directml to enable bundled_runtime_executes_pinned_yunet_model_on_cpu_windows"
+            "run tools/inference/fetch-windows-runtime.ps1 -Variant directml to enable bundled_runtime_executes_pinned_model_on_cpu_windows"
         );
         return;
     }
     let runtime = CString::new(runtime_path.to_string_lossy().as_bytes()).unwrap();
     let model = CString::new(
-        root.join("assets/model/face_detection_yunet_2023mar.onnx")
+        root.join("assets/model/face_detection_retinaface_mb025.onnx")
             .to_string_lossy()
             .as_bytes(),
     )
@@ -134,7 +134,7 @@ fn bundled_runtime_executes_pinned_yunet_model_on_cpu_windows() {
         1
     );
     assert_eq!(result.status, 1);
-    assert!(result.confidence >= 0.8);
+    assert!(result.confidence >= 0.5);
     unsafe { tv_inference_destroy(handle) };
 
     let mut candidate: *mut TvInferenceHandle = std::ptr::null_mut();

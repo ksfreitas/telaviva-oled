@@ -203,6 +203,29 @@ TEST(strings_keep_awake_keys_exist_in_both_locales)
     CHECK_EQ(offenders, std::string());
 }
 
+TEST(strings_lock_on_absence_keys_exist_in_both_locales)
+{
+    static const char* const required[] = {
+        "lockOnAbsence.toggle",
+        "lockOnAbsence.delay",
+        "lockOnAbsence.help",
+    };
+    std::string offenders;
+    for (const char* locale : {"en-US", "pt-BR"}) {
+        const Entries entries = loadLocale(locale);
+        for (const char* key : required) {
+            const auto found = entries.find(key);
+            if (found == entries.end() || isBlank(found->second)) {
+                if (!offenders.empty()) {
+                    offenders += ", ";
+                }
+                offenders += std::string(locale) + ":" + key;
+            }
+        }
+    }
+    CHECK_EQ(offenders, std::string());
+}
+
 TEST(strings_values_not_blank)
 {
     std::string offenders;

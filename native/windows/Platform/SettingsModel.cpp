@@ -15,8 +15,6 @@ constexpr double kPresenceIntervalMin = 5.0;
 constexpr double kPresenceIntervalMax = 300.0;
 constexpr double kReturnIntervalMin = 0.25;
 constexpr double kReturnIntervalMax = 5.0;
-constexpr double kMinBrightnessMin = 0.0;
-constexpr double kMinBrightnessMax = 90.0;
 constexpr int kKeyStepMin = 1;
 constexpr int kKeyStepMax = 15;
 constexpr double kTargetMin = 0.0;
@@ -187,6 +185,8 @@ SettingsDraft draftFromSnapshotSettings(const SettingsSnapshot& settings)
     draft.alwaysOnCamera = settings.always_on_camera;
     draft.screensaverProtectionEnabled = settings.screensaver_protection_enabled;
     draft.keepAwakeWithPresence = settings.keep_awake_with_presence;
+    draft.lockOnAbsence = settings.lock_on_absence;
+    draft.lockDelayS = settings.lock_delay_s;
     draft.hardwareKeysEnabled = settings.hardware_keys_enabled;
     draft.brightnessKeyStep = settings.brightness_key_step;
     draft.volumeKeyStep = settings.volume_key_step;
@@ -207,9 +207,10 @@ SettingsDraft clampToCoreRanges(SettingsDraft draft)
     draft.presenceSamplingIntervalS =
         clampNumber(draft.presenceSamplingIntervalS, kPresenceIntervalMin, kPresenceIntervalMax, 10.0);
     draft.returnSamplingIntervalS =
-        clampNumber(draft.returnSamplingIntervalS, kReturnIntervalMin, kReturnIntervalMax, 1.0);
-    draft.presenceMinBrightnessPercent =
-        clampNumber(draft.presenceMinBrightnessPercent, kMinBrightnessMin, kMinBrightnessMax, 20.0);
+        clampNumber(draft.returnSamplingIntervalS, kReturnIntervalMin, kReturnIntervalMax, 0.5);
+    draft.presenceMinBrightnessPercent = clampNumber(
+        draft.presenceMinBrightnessPercent, kPresenceMinBrightnessMin, kPresenceMinBrightnessMax, 20.0);
+    draft.lockDelayS = clampNumber(draft.lockDelayS, kLockDelayMin, kLockDelayMax, kLockDelayDefault);
     draft.brightnessKeyStep = clampStep(draft.brightnessKeyStep);
     draft.volumeKeyStep = clampStep(draft.volumeKeyStep);
 
@@ -224,7 +225,7 @@ SettingsDraft clampToCoreRanges(SettingsDraft draft)
     std::map<std::string, double> presenceByDisplay;
     for (const auto& [id, value] : draft.presenceMinBrightnessByDisplay) {
         if (validId(id)) {
-            presenceByDisplay[id] = clampNumber(value, kMinBrightnessMin, kMinBrightnessMax, 20.0);
+            presenceByDisplay[id] = clampNumber(value, kPresenceMinBrightnessMin, kPresenceMinBrightnessMax, 20.0);
         }
     }
     draft.presenceMinBrightnessByDisplay = std::move(presenceByDisplay);
@@ -272,6 +273,8 @@ std::string buildSettingsPayload(const SettingsDraft& input)
     settings.add("always_on_camera", boolText(draft.alwaysOnCamera));
     settings.add("screensaver_protection_enabled", boolText(draft.screensaverProtectionEnabled));
     settings.add("keep_awake_with_presence", boolText(draft.keepAwakeWithPresence));
+    settings.add("lock_on_absence", boolText(draft.lockOnAbsence));
+    settings.add("lock_delay_s", numberText(draft.lockDelayS));
     settings.add("launch_at_login", boolText(draft.launchAtLogin));
     settings.add("hardware_keys_enabled", boolText(draft.hardwareKeysEnabled));
     settings.add("brightness_key_step", std::to_string(draft.brightnessKeyStep));

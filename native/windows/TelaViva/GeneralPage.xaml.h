@@ -90,6 +90,9 @@ namespace winrt::TelaViva::implementation
         winrt::Microsoft::UI::Xaml::Controls::ComboBox cameraBox_{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::ComboBox monitoredBox_{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::NumberBox thresholdBox_{ nullptr };
+        // Lock on confirmed absence: its switch, and the wait before the lock; both follow presence protection.
+        winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch lockSwitch_{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::NumberBox lockDelayBox_{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::StackPanel monitorsPanel_{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::StackPanel targetsPanel_{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::TextBlock cameraStatusText_{ nullptr };

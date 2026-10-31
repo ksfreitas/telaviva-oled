@@ -338,6 +338,7 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
 }
 
 /// Resident set size of this process in MB, read from `ps` (which reports KB).
+#[cfg(not(windows))]
 fn rss_mb() -> Result<f64, String> {
     let pid = std::process::id().to_string();
     let output = Command::new("ps")
@@ -350,6 +351,31 @@ fn rss_mb() -> Result<f64, String> {
         .parse()
         .map_err(|_| format!("could not read RSS from ps output `{}`", text.trim()))?;
     Ok(kb / 1024.0)
+}
+
+/// Working set of this process in MB. On Windows the working set is read through PowerShell,
+/// which reports bytes.
+#[cfg(windows)]
+fn rss_mb() -> Result<f64, String> {
+    let pid = std::process::id().to_string();
+    let command = format!("(Get-Process -Id {pid}).WorkingSet64");
+    let output = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            command.as_str(),
+        ])
+        .output()
+        .map_err(|err| format!("powershell failed: {err}"))?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let bytes: u64 = text.trim().parse().map_err(|_| {
+        format!(
+            "could not read working set from PowerShell output `{}`",
+            text.trim()
+        )
+    })?;
+    Ok(bytes as f64 / (1024.0 * 1024.0))
 }
 
 fn scores_of(rows: &[Row]) -> Vec<Score> {

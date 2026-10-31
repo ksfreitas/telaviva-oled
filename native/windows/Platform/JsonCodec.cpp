@@ -292,6 +292,16 @@ uint64_t unsignedOr(const Object& object, std::string_view key)
     return toUnsigned(numberOr(object, key, 0.0));
 }
 
+// Only a whole, non-negative JSON number inside the uint64 range is read; anything else is absent.
+std::optional<uint64_t> wholeUnsignedField(const Object& object, std::string_view key)
+{
+    const std::optional<double> value = numberField(object, key);
+    if (!value || !(*value >= 0.0) || *value >= 18446744073709551616.0 || std::trunc(*value) != *value) {
+        return std::nullopt;
+    }
+    return static_cast<uint64_t>(*value);
+}
+
 // Keys are kept as written; non-number values are skipped rather than failing the snapshot.
 std::map<std::string, double> numberMapField(const Object& object, std::string_view key)
 {
@@ -670,6 +680,16 @@ std::string buildKeepAwakeSession(bool active)
     return message.finish();
 }
 
+std::string buildLockResult(uint64_t token, bool ok, const std::string& error)
+{
+    ObjectWriter message;
+    message.addString("type", "lock_result").addUnsigned("token", token).addBool("ok", ok);
+    if (!error.empty()) {
+        message.addString("error", error);
+    }
+    return message.finish();
+}
+
 std::string buildPresenceObservation(const std::string& status, uint64_t capturedAtMs, uint64_t cameraGeneration,
                                      const std::optional<std::string>& cameraStatus)
 {
@@ -916,12 +936,14 @@ Snapshot parseSnapshot(const std::string& text)
         snapshot.settings.presence_sampling_interval_s = numberOr(*settings, "presence_sampling_interval_s", 0.0);
         snapshot.settings.volume_key_step = intOr(*settings, "volume_key_step", 0);
         snapshot.settings.selected_camera_id = stringField(*settings, "selected_camera_id");
-        snapshot.settings.return_sampling_interval_s = numberOr(*settings, "return_sampling_interval_s", 1.0);
+        snapshot.settings.return_sampling_interval_s = numberOr(*settings, "return_sampling_interval_s", 0.5);
         snapshot.settings.suspend_presence_on_battery = boolOr(*settings, "suspend_presence_on_battery", true);
         snapshot.settings.presence_min_brightness_percent = numberOr(*settings, "presence_min_brightness_percent", 20.0);
         snapshot.settings.always_on_camera = boolOr(*settings, "always_on_camera", true);
         snapshot.settings.screensaver_protection_enabled = boolOr(*settings, "screensaver_protection_enabled", false);
         snapshot.settings.keep_awake_with_presence = boolOr(*settings, "keep_awake_with_presence", false);
+        snapshot.settings.lock_on_absence = boolOr(*settings, "lock_on_absence", false);
+        snapshot.settings.lock_delay_s = numberOr(*settings, "lock_delay_s", 5.0);
         snapshot.settings.launch_at_login = boolOr(*settings, "launch_at_login", false);
         snapshot.settings.brightness_key_step = intOr(*settings, "brightness_key_step", 5);
         snapshot.settings.screensaver_targets = numberMapField(*settings, "screensaver_targets");
@@ -1001,6 +1023,13 @@ Snapshot parseSnapshot(const std::string& text)
         snapshot.keepAwake.generation = unsignedOr(*keepAwake, "generation");
         snapshot.keepAwake.validForMs = unsignedOr(*keepAwake, "valid_for_ms");
         snapshot.keepAwake.reason = stringOr(*keepAwake, "reason", "");
+    }
+
+    if (const auto lock = objectField(root, "lock")) {
+        snapshot.lock.enabled = boolOr(*lock, "enabled", false);
+        snapshot.lock.stage = stringOr(*lock, "stage", "idle");
+        snapshot.lock.requested = boolOr(*lock, "requested", false);
+        snapshot.lock.token = wholeUnsignedField(*lock, "token");
     }
 
     return snapshot;

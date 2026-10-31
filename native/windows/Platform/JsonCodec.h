@@ -48,12 +48,14 @@ struct SettingsSnapshot {
     int volume_key_step = 0;
     std::optional<std::string> selected_camera_id;
     // Fields the Settings UI edits. The defaults match the core for a snapshot that omits them.
-    double return_sampling_interval_s = 1.0;
+    double return_sampling_interval_s = 0.5;
     bool suspend_presence_on_battery = true;
     double presence_min_brightness_percent = 20.0;
     bool always_on_camera = true;
     bool screensaver_protection_enabled = false;
     bool keep_awake_with_presence = false;
+    bool lock_on_absence = false;
+    double lock_delay_s = 5.0;
     bool launch_at_login = false;
     int brightness_key_step = 5;
     std::map<std::string, double> screensaver_targets;
@@ -157,6 +159,15 @@ struct KeepAwakeSnapshot {
     std::string reason;
 };
 
+// The snapshot object lock. Defaults are the idle state for a snapshot that omits it.
+struct LockSnapshot {
+    bool enabled = false;
+    std::string stage = "idle";
+    bool requested = false;
+    // Set only when the core sent a whole, non-negative number; nullopt otherwise.
+    std::optional<uint64_t> token;
+};
+
 struct Snapshot {
     uint64_t revision = 0;
     std::string status;
@@ -170,6 +181,7 @@ struct Snapshot {
     PowerSnapshot power;
     ScreensaverSnapshot screensaver;
     KeepAwakeSnapshot keepAwake;
+    LockSnapshot lock;
     // Steady-clock seconds when parseSnapshot read this snapshot; keep-awake windows count down from it.
     double decodedAtSteadySeconds = 0.0;
 };
@@ -183,6 +195,8 @@ std::string buildMonitorDisplayState(const std::string& monitorId, uint64_t gene
 std::string buildPower(std::optional<bool> onBattery);
 std::string buildScreensaver(const std::string& state);
 std::string buildKeepAwakeSession(bool active);
+// error is omitted when empty.
+std::string buildLockResult(uint64_t token, bool ok, const std::string& error);
 std::string buildPresenceObservation(const std::string& status, uint64_t capturedAtMs, uint64_t cameraGeneration,
                                      const std::optional<std::string>& cameraStatus);
 std::string buildCameraStatus(const std::string& status, std::optional<uint64_t> generation);

@@ -49,8 +49,6 @@ constexpr double kPresenceIntervalMin = 5.0;
 constexpr double kPresenceIntervalMax = 300.0;
 constexpr double kReturnIntervalMin = 0.25;
 constexpr double kReturnIntervalMax = 5.0;
-constexpr double kMinBrightnessMin = 0.0;
-constexpr double kMinBrightnessMax = 90.0;
 
 // One second in 100 ns ticks, the unit of TimeSpan.
 constexpr std::int64_t kOneSecondTicks = 10'000'000;
@@ -243,6 +241,15 @@ double presenceThresholdFor(const telaviva::SettingsSnapshot& settings, const st
         }
     }
     return settings.presence_min_brightness_percent;
+}
+
+// The lock delay shown in its box: NaN falls back to the default, and the value is kept within the core's range.
+double lockDelayForBox(double stored)
+{
+    if (std::isnan(stored)) {
+        return telaviva::kLockDelayDefault;
+    }
+    return std::clamp(stored, telaviva::kLockDelayMin, telaviva::kLockDelayMax);
 }
 
 // The picker label: Automatic, the built-in screen's name, or the monitor's name as its monitor row shows it.
@@ -443,6 +450,13 @@ namespace winrt::TelaViva::implementation
             if (thresholdBox_) {
                 thresholdBox_.IsEnabled(enabled);
             }
+            // The lock option follows presence protection; its delay also needs the lock switch on.
+            if (lockSwitch_) {
+                lockSwitch_.IsEnabled(enabled);
+            }
+            if (lockDelayBox_) {
+                lockDelayBox_.IsEnabled(enabled && lockSwitch_.IsOn());
+            }
             edit([enabled](telaviva::SettingsDraft& draft) { draft.presenceProtectionEnabled = enabled; });
         });
         RowsPanel().Children().Append(telaviva::host::MakeSettingRow(presenceHeader, loc("presenceHelp"), presenceSwitch));
@@ -450,7 +464,8 @@ namespace winrt::TelaViva::implementation
         // Brightness at or below which the camera stays off. Editable only while presence protection is on.
         // It edits the monitored display's own value, or the global value when no display resolves.
         thresholdTarget_ = telaviva::thresholdTargetId(snapshot.monitoredDisplay);
-        thresholdBox_ = makeNumberBox(kMinBrightnessMin, kMinBrightnessMax, 1.0, presenceThresholdFor(settings, thresholdTarget_));
+        thresholdBox_ = makeNumberBox(telaviva::kPresenceMinBrightnessMin, telaviva::kPresenceMinBrightnessMax, 1.0,
+            presenceThresholdFor(settings, thresholdTarget_));
         thresholdBox_.IsEnabled(presenceOn);
         xaml::Automation::AutomationProperties::SetName(thresholdBox_, loc("presenceMinBrightness"));
         thresholdBox_.ValueChanged([this](xc::NumberBox const&, xc::NumberBoxValueChangedEventArgs const& args) {
@@ -474,6 +489,39 @@ namespace winrt::TelaViva::implementation
         });
         RowsPanel().Children().Append(telaviva::host::MakeSettingRow(
             loc("presenceMinBrightness"), loc("presenceMinBrightnessHelp"), withUnit(thresholdBox_, L"%")));
+
+        // Lock on confirmed absence: a switch, then the wait before the lock. Both follow presence protection,
+        // and the wait also needs the switch on.
+        const bool lockOn = settings.lock_on_absence;
+        const winrt::hstring lockHeader = loc("lockOnAbsence.toggle");
+        lockSwitch_ = makeSwitch(lockOn, lockHeader);
+        lockSwitch_.IsEnabled(presenceOn);
+        lockSwitch_.Toggled([this](auto const& sender, auto const&) {
+            if (suppress_) {
+                return;
+            }
+            const bool enabled = sender.as<xc::ToggleSwitch>().IsOn();
+            if (lockDelayBox_) {
+                lockDelayBox_.IsEnabled(enabled && lockSwitch_.IsEnabled());
+            }
+            edit([enabled](telaviva::SettingsDraft& draft) { draft.lockOnAbsence = enabled; });
+        });
+        RowsPanel().Children().Append(telaviva::host::MakeSettingRow(lockHeader, loc("lockOnAbsence.help"), lockSwitch_));
+
+        lockDelayBox_ = makeNumberBox(telaviva::kLockDelayMin, telaviva::kLockDelayMax, 1.0, lockDelayForBox(settings.lock_delay_s));
+        lockDelayBox_.IsEnabled(presenceOn && lockOn);
+        xaml::Automation::AutomationProperties::SetName(lockDelayBox_, loc("lockOnAbsence.delay"));
+        lockDelayBox_.ValueChanged([this](xc::NumberBox const&, xc::NumberBoxValueChangedEventArgs const& args) {
+            const double value = args.NewValue();
+            if (std::isnan(value)) {
+                return;
+            }
+            // Whole seconds, as the core stores them.
+            const double seconds = std::round(value);
+            edit([seconds](telaviva::SettingsDraft& draft) { draft.lockDelayS = seconds; });
+        });
+        RowsPanel().Children().Append(telaviva::host::MakeSettingRow(
+            loc("lockOnAbsence.delay"), winrt::hstring{}, withUnit(lockDelayBox_, L" s")));
 
         // Monitored display: the display whose brightness decides when the camera runs. Directly below the threshold.
         monitoredBox_ = xc::ComboBox{};

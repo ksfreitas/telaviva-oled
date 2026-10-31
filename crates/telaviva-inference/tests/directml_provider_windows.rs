@@ -23,7 +23,7 @@ fn directml_runtime_requested() -> bool {
 
 fn model_path(root: &Path) -> CString {
     CString::new(
-        root.join("assets/model/face_detection_yunet_2023mar.onnx")
+        root.join("assets/model/face_detection_retinaface_mb025.onnx")
             .to_string_lossy()
             .as_bytes(),
     )
@@ -266,7 +266,7 @@ fn directml_runtime_detects_face_like_cpu_runtime() {
         1
     );
     assert_eq!(result.status, 1);
-    assert!(result.confidence >= 0.8);
+    assert!(result.confidence >= 0.5);
     eprintln!(
         "directml runtime: fixture status={} confidence={:.6} provider={selected}",
         result.status, result.confidence

@@ -99,7 +99,7 @@ try {
         'onnxruntime.dll',
         'Uninstall-TelaVivaOLED.ps1',
         'selftest-face.bgra',
-        'models\face_detection_yunet_2023mar.onnx'
+        'models\face_detection_retinaface_mb025.onnx'
     )
     foreach ($relative in $required) {
         if (-not (Test-Path -LiteralPath (Join-Path $sourceDir $relative) -PathType Leaf)) {

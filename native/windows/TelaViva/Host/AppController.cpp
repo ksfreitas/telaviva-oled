@@ -34,6 +34,7 @@
 #include "Platform/LaptopDetection.h"
 #include "Platform/LaptopPanel.h"
 #include "Platform/LaunchAtLogin.h"
+#include "Platform/LockCoordinator.h"
 #include "Platform/MediaCaptureBackend.h"
 #include "Platform/PowerEvents.h"
 #include "Platform/ProtectionRules.h"
@@ -41,6 +42,7 @@
 #include "Platform/ScreensaverMonitor.h"
 #include "Platform/SelftestFrame.h"
 #include "Platform/SessionEvents.h"
+#include "Platform/SessionLocker.h"
 #include "Platform/SettingsModel.h"
 #include "Platform/SystemClock.h"
 #include "Platform/SystemSleeper.h"
@@ -78,6 +80,9 @@ namespace {
 // Posted to the window when the Laptop becomes unavailable from a thread other than the UI thread
 // (the snapshot thread, or the lid callback). The handler ends an active calibration on the UI thread.
 constexpr UINT kLaptopUnavailableMessage = WM_APP + 0x31;
+
+// The face detection model shipped in the models folder next to the executable (packaging/windows/build-app.ps1).
+constexpr wchar_t kModelFileName[] = L"face_detection_retinaface_mb025.onnx";
 
 // Trailing delay for the protection brightness slider: one settings submission per pause in dragging.
 constexpr std::chrono::milliseconds kProtectionDelay{150};
@@ -694,6 +699,11 @@ struct AppController::Services {
     std::shared_ptr<Win32KeepAwakeBackend> keepAwakeBackend;
     std::shared_ptr<KeepAwakeController> keepAwake;
 
+    // ---- Lock on absence. The coordinator uses the locker and the scheduler, so it is declared after them and
+    // destroyed before them. Created in the constructor before the session callbacks, shut down in shutdown(). ----
+    Win32SessionLocker sessionLocker;
+    std::shared_ptr<LockCoordinator> lockCoordinator;
+
     // ---- Efficiency mode (T101). Built and used on the UI thread only. ----
     Win32Efficiency efficiency;
     std::unique_ptr<EfficiencyController> efficiencyController;
@@ -766,8 +776,9 @@ struct AppController::Services {
         driver->onSnapshot(snapshot);
         {
             std::lock_guard<std::mutex> lock(screensaverMutex);
-            // Keep awake needs the screensaver state too, so the monitor runs for either setting.
-            const bool enabled = snapshot.settings.screensaver_protection_enabled || snapshot.settings.keep_awake_with_presence;
+            // Keep awake and lock on absence need the screensaver state too, so the monitor runs for any of them.
+            const bool enabled = snapshot.settings.screensaver_protection_enabled || snapshot.settings.keep_awake_with_presence ||
+                snapshot.settings.lock_on_absence;
             if (screensaverAccepting && enabled != screensaverEnabled) {
                 screensaverEnabled = enabled;
                 screensaver->setEnabled(enabled);
@@ -1276,6 +1287,15 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
     s.keepAwakeBackend = std::make_shared<Win32KeepAwakeBackend>(s.screensaverProbe);
     s.keepAwake = std::make_shared<KeepAwakeController>(*s.keepAwakeBackend, s.scheduler, s.clock);
     const std::weak_ptr<Win32KeepAwakeBackend> keepAwakeBackendWeak = s.keepAwakeBackend;
+    // Built before the session callbacks below, which confirm the lock through it.
+    s.lockCoordinator = std::make_shared<LockCoordinator>(
+        s.sessionLocker, s.scheduler,
+        [&s](uint64_t token, bool ok, const std::string& error) {
+            if (s.bridge) {
+                s.bridge->submit(buildLockResult(token, ok, error));
+            }
+        },
+        [&s](const std::string& line) { s.diagnostics.log(LogLevel::Notice, "session_lock " + line); });
 
     // The DDC controller is the only target of these callbacks, and it outlives the session object.
     DdcController* ddc = s.ddc.get();
@@ -1311,7 +1331,10 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
             reportKeepAwakeSession();
         }
     };
-    events.onSessionLock = [this, keepAwakeBackendWeak](bool locked) {
+    events.onSessionLock = [this, &s, keepAwakeBackendWeak](bool locked) {
+        // The lock coordinator goes first. The core drops a requested lock to idle when the session is reported
+        // inactive before the lock_result arrives, so the confirmation must reach the core before the inactive report.
+        s.lockCoordinator->sessionLockChanged(locked);
         if (const auto backend = keepAwakeBackendWeak.lock()) {
             backend->setSessionLocked(locked ? std::optional<bool>(true) : std::optional<bool>(false));
             reportKeepAwakeSession();
@@ -1343,13 +1366,13 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
     // A missing file is logged, and InferenceHost is still built; it reports itself unavailable.
     const std::filesystem::path exeDir = std::filesystem::path(executablePath()).parent_path();
     const std::filesystem::path runtimePath = exeDir / L"onnxruntime.dll";
-    const std::filesystem::path modelPath = exeDir / L"models" / L"face_detection_yunet_2023mar.onnx";
+    const std::filesystem::path modelPath = exeDir / L"models" / kModelFileName;
     std::error_code ec;
     if (!std::filesystem::is_regular_file(runtimePath, ec)) {
         s.diagnostics.log(LogLevel::Error, "ONNX Runtime library is missing; presence inference is unavailable");
     }
     if (!std::filesystem::is_regular_file(modelPath, ec)) {
-        s.diagnostics.log(LogLevel::Error, "YuNet model is missing; presence inference is unavailable");
+        s.diagnostics.log(LogLevel::Error, "Face detection model is missing; presence inference is unavailable");
     }
     // The core version is the installed version for the About page and the inference failure record.
     appVersion_ = telaviva::CoreBridge::coreVersion();
@@ -1494,18 +1517,27 @@ AppController::AppController(PlatformWindow& window, std::function<void(FlyoutSt
     s.bridge->addSink([this, &s](const Snapshot& snapshot) {
         s.publish(snapshot);
         // A core that stays suspended re-reports the local state, as the macOS menu bar does.
-        if (keepAwakeAccepting_ && snapshot.settings.keep_awake_with_presence &&
+        if (keepAwakeAccepting_ && (snapshot.settings.keep_awake_with_presence || snapshot.settings.lock_on_absence) &&
             snapshot.camera.mode == "suspended" && snapshot.camera.displayStatus == "suspended" &&
             keepAwakeCameraMonitoringAllowed(s.keepAwakeBackend->safetyState())) {
             reportKeepAwakeSession();
         }
         // The lease is applied under keepAwakeReportMutex_ and only while accepting, so it cannot land after shutdown.
-        std::lock_guard<std::mutex> lock(keepAwakeReportMutex_);
-        if (keepAwakeAccepting_) {
-            const auto& kw = snapshot.keepAwake;
-            s.keepAwake->update(kw.enabled, kw.requested, kw.generation, kw.observationId,
-                keepAwakeRemainingMilliseconds(kw.validForMs, snapshot.decodedAtSteadySeconds,
-                    s.clock.steadySeconds()));
+        // The lock coordinator is observed after that mutex is released, because it may call the locker, which must
+        // not run while the report mutex is held.
+        bool accepting = false;
+        {
+            std::lock_guard<std::mutex> lock(keepAwakeReportMutex_);
+            accepting = keepAwakeAccepting_;
+            if (accepting) {
+                const auto& kw = snapshot.keepAwake;
+                s.keepAwake->update(kw.enabled, kw.requested, kw.generation, kw.observationId,
+                    keepAwakeRemainingMilliseconds(kw.validForMs, snapshot.decodedAtSteadySeconds,
+                        s.clock.steadySeconds()));
+            }
+        }
+        if (accepting) {
+            s.lockCoordinator->observe(snapshot.lock.requested, snapshot.lock.token);
         }
     });
     // Reports the session state once at startup, so the core's eligibility reflects reality without waiting for
@@ -1590,6 +1622,8 @@ void AppController::shutdown()
         keepAwakeAccepting_ = false;
     }
     s.keepAwake->shutdown();
+    // The lock coordinator stops with the keep-awake part, before the bridge and the scheduler are torn down.
+    s.lockCoordinator->shutdown();
     // The Laptop slider stops before the restores below, so a late slider value cannot overwrite the restored level.
     s.stopBuiltinWrites();
 

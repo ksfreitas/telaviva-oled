@@ -534,6 +534,86 @@ TEST(json_codec_keep_awake_remaining_milliseconds)
     CHECK_EQ(telaviva::keepAwakeRemainingMilliseconds(25000, 100.0, 99.0), uint64_t{25000});
 }
 
+TEST(json_codec_parses_lock_object_fields)
+{
+    const telaviva::Snapshot s = telaviva::parseSnapshot(
+        R"({"lock":{"enabled":true,"stage":"requested","requested":true,"token":3}})");
+    CHECK(s.lock.enabled);
+    CHECK_EQ(s.lock.stage, std::string("requested"));
+    CHECK(s.lock.requested);
+    CHECK(s.lock.token.has_value());
+    CHECK_EQ(s.lock.token.value_or(0), uint64_t{3});
+}
+
+TEST(json_codec_lock_absent_is_idle_default)
+{
+    const telaviva::Snapshot absent = telaviva::parseSnapshot(R"({"revision":1})");
+    CHECK(!absent.lock.enabled);
+    CHECK_EQ(absent.lock.stage, std::string("idle"));
+    CHECK(!absent.lock.requested);
+    CHECK(!absent.lock.token.has_value());
+}
+
+TEST(json_codec_lock_wrong_type_or_null_token_is_default)
+{
+    const telaviva::Snapshot wrongType = telaviva::parseSnapshot(R"({"lock":"oops"})");
+    CHECK(!wrongType.lock.enabled);
+    CHECK_EQ(wrongType.lock.stage, std::string("idle"));
+    CHECK(!wrongType.lock.requested);
+    CHECK(!wrongType.lock.token.has_value());
+
+    const telaviva::Snapshot nullToken = telaviva::parseSnapshot(R"({"lock":{"requested":true,"token":null}})");
+    CHECK(nullToken.lock.requested);
+    CHECK(!nullToken.lock.token.has_value());
+
+    // Only a whole, non-negative number is a token; other numbers and types read as absent.
+    CHECK(!telaviva::parseSnapshot(R"({"lock":{"token":-1}})").lock.token.has_value());
+    CHECK(!telaviva::parseSnapshot(R"({"lock":{"token":2.5}})").lock.token.has_value());
+    CHECK(!telaviva::parseSnapshot(R"({"lock":{"token":"3"}})").lock.token.has_value());
+}
+
+TEST(json_codec_lock_requested_is_true_only_for_boolean_true)
+{
+    CHECK(!telaviva::parseSnapshot(R"({"lock":{"requested":"true"}})").lock.requested);
+    CHECK(!telaviva::parseSnapshot(R"({"lock":{"requested":1}})").lock.requested);
+}
+
+TEST(json_codec_lock_tolerates_unknown_fields)
+{
+    const telaviva::Snapshot s = telaviva::parseSnapshot(
+        R"({"lock":{"enabled":true,"future_field":{"a":[1,2]},"token":7}})");
+    CHECK(s.lock.enabled);
+    CHECK_EQ(s.lock.stage, std::string("idle"));
+    CHECK(!s.lock.requested);
+    CHECK_EQ(s.lock.token.value_or(0), uint64_t{7});
+}
+
+TEST(json_codec_lock_settings_default_and_parse)
+{
+    const telaviva::Snapshot s = telaviva::parseSnapshot(
+        R"({"settings":{"lock_on_absence":true,"lock_delay_s":10}})");
+    CHECK(s.settings.lock_on_absence);
+    CHECK(nearly(s.settings.lock_delay_s, 10.0));
+
+    const telaviva::Snapshot absent = telaviva::parseSnapshot(R"({"revision":1})");
+    CHECK(!absent.settings.lock_on_absence);
+    CHECK(nearly(absent.settings.lock_delay_s, 5.0));
+}
+
+TEST(json_codec_return_sampling_interval_default_is_half_second)
+{
+    CHECK(nearly(telaviva::parseSnapshot(R"({"revision":1})").settings.return_sampling_interval_s, 0.5));
+}
+
+TEST(json_codec_lock_result_message)
+{
+    CHECK_EQ(telaviva::buildLockResult(3, true, ""), std::string(R"({"type":"lock_result","token":3,"ok":true})"));
+    CHECK_EQ(telaviva::buildLockResult(4, false, "unavailable"),
+             std::string(R"({"type":"lock_result","token":4,"ok":false,"error":"unavailable"})"));
+    CHECK_EQ(telaviva::buildLockResult(5, false, "not_confirmed"),
+             std::string(R"({"type":"lock_result","token":5,"ok":false,"error":"not_confirmed"})"));
+}
+
 TEST(json_codec_camera_retry_in_ms_is_parsed)
 {
     const telaviva::Snapshot s = telaviva::parseSnapshot(R"({"camera":{"status":"busy","retry_in_ms":30000}})");

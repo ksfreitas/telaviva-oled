@@ -47,7 +47,7 @@ constexpr int kCpu = 0;
 
 // One runtime path for the whole host: CPU, accelerated and self-test reference sessions alike.
 const wchar_t* const kRuntime = L"C:\\TelaViva\\onnxruntime.dll";
-const wchar_t* const kModelPath = L"C:\\TelaViva\\face_detection_yunet_2023mar.onnx";
+const wchar_t* const kModelPath = L"C:\\TelaViva\\face_detection_retinaface_mb025.onnx";
 const char* const kApp = "0.1.0";
 const char* const kDriver = "32.0.21041.1000";
 const char* const kNvidiaDriver = "552.12.0.0";

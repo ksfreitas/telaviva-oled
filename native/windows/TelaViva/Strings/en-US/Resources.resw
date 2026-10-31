@@ -211,6 +211,15 @@
   <data name="keepAwake.status.suspended" xml:space="preserve">
     <value>Paused while the session or screen is unavailable.</value>
   </data>
+  <data name="lockOnAbsence.toggle" xml:space="preserve">
+    <value>Lock the screen after confirmed absence</value>
+  </data>
+  <data name="lockOnAbsence.delay" xml:space="preserve">
+    <value>Wait before locking</value>
+  </data>
+  <data name="lockOnAbsence.help" xml:space="preserve">
+    <value>After the display dims because nobody is in front of it, the app waits this long and checks again. If it still sees nobody and the light is good enough, it locks the session. It never unlocks the session or wakes the computer.</value>
+  </data>
   <data name="alwaysOnCamera" xml:space="preserve">
     <value>Keep camera on</value>
   </data>

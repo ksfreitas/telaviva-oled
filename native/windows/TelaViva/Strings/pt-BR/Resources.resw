@@ -211,6 +211,15 @@
   <data name="keepAwake.status.suspended" xml:space="preserve">
     <value>Pausado enquanto a sessão ou a tela estiver indisponível.</value>
   </data>
+  <data name="lockOnAbsence.toggle" xml:space="preserve">
+    <value>Bloquear a tela após ausência confirmada</value>
+  </data>
+  <data name="lockOnAbsence.delay" xml:space="preserve">
+    <value>Espera antes de bloquear</value>
+  </data>
+  <data name="lockOnAbsence.help" xml:space="preserve">
+    <value>Depois que o brilho diminui porque ninguém está diante da tela, o app espera esse tempo e confere de novo. Se ainda não ver ninguém e a luz for suficiente, bloqueia a sessão. Nunca desbloqueia a sessão nem acorda o computador.</value>
+  </data>
   <data name="alwaysOnCamera" xml:space="preserve">
     <value>Manter a câmera ligada</value>
   </data>

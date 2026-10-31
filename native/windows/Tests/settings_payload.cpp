@@ -169,6 +169,8 @@ const std::set<std::string> kSettingsKeys = {
     "always_on_camera",
     "screensaver_protection_enabled",
     "keep_awake_with_presence",
+    "lock_on_absence",
+    "lock_delay_s",
     "launch_at_login",
     "hardware_keys_enabled",
     "brightness_key_step",
@@ -192,7 +194,7 @@ TEST(settings_payload_has_exactly_the_core_keys)
     CHECK_EQ(root.size(), std::size_t{2});
 
     const std::vector<std::string> keys = keysAtDepth(json, 2);
-    CHECK_EQ(keys.size(), std::size_t{19});
+    CHECK_EQ(keys.size(), std::size_t{21});
     const std::set<std::string> actual(keys.begin(), keys.end());
     CHECK(actual == kSettingsKeys);
 
@@ -210,13 +212,15 @@ TEST(settings_payload_default_values)
     const telaviva::SettingsDraft draft{};
     CHECK_EQ(scalarFor(draft, "locale"), std::string(R"("auto")"));
     CHECK_EQ(scalarFor(draft, "presence_sampling_interval_s"), std::string("10"));
-    CHECK_EQ(scalarFor(draft, "return_sampling_interval_s"), std::string("1"));
+    CHECK_EQ(scalarFor(draft, "return_sampling_interval_s"), std::string("0.5"));
     CHECK_EQ(scalarFor(draft, "suspend_presence_on_battery"), std::string("true"));
     CHECK_EQ(scalarFor(draft, "presence_protection_enabled"), std::string("false"));
     CHECK_EQ(scalarFor(draft, "presence_min_brightness_percent"), std::string("20"));
     CHECK_EQ(scalarFor(draft, "always_on_camera"), std::string("true"));
     CHECK_EQ(scalarFor(draft, "screensaver_protection_enabled"), std::string("false"));
     CHECK_EQ(scalarFor(draft, "keep_awake_with_presence"), std::string("false"));
+    CHECK_EQ(scalarFor(draft, "lock_on_absence"), std::string("false"));
+    CHECK_EQ(scalarFor(draft, "lock_delay_s"), std::string("5"));
     CHECK_EQ(scalarFor(draft, "launch_at_login"), std::string("false"));
     CHECK_EQ(scalarFor(draft, "hardware_keys_enabled"), std::string("false"));
     CHECK_EQ(scalarFor(draft, "brightness_key_step"), std::string("5"));
@@ -255,7 +259,7 @@ TEST(settings_payload_clamps_return_interval_both_ends)
     draft.returnSamplingIntervalS = 50.0;
     CHECK_EQ(scalarFor(draft, "return_sampling_interval_s"), std::string("5"));
     draft.returnSamplingIntervalS = std::numeric_limits<double>::quiet_NaN();
-    CHECK_EQ(scalarFor(draft, "return_sampling_interval_s"), std::string("1"));
+    CHECK_EQ(scalarFor(draft, "return_sampling_interval_s"), std::string("0.5"));
     draft.returnSamplingIntervalS = 2.5;
     CHECK_EQ(scalarFor(draft, "return_sampling_interval_s"), std::string("2.5"));
 }
@@ -479,6 +483,7 @@ TEST(settings_payload_round_trip_non_default_values)
                          R"("suspend_presence_on_battery":false,"presence_protection_enabled":true,)"
                          R"("presence_min_brightness_percent":35,"always_on_camera":false,)"
                          R"("screensaver_protection_enabled":true,"keep_awake_with_presence":true,)"
+                         R"("lock_on_absence":false,"lock_delay_s":5,)"
                          R"("launch_at_login":true,)"
                          R"("hardware_keys_enabled":true,"brightness_key_step":3,"volume_key_step":7,)"
                          R"("inference_device":"auto",)"
@@ -525,7 +530,7 @@ TEST(settings_payload_presence_by_display_copied_from_snapshot_whole)
                    R"("presence_min_brightness_by_display":{"win-a":35,"win-gone":60})"));
 }
 
-TEST(settings_payload_presence_by_display_clamps_to_zero_ninety_and_keeps_disconnected)
+TEST(settings_payload_presence_by_display_clamps_to_one_ninety_and_keeps_disconnected)
 {
     telaviva::SettingsDraft draft;
     draft.presenceMinBrightnessByDisplay = {
@@ -587,6 +592,57 @@ TEST(settings_payload_keep_awake_toggle_changes_only_its_own_value)
     CHECK(pos != std::string::npos);
     if (pos != std::string::npos) {
         expected.replace(pos, from.size(), R"("keep_awake_with_presence":true)");
+    }
+    CHECK_EQ(onJson, expected);
+}
+
+TEST(settings_payload_lock_delay_clamps_both_ends)
+{
+    telaviva::SettingsDraft draft;
+
+    draft.lockDelayS = 0.0;
+    CHECK_EQ(scalarFor(draft, "lock_delay_s"), std::string("1"));
+    draft.lockDelayS = 100.0;
+    CHECK_EQ(scalarFor(draft, "lock_delay_s"), std::string("60"));
+    // NaN has no order, so it takes the field default (5).
+    draft.lockDelayS = std::numeric_limits<double>::quiet_NaN();
+    CHECK_EQ(scalarFor(draft, "lock_delay_s"), std::string("5"));
+    draft.lockDelayS = 10.0;
+    CHECK_EQ(scalarFor(draft, "lock_delay_s"), std::string("10"));
+    draft.lockDelayS = 1.0;
+    CHECK_EQ(scalarFor(draft, "lock_delay_s"), std::string("1"));
+    draft.lockDelayS = 60.0;
+    CHECK_EQ(scalarFor(draft, "lock_delay_s"), std::string("60"));
+}
+
+TEST(settings_payload_lock_settings_survive_draft_from_snapshot)
+{
+    const telaviva::Snapshot s = telaviva::parseSnapshot(
+        R"({"settings":{"lock_on_absence":true,"lock_delay_s":10}})");
+    const telaviva::SettingsDraft draft = telaviva::draftFromSnapshotSettings(s.settings);
+    CHECK(draft.lockOnAbsence);
+    CHECK(nearly(draft.lockDelayS, 10.0));
+    CHECK_EQ(scalarFor(draft, "lock_on_absence"), std::string("true"));
+    CHECK_EQ(scalarFor(draft, "lock_delay_s"), std::string("10"));
+}
+
+TEST(settings_payload_lock_on_absence_toggle_changes_only_its_own_value)
+{
+    telaviva::SettingsDraft off;
+    telaviva::SettingsDraft on;
+    on.lockOnAbsence = true;
+
+    const std::string offJson = compact(telaviva::buildSettingsPayload(off));
+    const std::string onJson = compact(telaviva::buildSettingsPayload(on));
+    CHECK(onJson.find(R"("lock_on_absence":true)") != std::string::npos);
+
+    // Replacing the one value in the off payload must give exactly the on payload.
+    std::string expected = offJson;
+    const std::string from = R"("lock_on_absence":false)";
+    const std::size_t pos = expected.find(from);
+    CHECK(pos != std::string::npos);
+    if (pos != std::string::npos) {
+        expected.replace(pos, from.size(), R"("lock_on_absence":true)");
     }
     CHECK_EQ(onJson, expected);
 }
