@@ -65,7 +65,7 @@ On Windows, the same toggle is in **Settings > General** and no permission promp
 
 ## Presence protection
 
-Presence protection is off until you enable it, and enabling it requests camera access. It detects any face locally. It does not identify people, enroll faces, save webcam images or send frames to a service. On macOS and Windows, a face behind a mask, or with a hand or tissue over the mouth and nose, is also recognised. macOS and Windows use the same RetinaFace MobileNet0.25 model (see ADR 0042), and YuNet remains only as the benchmark baseline in the Rust crate. A hand-sized round or hairy object can rarely be mistaken for a face, which only leaves the screen lit. Hardware checks are pending.
+Presence protection is off until you enable it, and enabling it requests camera access. It detects any face locally. It does not identify people, enroll faces, save webcam images or send frames to a service. On macOS and Windows, a face behind a mask, or with a hand or tissue over the mouth and nose, is also recognised. macOS and Windows use the same RetinaFace MobileNet0.25 model (see ADR 0042), and YuNet remains only as the benchmark baseline in the Rust crate. A hand-sized round or hairy object can rarely be mistaken for a face, which only leaves the screen lit.
 
 ### How it works
 
@@ -109,7 +109,7 @@ Insufficient light suspends face detection instead of counting as absence. Recov
 
 ## Lock the screen after confirmed absence
 
-This option is available on macOS and Windows. Its hardware checks on a real lock screen are still pending. It is off by default and needs [presence protection](#presence-protection) on. Turn it on in Settings, and set **Wait before locking** (1 to 60 seconds, 5 seconds by default).
+This option is available on macOS and Windows. It is off by default and needs [presence protection](#presence-protection) on. Turn it on in Settings, and set **Wait before locking** (1 to 60 seconds, 5 seconds by default).
 
 On Windows, the setting is in **Settings > General**, after the presence brightness threshold. It is disabled while presence protection is off, and its **Wait before locking** box is also disabled while the toggle is off. The lock relies on the public Windows lock function, LockWorkStation, which is not a private interface, and Windows policies or Dynamic Lock settings can restrict or change how it behaves. The app asks once per request and reports the lock as done only when Windows signals that the session locked within 3 seconds. Otherwise the display stays dimmed and a line is written to the [diagnostic log](#diagnostic-logs).
 
@@ -239,6 +239,7 @@ On Windows, DirectML is supplied by Windows and is not bundled with the app. If 
 - **SmartScreen:** release builds are not code-signed yet, so Windows may show "Windows protected your PC" the first time you run `TelaViva.exe`. Only continue for a zip you downloaded from the project and checked against its SHA-256.
 - **Acceleration:** see [Inference device](#inference-device). The package ships one ONNX Runtime, the DirectML build, and uses the DirectML that comes with Windows. NPUs are not supported.
 - **Laptop screen protection:** the laptop's built-in screen takes part in protection, in the monitored display choice and in the lid rule for the built-in camera, as on macOS. See [Laptop screen protection](#laptop-screen-protection). The automatic brightness option uses **Change brightness automatically when lighting changes** in the active power plan, for AC and DC, and restores it afterwards. The laptop panel is set through Windows Management Instrumentation (WMI), which accepts only the panel's supported levels: a requested level lands on the nearest one, and 0% lands on the lowest supported level, which can be above 0%. The Windows laptop checks are not yet recorded, so these features are not verified on Windows hardware.
+- Lock after confirmed absence is available on Windows too; see [Lock the screen after confirmed absence](#lock-the-screen-after-confirmed-absence).
 
 ## Limits and compatibility
 

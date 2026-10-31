@@ -14,7 +14,7 @@
 Bring every handoff item to the Windows shell, with the handoff's proposed option wherever it left an open question. Tests come first, and the Windows wording is "Laptop" in en-US and "Notebook" in pt-BR (ADR 0023).
 
 - The Windows shell opts in to the core's built-in policy by sending `protectable` and `holding`. Until it does, the core makes no decision for the built-in screen. The shell reads and writes the panel through WMI and accepts the nearest supported level, because WMI snaps a write to a supported level.
-- Presence and the screensaver protect the screen at a fixed 1 to 50 percent level. The presence threshold goes down to 0 (it was 10), and it is saved per display (0 to 90) through `presence_min_brightness_by_display`.
+- Presence and the screensaver protect the screen at a fixed 1 to 50 percent level. The presence threshold goes down to 0 (it was 10) (since [ADR 0044](0044-presence-brightness-threshold-floor-of-one-percent.md) the minimum is 1), and it is saved per display (0 to 90) through `presence_min_brightness_by_display`.
 - A shared owner (`AutoBrightnessOwner`) holds and restores the Windows setting that changes brightness automatically with lighting, for both protection and calibration, with recovery after a forced quit. Calibration also restores the monitor after a crash and waits up to 90 seconds for it to reappear (the monitor part of the recovery only).
 - The monitored display picker chooses which display gates the camera. `primary` is sent only inside `monitor_discovered`, so a change of the primary display applies at the next discovery.
 - The picker for cameras hides built-in cameras while the lid is closed.

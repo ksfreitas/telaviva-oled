@@ -2,8 +2,8 @@
 
 - Feature: [spec](../spec.md)
 - Date: 2026-10-29
-- Decision record: [ADR 0042](../../../adr/0042-occlusion-robust-face-detection.md)
-- Platform measured: macOS, Apple Silicon (this Mac). Windows not measured.
+- Decision record: [ADR 0042](../../../../adr/0042-occlusion-robust-face-detection.md)
+- Platform measured: macOS, Apple Silicon (this Mac). Windows was measured on 2026-10-30; see [windows-model-check.md](windows-model-check.md).
 - Status: decision recorded. This is a benchmark and a CoreML parity probe, not an acceptance test on hardware.
 - Raw outputs: [benchmark-yunet.md](benchmark-yunet.md), [benchmark-retinaface.md](benchmark-retinaface.md)
 
@@ -119,12 +119,12 @@ The CoreML result equals the CPU result on the self-test frame (status 1, confid
 - A hairy or round object may be taken for a face (false presence). The fixture set does not test this case beyond the tarantula on a hand.
 - Latency is one frame on this Mac. The execution provider of the 62.4 ms run is not recorded. The CPU result on the self-test frame (70.7 ms) is higher than the 60 ms cap, so the latency margin depends on the frame and the run.
 - RetinaFace is trained on WIDER FACE (CC BY-NC-ND). The legal check is left to the owner, as for YuNet.
-- Windows is not measured. The DirectML check is pending.
+- Windows was measured on 2026-10-30, including the DirectML check; see [windows-model-check.md](windows-model-check.md).
 
 ## Follow-ups
 
 1. Real webcam validation on hardware: capture masked and hand-over-mouth frames with the target camera, re-run the threshold sweep, and confirm or move 0.50.
-2. Windows port: same model and decoder, latency check under rule 4, DirectML check with `occlusion_bench`, and packaging of the model file.
+2. Windows port: same model and decoder, latency check under rule 4, DirectML check with `occlusion_bench`, and packaging of the model file. Done on 2026-10-30.
 3. Optional smaller input export (480 or 320): evaluated only if latency fails on target hardware (architecture.md, Decision 5).
 4. Grow the fixture set: heavy occlusion, webcam-resolution colour frames, night and backlit frames, children's faces, and more tilted heads. Re-run the benchmark after each addition.
 5. Owner: review the WIDER FACE licence caveat for the RetinaFace model.

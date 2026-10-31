@@ -1,6 +1,6 @@
 # ADR 0042: Occlusion-robust face detection model
 
-- Status: Accepted for macOS and Windows; hardware validation pending
+- Status: Accepted for macOS and Windows; hardware checks marked passed by the owner on 2026-10-31
 - Date: 2026-10-29
 - Feature: [Masked face detection and lock on absence](../specs/archived/masked-face-detection-and-lock-on-absence/spec.md)
 
@@ -33,7 +33,7 @@ Rule 5 cannot be applied literally to RetinaFace, because no threshold on the gr
 
 The fixture set is small. It has 19 occluded faces, mostly 1918 archive and military photographs and no modern webcam frame, so every figure is indicative with wide intervals and must be re-checked with real webcam captures on hardware. Two masked faces sit near the thresholds: mask-03 (0.508) and mask-13 (0.621). A hairy or round object may be taken for a face, which is a false presence that leaves the screen lit.
 
-RetinaFace is trained on WIDER FACE (CC BY-NC-ND), the same legal caveat as YuNet. The owner decides on it. The model costs about 20 ms more CPU per sample and 4 MB more memory. The macOS shell loads `face_detection_retinaface_mb025.onnx`. The Windows shell loads the same file (see the Windows port below).
+RetinaFace is trained on WIDER FACE (CC BY-NC-ND), the same legal caveat as YuNet. The owner decides on it. On macOS, the model costs about 20 ms more CPU per sample and 4 MB more memory. On Windows the measured cost is about 7.5 ms more at p50 and 1.4 MB more memory. The macOS shell loads `face_detection_retinaface_mb025.onnx`. The Windows shell loads the same file (see the Windows port below).
 
 ## Windows port (2026-10-30)
 

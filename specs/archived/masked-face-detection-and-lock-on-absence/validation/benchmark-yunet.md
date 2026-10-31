@@ -46,6 +46,7 @@ At threshold 0.75.
 ## Coverage gaps
 
 - Totals in `manifest.toml`: 45 entries, 29 with a face and 16 without. By category: `none` 3, `mask` 8, `hand_mouth` 11, `hand_eyes` 0, `glasses` 4, `tilt` 3, `no_face_hand` 6, `no_face_mask` 4, `no_face_object` 6.
+- No fixture image shows a hand over the eyes; the owner scoped that category out (see plan T018).
 - The occluded set is small (8 `mask` and 11 `hand_mouth` images), so every recall figure is indicative, with wide confidence intervals.
 - Every occluded image is marked `occlusion = "partial"`; no image is marked `heavy`.
 - The 8 mask images are 1918 archive photographs (mask-01, 02, 03, 10) or official U.S. military photographs (mask-08, 09, 12, 13). None is a modern webcam frame.

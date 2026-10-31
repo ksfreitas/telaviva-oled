@@ -60,5 +60,5 @@ The model and preprocessing are the same as on macOS, so the threshold sweep has
 
 - One machine and one GPU.
 - The DirectML result shows that the model runs through DirectML and detects the portrait. It is not a latency measurement.
-- The packaged-app self-test is recorded separately when it is run.
+- The packaged app `--smoke-test` exited 0 on 2026-10-30.
 - This check is automated. It is not a lock-screen check and does not verify any lock row in `hardware-checklist.md`.

@@ -1,6 +1,6 @@
 # Tasks: Occlusion-robust face detection, 1% presence-check floor and lock screen on absence
 
-**Branch**: `masked-face-detection-and-lock-on-absence` **Specs**: [spec.md](spec.md) **Architecture**: [architecture.md](architecture.md) **Contracts**: [contracts.md](contracts.md) **Status**: Implemented on macOS and Windows and verified by automated tests (macOS and shared crates 2026-10-29, Windows 2026-10-30); finalized 2026-10-30; lock hardware checks on both platforms not run, so hardware acceptance is pending
+**Branch**: `masked-face-detection-and-lock-on-absence` **Specs**: [spec.md](spec.md) **Architecture**: [architecture.md](architecture.md) **Contracts**: [contracts.md](contracts.md) **Status**: Implemented on macOS and Windows and verified by automated tests (macOS and shared crates 2026-10-29, Windows 2026-10-30); finalized 2026-10-30; hardware checks on both platforms marked passed by the owner on 2026-10-31, with no values recorded
 
 User stories are grouped into three independently deliverable groups:
 
@@ -10,9 +10,9 @@ User stories are grouped into three independently deliverable groups:
 | Detection model | US-001, US-002 | FR-000 to FR-006 | 4 |
 | Lock on absence | US-004, US-005, US-006 | FR-011 to FR-019 | 5 |
 
-**Scope decision (owner, 2026-10-29): macOS only for now.** The owner scoped this implementation run to macOS and will do the Windows part later on a Windows PC, as `AGENTS.md` allows when the owner scopes a task to one platform. The shared Rust crates are implemented in full. Windows tasks are marked `🪟 Deferred` below and are not started, except that the Windows test expectations of T013 were already written (they fail on Windows until T014 is done). Until the Windows part lands, the Windows shell still clamps the threshold to 0..90 (the core then rejects a 0) and does not show the lock options.
+**Scope decision (owner, 2026-10-29): macOS only for now.** The owner scoped this implementation run to macOS and will do the Windows part later on a Windows PC, as `AGENTS.md` allows when the owner scopes a task to one platform. The shared Rust crates are implemented in full. Windows tasks are marked `🪟 Deferred` below and are not started, except that the Windows test expectations of T013 were already written (they fail on Windows until T014 is done). Until the Windows part lands, the Windows shell still clamps the threshold to 0..90 (the core then rejects a 0) and does not show the lock options. This is superseded: the Windows tasks were done on 2026-10-30.
 
-**Windows run (owner, 2026-10-30): the deferred Windows tasks were implemented on a Windows PC** (T009, T013, T014, T030, the Windows half of T031 to T033, T049 to T053, the Windows parts of T055 and T059). Automated checks: `tests.exe` 803 tests, `cargo test --workspace`, clippy, fmt, the Windows model smoke test, the DirectML provider test, the packaged app `--smoke-test`. The lock itself was not tried on a real lock screen; those checks stay in `validation/hardware-checklist.md`.
+**Windows run (owner, 2026-10-30): the deferred Windows tasks were implemented on a Windows PC** (T009, T013, T014, T030, the Windows half of T031 to T033, T049 to T053, the Windows parts of T055 and T059). Automated checks: `tests.exe` 803 tests, `cargo test --workspace`, clippy, fmt, the Windows model smoke test, the DirectML provider test, the packaged app `--smoke-test`. The owner marked the lock hardware checks in `validation/hardware-checklist.md` as passed on 2026-10-31, with no values recorded.
 
 Conventions for every task: comments in English; user-visible strings in en-US and pt-BR; Windows work can only be built and run on a Windows machine, so Windows tasks are written here and verified there (the checkpoints say so). Test tasks come first and must be seen failing before the implementation task that follows them.
 
@@ -20,7 +20,7 @@ Conventions for every task: comments in English; user-visible strings in en-US a
 
 - [x] T001 Add a `bench` feature to `crates/telaviva-inference/Cargo.toml` with optional dependencies `image` (JPEG only, `default-features = false`) and `toml`; confirm `cargo build -p telaviva-inference` without the feature does not compile either crate, and add both to `licenses/DEPENDENCIES.md`. — done; the optional `image` and `toml` rows are recorded in a separate "Optional, not shipped" section of `licenses/DEPENDENCIES.md`.
 - [x] T002 [P] Create `crates/telaviva-inference/tests/fixtures/occlusion/README.md` (categories, the CC0 or public-domain rule, the rights check for identifiable people, the 640 px limit, a "coverage gaps" section) and an empty `manifest.toml` with the schema from `contracts.md` as a comment. — done
-- [x] T003 [P] Draft `adr/0041-lock-session-on-confirmed-absence.md` (status Proposed) with architecture decisions 8 to 11: core-owned stage, token and `lock_result`, camera pause while locked, macOS private symbol with no fallback, Windows `LockWorkStation`; follow the layout of ADR 0040. — done; ADR 0041 is now Accepted for macOS (Windows part pending the port).
+- [x] T003 [P] Draft `adr/0041-lock-session-on-confirmed-absence.md` (status Proposed) with architecture decisions 8 to 11: core-owned stage, token and `lock_result`, camera pause while locked, macOS private symbol with no fallback, Windows `LockWorkStation`; follow the layout of ADR 0040. — done; ADR 0041 is now Accepted for macOS and Windows.
 
 **Checkpoint**: ✋ Dependencies and documentation skeleton in place
 
@@ -126,13 +126,13 @@ Conventions for every task: comments in English; user-visible strings in en-US a
 
 ### Hardware and acceptance
 
-- [x] T054 [US4] Write the hardware checklist `specs/masked-face-detection-and-lock-on-absence/validation/lock-hardware-checklist.md`: lock after absence with good light on each platform; no lock with insufficient light; return before the delay (default and a changed value); failed lock path (symbol missing simulated on macOS); unlock resumes the camera and restores brightness; the packaged and signed macOS build can `dlopen` the login framework; macOS 26 lock-state signals; Windows policy and Dynamic Lock; interplay with keep-awake. Running it needs the hardware. — checklist written in `validation/hardware-checklist.md`; results not run.
+- [x] T054 [US4] Write the hardware checklist `specs/masked-face-detection-and-lock-on-absence/validation/lock-hardware-checklist.md`: lock after absence with good light on each platform; no lock with insufficient light; return before the delay (default and a changed value); failed lock path (symbol missing simulated on macOS); unlock resumes the camera and restores brightness; the packaged and signed macOS build can `dlopen` the login framework; macOS 26 lock-state signals; Windows policy and Dynamic Lock; interplay with keep-awake. — checklist written in `validation/hardware-checklist.md`; the owner marked every row as passed on 2026-10-31, with no values recorded.
 
 **Checkpoint**: ✋ Core, macOS and Windows tests pass; the checklist is written and its results recorded when run
 
 ## Final Phase: Polish ⏳ (~3h)
 
-- [x] T055 (macOS, shared and Windows parts all done) Update documentation once all stories are in: `docs/user-guide.md` (replace the statement at `:56` that the app never forces a lock; add the lock option, the dark-room and "never unlocks" behavior; update the threshold range at `:44`, `:88`, `:146`; the model description at `:66` if it changed), `ARCHITECTURE.md` (`:67` trigger scope, `:136`, `:385`), `api.md` (the `lock` block, `lock_result`, `lock_on_absence`, range at `:204` and `:400-402`), `README.md` if it names the range or the model, and `CHANGELOG.md` under Unreleased. — macOS and shared documents updated; Windows parts of the documents wait for the port.
+- [x] T055 (macOS, shared and Windows parts all done) Update documentation once all stories are in: `docs/user-guide.md` (replace the statement at `:56` that the app never forces a lock; add the lock option, the dark-room and "never unlocks" behavior; update the threshold range at `:44`, `:88`, `:146`; the model description at `:66` if it changed), `ARCHITECTURE.md` (`:67` trigger scope, `:136`, `:385`), `api.md` (the `lock` block, `lock_result`, `lock_on_absence`, range at `:204` and `:400-402`), `README.md` if it names the range or the model, and `CHANGELOG.md` under Unreleased. — macOS and shared documents updated; Windows parts of the documents were written with the Windows port on 2026-10-30.
 - [x] T056 [P] Finalize `adr/0041-lock-session-on-confirmed-absence.md` (status Accepted) and add a note to `adr/0011-camera-brightness-activation-threshold.md` that the 10 to 90 range is superseded by 1 to 90. — done
 - [x] T057 Run the full checks: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace --all-targets --locked`, every macOS script in `tools/tests`, and (on Windows) `tests.exe` and the model checks. — done for macOS and shared crates; Windows checks done on 2026-10-30: `tests.exe` 803 tests (Debug and Release), `cargo fmt --check`, clippy (workspace, `directml` and `bench` features), `cargo test --workspace --all-targets --locked`, the Windows model smoke test, the DirectML provider test, and the packaged app `--smoke-test`.
 - [x] T058 Review the diff for unrelated changes and dead code, and confirm both platforms received every user-visible change with strings in both languages. — done for the Windows diff on 2026-10-30; see the Windows notes below.
@@ -153,7 +153,7 @@ Decisions taken during the run (2026-10-29):
 - The lock stage uses a separate `session_inactive_reported` flag, because `session_active` starts false in the core.
 - Model: RetinaFace MobileNet0.25 (outcome O2) adopted at confidence 0.50, as an exception to two acceptance rules; YuNet stays as the benchmark baseline. See ADR 0042 and `validation/model-decision.md`.
 - Fixtures are limited to CC0 or public-domain files, with 19 occluded faces (8 masks, 11 hands); results on this set are indicative.
-- Version 0.1.5 in the core, inference crate, Info.plist and app.manifest; not tagged or committed.
+- Version 0.1.5 in the core, inference crate, Info.plist and app.manifest; not tagged or committed (as of 2026-10-29; the work was committed afterwards on the feature branch, and no tag was created).
 
 ## Dependencies & Execution Order
 
@@ -188,5 +188,5 @@ Phase 1 Setup ──┬─> Phase 2 Foundational ──> Phase 4 Detection model
 | 2 Foundational | ✅ | macOS and Windows CI steps |
 | 3 Threshold floor (US-003) | ✅ | core, macOS and Windows |
 | 4 Detection model (US-001, US-002) | ✅ | Outcome O2: RetinaFace MobileNet0.25 adopted at confidence 0.50 as an exception to two acceptance rules (one extra false positive, p50 62.4 ms against the 60 ms cap); see ADR 0042 and `validation/model-decision.md`. Gate G1 after T022; gate G2 after T029 |
-| 5 Lock on absence (US-004 to US-006) | ✅ | Core, macOS and Windows implemented; lock hardware checklist not run on either platform (it needs the machines) |
-| Final Phase Polish | ✅ | version bumped to 0.1.5 on 2026-10-29 in both Cargo.toml, Info.plist, app.manifest and the CHANGELOG heading, not tagged or committed; the lock hardware checks and the licenses copy fix remain open |
+| 5 Lock on absence (US-004 to US-006) | ✅ | Core, macOS and Windows implemented; lock hardware checklist marked passed by the owner on 2026-10-31, no values recorded |
+| Final Phase Polish | ✅ | version bumped to 0.1.5 on 2026-10-29 in both Cargo.toml, Info.plist, app.manifest and the CHANGELOG heading, not tagged or committed; the licenses copy fix remains open |

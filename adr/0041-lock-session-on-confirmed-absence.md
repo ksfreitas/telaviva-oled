@@ -1,6 +1,6 @@
 # ADR 0041: Lock session on confirmed absence
 
-- Status: Accepted; implemented on macOS and Windows; hardware acceptance on both platforms pending
+- Status: Accepted; implemented on macOS and Windows; hardware checks on both platforms marked passed by the owner on 2026-10-31
 - Date: 2026-10-29
 - Feature: [Occlusion-robust face detection, 1% presence-check floor and lock screen on absence](../specs/archived/masked-face-detection-and-lock-on-absence/spec.md)
 
@@ -40,6 +40,6 @@ The feature changes no global OS preference, requires no elevation and adds no n
 
 The macOS lock depends on a private symbol that may disappear in any macOS release. If it does, no lock is performed, a diagnostic line is written, the display stays dimmed, and the limitation is documented. A false absence can lock a user who is still present. The risk is limited by the opt-in default, by two misses plus the delay, by the light gate, and by the detection work of the same feature.
 
-Older binaries reject the new settings fields and reset the settings file, as described in the amendments to ADR 0003. macOS lock-state signals were reported unreliable on macOS 26, so the application reports only confirmed locks. Hardware acceptance on both platforms, including a real Windows lock screen, is still required and is not claimed by this ADR. The Windows lock is verified by automated tests only.
+Older binaries reject the new settings fields and reset the settings file, as described in the amendments to ADR 0003. macOS lock-state signals were reported unreliable on macOS 26, so the application reports only confirmed locks. The owner marked the hardware checks on both platforms, including a real Windows lock screen, as passed on 2026-10-31, with no values recorded.
 
 Implementation details and validation evidence remain in [architecture.md](../specs/archived/masked-face-detection-and-lock-on-absence/architecture.md), [contracts.md](../specs/archived/masked-face-detection-and-lock-on-absence/contracts.md) and the validation records of that feature.

@@ -1,6 +1,6 @@
 ﻿schema_version = 1
 
-# Benchmark baseline only; not packaged on macOS or Windows. Windows also packages the RetinaFace model below.
+# Benchmark baseline only; not packaged on macOS or Windows. macOS and Windows both package the RetinaFace model below.
 [model]
 name = "YuNet"
 file = "face_detection_yunet_2023mar.onnx"
@@ -26,7 +26,7 @@ license_file = "licenses/inference/RETINAFACE-LICENSE"
 input_shape = [1, 3, 640, 640]
 input_channels = "BGR"
 mean_bgr = [104, 117, 123]
-purpose = "Any-face detection without identity recognition; replaces YuNet on macOS because it keeps detecting faces behind masks and hands (see specs/archived/masked-face-detection-and-lock-on-absence/validation)"
+purpose = "Any-face detection without identity recognition; replaces YuNet on macOS and Windows because it keeps detecting faces behind masks and hands (see specs/archived/masked-face-detection-and-lock-on-absence/validation)"
 
 [runtime]
 name = "ONNX Runtime"
